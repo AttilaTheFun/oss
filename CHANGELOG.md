@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.1
+
+- `oss … --help` (or `-h`) prints the usage and does nothing else: a
+  subcommand's `--help` used to run it (`oss container start --help` started
+  a container).
+- A container's files at absolute paths as the container sees them:
+  `oss container cp f id:/root/x` (and the API's file paths) are the home's
+  `x`, not `root/x`; a path outside /root is refused.
+- `oss container list` shows each container's labels and takes
+  `--label key=value` to list only those with it.
+
 ## 0.1.0
 
 The first public version. API level 1.

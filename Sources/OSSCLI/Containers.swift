@@ -619,8 +619,8 @@ actor ContainerManager {
         return parts
     }
 
-    /// A path in the container's home, its symlinks resolved as the container
-    /// sees them (an absolute target is the container's: /root is the home),
+    /// A path in the container's home, relative to it or absolute as the
+    /// container sees it (/root is the home), its symlinks resolved likewise,
     /// refused when one leads out of it: a symlink the container made can't
     /// lead oss's own reads and writes elsewhere on the host.
     private func resolve(_ id: String, _ path: String) throws -> String {
@@ -628,7 +628,12 @@ actor ContainerManager {
         guard let home = container.home else { throw APIError(error: "container \(id) is archived: restart it first") }
         guard let root = Self.realPath(home) else { throw APIError(error: "container \(id)'s home is gone") }
         let out = APIError(error: "\(path) leads out of the container's home")
-        var resolved: [String] = [], pending = try Self.components(path), hops = 0
+        var given = try Self.components(path)
+        if path.hasPrefix("/") {
+            guard given.first == "root" else { throw APIError(error: "\(path) is outside the container's home (/root)") }
+            given.removeFirst()
+        }
+        var resolved: [String] = [], pending = given, hops = 0
         while !pending.isEmpty {
             let part = pending.removeFirst()
             if part.isEmpty || part == "." { continue }
