@@ -51,8 +51,25 @@ struct ContainerRuntime: Sendable {
         let result = try await run(["start", name])
         guard result.ok else { throw APIError(error: "\(self.name) start: \(result.error)") }
     }
-    func remove(_ name: String) async {
-        _ = try? await run(self.name == "container" ? ["delete", "--force", name] : ["rm", "-f", name], timeout: 120)
+    /// Removes the container, forcibly; true once the runtime says it is
+    /// gone. A guest that answers nothing (one thrashing for memory) can
+    /// outlast a delete: it is killed and deleted again.
+    @discardableResult
+    func remove(_ name: String) async -> Bool {
+        let delete = self.name == "container" ? ["delete", "--force", name] : ["rm", "-f", name]
+        _ = try? await run(delete, timeout: 120)
+        if await exists(name) == false { return true }
+        _ = try? await run(["kill", name], timeout: 60)
+        _ = try? await run(delete, timeout: 120)
+        return await exists(name) == false
+    }
+
+    /// Whether the runtime has a container of that name; nil when it didn't
+    /// answer.
+    func exists(_ name: String) async -> Bool? {
+        let arguments = self.name == "container" ? ["list", "--all", "--quiet"] : ["ps", "-a", "--format", "{{.Names}}"]
+        guard let result = try? await run(arguments, timeout: 30), result.ok else { return nil }
+        return result.output.split(whereSeparator: \.isNewline).contains { $0.trimmingCharacters(in: .whitespaces) == name }
     }
 
     /// A command in the container: detached (it runs on after this returns),
@@ -390,7 +407,11 @@ actor ContainerManager {
         #endif
         let tar = try await Shell.run("/usr/bin/tar", ["-czf", archive, "-C", home] + exclusions + ["."], timeout: 3600)
         guard tar.ok else { throw APIError(error: "archiving \(id): \(tar.error)") }
-        await runtime.remove(container.name)
+        guard await runtime.remove(container.name) else {
+            try? FileManager.default.removeItem(atPath: archive)
+            log("container \(id): \(runtime.name) didn't remove \(container.name); not archived")
+            throw APIError(error: "\(runtime.name) didn't remove \(container.name) (its guest may not be answering): not archived, its home kept")
+        }
         try? FileManager.default.removeItem(atPath: home)
         containers[id]?.state = .archived
         containers[id]?.archive = archive
@@ -405,7 +426,12 @@ actor ContainerManager {
     func remove(_ id: String) async throws {
         let runtime = try requireRuntime()
         let container = try require(id)
-        await runtime.remove(container.name)
+        // Its home goes only with it: a container still running on it
+        // (a remove that timed out) would have its files pulled away.
+        guard await runtime.remove(container.name) else {
+            log("container \(id): \(runtime.name) didn't remove \(container.name)")
+            throw APIError(error: "\(runtime.name) didn't remove \(container.name) (its guest may not be answering): its home is kept; try again")
+        }
         if let home = container.home { try? FileManager.default.removeItem(atPath: home) }
         if let archive = container.archive { try? FileManager.default.removeItem(atPath: archive) }
         containers[id] = nil

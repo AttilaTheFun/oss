@@ -15,6 +15,11 @@
   (`am start --es key value` lost its extras).
 - A container is the VMs' size by default: 6 CPUs and 16 GB (it was 2 and
   4 GB, which made a Swift build crawl).
+- A container is removed (or archived) only once its runtime says it is
+  gone: one whose guest didn't answer was reported removed, its home
+  deleted under it, and left running unknown to oss. A remove that times
+  out kills it and deletes it again, else answers with an error and keeps
+  the home.
 
 ## 0.1.0
 
