@@ -63,6 +63,13 @@ struct Arguments {
                 }
             } else {
                 positional.append(a)
+                // `machine simctl|adb <id> …`: the rest is the device
+                // command's, its own options too (`am start --es key value`).
+                if positional.count == 3, positional[0] == "machine", ["simctl", "adb"].contains(positional[1]) {
+                    rest = Array(arguments[(i + 1)...])
+                    if rest.first == "--" { rest.removeFirst() }
+                    break
+                }
             }
             i += 1
         }

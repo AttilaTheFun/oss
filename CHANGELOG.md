@@ -10,6 +10,9 @@
   `x`, not `root/x`; a path outside /root is refused.
 - `oss container list` shows each container's labels and takes
   `--label key=value` to list only those with it.
+- `oss machine adb|simctl <id> …` passes everything after the lease to the
+  device command as written: its options were taken for oss's own
+  (`am start --es key value` lost its extras).
 
 ## 0.1.0
 
