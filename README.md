@@ -90,6 +90,14 @@ A container's home (`/root`) is a directory on the server,
 token, the server's template files (below), the files it was started with
 as `secretFiles`, and oss's own `~/.oss`.
 
+Keep big trees out of the home: a build's output, a package cache, a
+checkout you build from. The home is shared into the container, and the
+server holds a file handle for every file the container has looked at
+there. A Bazel tree in a home (hundreds of thousands of files) ran macOS
+out of file handles. Put such trees on the container's own disk (`/work`,
+`/var/cache`), which lasts as long as the container; the home is for what
+must outlive it or cross to the server.
+
 **Its own token.** Every container has an oss token of its own, in its
 home with the server's address (`~/.config/oss/token` and `client.json`):
 `oss` (or anything that speaks the API) inside it leases machines as the

@@ -20,6 +20,9 @@
   deleted under it, and left running unknown to oss. A remove that times
   out kills it and deletes it again, else answers with an error and keeps
   the home.
+- The README says to keep big trees (a build's output) on a container's
+  own disk, not in its home: the server holds a file handle for every file
+  the container looks at in the home.
 
 ## 0.1.0
 
