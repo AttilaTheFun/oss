@@ -78,16 +78,26 @@ public struct OSSError: Error, Sendable, CustomStringConvertible {
 public struct OSSClient: Sendable {
     /// The server's address in use (`http://host:7480`).
     public let server: URL
-    let token: String
+    /// The token, asked for on every request (so a changed one takes effect at once).
+    let token: @Sendable () async throws -> String
     let transport: any OSSTransport
+    /// Seconds a request may take, but a long poll's (its wait and a minute more).
+    public var timeout: TimeInterval
 
     /// The server's host: SSH, VNC and adb to a lease go to it too.
     public var host: String { server.host ?? "127.0.0.1" }
 
-    public init(server: URL, token: String, transport: any OSSTransport = URLSessionTransport()) {
+    public init(server: URL, token: String, transport: any OSSTransport = URLSessionTransport(), timeout: TimeInterval = 120) {
+        self.init(server: server, token: { token }, transport: transport, timeout: timeout)
+    }
+
+    /// A client whose token comes from `token` on every request (a secret store, say).
+    public init(server: URL, token: @escaping @Sendable () async throws -> String, transport: any OSSTransport = URLSessionTransport(),
+                timeout: TimeInterval = 120) {
         self.server = server
         self.token = token
         self.transport = transport
+        self.timeout = timeout
     }
 
     /// The first of `servers` that answers as an oss server (nearest first:
@@ -105,16 +115,18 @@ public struct OSSClient: Sendable {
 
     // MARK: Requests
 
-    /// A request with this client's token; a status but 2xx thrown with the server's message.
+    /// A request with this client's token; a status but 2xx thrown with the
+    /// server's message. `timeout`: this one's, else the client's.
     public func send(_ method: String, _ path: String, query: [String: String] = [:], body: Data? = nil,
-                     contentType: String = "application/json", timeout: TimeInterval = 900) async throws -> OSSHTTPResponse {
+                     contentType: String = "application/json", timeout: TimeInterval? = nil) async throws -> OSSHTTPResponse {
         var components = URLComponents(url: server, resolvingAgainstBaseURL: false)!
         components.percentEncodedPath = (components.percentEncodedPath.hasSuffix("/") ? String(components.percentEncodedPath.dropLast()) : components.percentEncodedPath)
             + path
         if !query.isEmpty { components.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) } }
-        var headers = ["Authorization": "Bearer \(token)"]
+        var headers = ["Authorization": "Bearer \(try await token())"]
         if body != nil { headers["Content-Type"] = contentType }
-        let answer = try await transport.send(OSSHTTPRequest(method: method, url: components.url!, headers: headers, body: body, timeout: timeout))
+        let answer = try await transport.send(OSSHTTPRequest(method: method, url: components.url!, headers: headers, body: body,
+                                                             timeout: timeout ?? self.timeout))
         guard (200..<300).contains(answer.status) else {
             let message = (try? JSONDecoder.oss.decode(APIError.self, from: answer.body))?.error ?? String(decoding: answer.body, as: UTF8.self)
             throw OSSError(status: answer.status, message: message)

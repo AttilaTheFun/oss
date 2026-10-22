@@ -158,9 +158,14 @@ while true {
 try await client.remove(container: container.id)
 ```
 
-Requests go through URLSession; pass another `OSSTransport` where that
-can't reach the server (macOS lets only Apple's own tools reach the LAN
-without the user's leave, so the CLI goes through `curl`).
+Requests go through URLSession; pass another `OSSTransport` (one
+method: a request in, status, headers and body out) where that can't
+reach the server, or to fake the server in tests (macOS lets only Apple's
+own tools reach the LAN without the user's leave, so the CLI goes through
+`curl`). The token can be a closure, asked on every request
+(`OSSClient(server:token: { try await secrets.ossToken() })`), and
+`timeout` bounds every request but a long poll (its wait and a minute
+more). Errors are `OSSError`, with the server's own message.
 
 ## The API
 
