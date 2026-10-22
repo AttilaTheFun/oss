@@ -1,0 +1,8 @@
+# OS installers and restore images: downloaded, never committed.
+*.iso
+*.dmg
+*.ipsw
+# Builds.
+.build/
+.swiftpm/
+/bin/
