@@ -65,8 +65,9 @@ struct ServerConfig: Codable, Sendable {
     var androidAVDHome: String = "\(Paths.share)/avd"
     /// The image a container runs when it names none: Ubuntu as it comes.
     var containerImage: String = "docker.io/library/ubuntu:24.04"
-    var containerCPUs: Int = 2
-    var containerMemory: String = "4g"
+    /// A container's size when it names none: the VMs' (6 cores, 16 GB).
+    var containerCPUs: Int = 6
+    var containerMemory: String = "16g"
 
     init() {}
 

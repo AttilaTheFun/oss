@@ -13,6 +13,8 @@
 - `oss machine adb|simctl <id> …` passes everything after the lease to the
   device command as written: its options were taken for oss's own
   (`am start --es key value` lost its extras).
+- A container is the VMs' size by default: 6 CPUs and 16 GB (it was 2 and
+  4 GB, which made a Swift build crawl).
 
 ## 0.1.0
 
