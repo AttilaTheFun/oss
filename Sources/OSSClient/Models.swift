@@ -136,8 +136,10 @@ public enum ContainerState: String, Codable, Sendable {
 /// A Linux container of its own (Apple's container on a Mac, Podman or
 /// Docker on Linux): any image, kept running by oss until it is stopped,
 /// archived or removed, with commands run in it as processes. Its home
-/// (`/root`) is a directory on the server, so it outlives the container:
-/// archived as a tarball, restored into a new one.
+/// (`/root`) is on its own disk, as the rest of it is: nothing of the
+/// server's is shared into it but oss's own small folder (`/oss`: the
+/// processes' output, files on their way in or out). Archived, its home is
+/// a tarball on the server, restored into a new container.
 public struct Container: Codable, Sendable {
     public var id: String
     public var holder: String
@@ -147,8 +149,6 @@ public struct Container: Codable, Sendable {
     public var name: String
     /// Its image, when not the server's default.
     public var image: String?
-    /// Its home on the server, while it has a container.
-    public var home: String?
     /// The archive, once archived: restarting restores it into a new container.
     public var archive: String?
     public var error: String?
@@ -332,7 +332,7 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
 
 public enum OSS {
     /// This build's version, and the API level it speaks.
-    public static let version = "0.1.1"
+    public static let version = "0.2.0"
     public static let apiLevel = 1
     public static let features = ["machines", "screenshots", "containers", "containers.processes", "containers.files",
                                   "containers.files.follow", "containers.labels", "containers.tokens"]

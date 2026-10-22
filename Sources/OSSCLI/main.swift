@@ -145,7 +145,7 @@ func resolveLease(_ argument: String?, _ client: OSSClient) async throws -> Leas
 
 func describe(_ container: Container) -> String {
     var lines = ["container \(container.id): \(container.state.rawValue) (\(container.image ?? "the default image"), \(container.name))"]
-    if let home = container.home { lines.append("  home: \(home)  (mounted at /root)") }
+    if container.state != .archived { lines.append("  home: /root, on its own disk; oss's folder at /oss") }
     if let labels = container.labels, !labels.isEmpty {
         lines.append("  labels: " + labels.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))
     }
@@ -473,7 +473,7 @@ do {
             for container in try await front.list() {
                 if let (key, value) = wanted, container.labels?[key] != value { continue }
                 let labels = (container.labels ?? [:]).sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
-                print("\(container.id)  \(container.state.rawValue)  \(container.image ?? "-")  \(container.holder)  \(container.archive ?? container.home ?? "")"
+                print("\(container.id)  \(container.state.rawValue)  \(container.image ?? "-")  \(container.holder)  \(container.archive ?? "")"
                       + (labels.isEmpty ? "" : "  \(labels)"))
             }
         case "shell", "logs":

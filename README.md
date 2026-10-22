@@ -17,7 +17,8 @@ for automation, for anything that needs a machine of its own for a while:
   [`container`](https://github.com/apple/container) on a Mac; Podman or
   Docker when oss runs on Linux), with commands run in them as processes
   whose input a client writes and whose output it reads from any offset,
-  their home kept on the server, archived and restored at will.
+  bare: nothing of the server's shared in but oss's own small folder;
+  archived and restored at will.
 
 One binary, `oss`, is the server (`oss serve`) and the command line. The
 command line calls the server's HTTP API, which programs can call too:
@@ -84,19 +85,26 @@ writes to, its output and errors files on the server that the client
 reads from any offset, while the process runs on its own; the client (or
 the server) can go away and pick up where it left off.
 
-A container's home (`/root`) is a directory on the server,
-`~/.local/state/oss/containers/<id>/`. Archiving tars it to
-`~/.local/state/oss/archives/<id>.tar.gz`, leaving out the container's own
-token, the server's template files (below), the files it was started with
-as `secretFiles`, and oss's own `~/.oss`.
+A container's home (`/root`) is on its own disk, as the rest of it is: it
+lasts while the container does (stopped and started again included).
+Nothing of the server's is shared into it but its own folder,
+`~/.local/state/oss/containers/<id>/` on the server and `/oss` in the
+container: oss's runner, its processes' output, and files on their way in
+or out, one at a time. Archiving has the container tar its home into that
+folder, moved to `~/.local/state/oss/archives/<id>.tar.gz`, leaving out the
+container's own token, the server's template files (below) and the files it
+was started with as `secretFiles`; a restore has a new container unpack it.
+Its files (`cp`, the files API) are read and written by the container, so
+it must be running.
 
-Keep big trees out of the home: a build's output, a package cache, a
-checkout you build from. The home is shared into the container, and the
-server holds a file handle for every file the container has looked at
-there. A Bazel tree in a home (hundreds of thousands of files) ran macOS
-out of file handles. Put such trees on the container's own disk (`/work`,
-`/var/cache`), which lasts as long as the container; the home is for what
-must outlive it or cross to the server.
+A shared folder costs the server a file handle for every file the
+container looks at in it: a home shared whole (oss before 0.2), holding a
+Bazel tree, ran macOS out of them. So the folder holds oss's few files and
+nothing else; don't put files there.
+
+An image needs `/bin/sh`; archives and directories in or out need `tar`,
+the template's files `find`, following a file `wc`, `tail` and `head`
+(every ordinary Linux image has them, BusyBox's included).
 
 **Its own token.** Every container has an oss token of its own, in its
 home with the server's address (`~/.config/oss/token` and `client.json`):
@@ -196,10 +204,10 @@ Bodies are JSON; errors are `{"error": "…"}`.
 | `POST /v1/machines/<id>/simctl` or `/adb` `{"arguments": [...]}` | `simctl` against the simulator / `adb` against the emulator: `{"status", "output", "error"}` |
 | `GET /v1/machines/<id>/screenshot` | a PNG of its screen |
 | `POST /v1/containers` `{"holder"?, "image"?, "archive"?, "environment"?, "secretFiles"?, "labels"?, "cpus"?, "memory"?}` | a container (its `labels`: a client's own names for it; `cpus`/`memory` ("4g")/`image`: else the server's defaults) |
-| `GET /v1/containers[?label=key=value]`, `GET /v1/containers/<id>` | containers (those labelled so): state, home, archive, labels, `hostAddress` |
+| `GET /v1/containers[?label=key=value]`, `GET /v1/containers/<id>` | containers (those labelled so): state, archive, labels, `hostAddress` |
 | `POST /v1/containers/<id>/stop`, `/archive`; `/restart` `{"environment"?}` | as the commands; stopping and archiving send its running processes SIGTERM first and give them 10 s |
 | `DELETE /v1/containers/<id>` | removed |
-| `GET /v1/containers/<id>/files/<path>` | a file in its home (relative to `/root`); a directory as a gzipped tarball (`OSS-Kind: directory`) |
+| `GET /v1/containers/<id>/files/<path>` | a file in its home (relative to `/root`, or absolute under it), read by the running container; a directory as a gzipped tarball (`OSS-Kind: directory`) |
 | `GET …/files/<path>?from=N&wait=S&limit=N` | a file followed as it grows: its bytes from byte N, waiting up to S seconds (at most 60) while there's nothing new; `OSS-Size` (its length now: below N, it shrank or was replaced) and `OSS-Offset`; 404 until it exists |
 | `PUT /v1/containers/<id>/files/<path>` (raw body) `?unpack=1` | a file written; with `unpack`, a gzipped tarball unpacked into that directory |
 | `DELETE /v1/containers/<id>/files/<path>` | removed |
@@ -385,15 +393,15 @@ programs go in `~/.config/oss/images/<image>.env` and `.home/` (above).
   holds every request the same way.
 - **Ubuntu hangs on a reboot from inside** under UTM; leases are never
   rebooted. A clone that doesn't come up is made again, once.
-- **Processes in a container** run under oss's runner (`~/.oss/run`,
-  written into every home, so any image works), started with the
-  container tool's detached exec: the command's input is a FIFO in the
+- **Processes in a container** run under oss's runner (`/oss/run`,
+  written into every container's folder, so any image works), started with
+  the container tool's detached exec: the command's input is a FIFO in the
   container, held open by a placeholder writer until the client closes it
   (a write is one `exec … cat`, ~60 ms); its output, errors, pid and exit
-  status are files in the home, which the server reads directly. A symlink
-  the container makes is resolved as the container sees it (`/root` is
-  the home): one that leads out of the home is refused, not followed onto
-  the server's own files.
+  status are files in the folder, which the server reads directly, and
+  which outlive the server's restarts. A home's files are read and written
+  by the container itself (`exec` through the folder), so its symlinks can
+  only lead within it; following a growing file is one `exec` per wait.
 - **Containers can't resolve `.local` names** (no mDNS inside); other
   computers are reached as from the server (its LAN and VPN, through its
   NAT), by address or a name its DNS answers.

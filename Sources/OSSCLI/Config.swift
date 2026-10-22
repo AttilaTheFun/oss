@@ -23,7 +23,8 @@ enum Paths {
     static let imageSettings = "\(config)/images"
     static let leases = "\(state)/leases.json"
     static let containers = "\(state)/containers.json"
-    static let containerHomes = "\(state)/containers"
+    /// Each container's own folder, shared into it at /oss (its home is not).
+    static let containerFolders = "\(state)/containers"
     static let archives = "\(state)/archives"
     /// UTM's VM bases as last listed.
     static let vmBases = "\(state)/vm-bases.json"
