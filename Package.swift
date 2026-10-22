@@ -3,7 +3,9 @@ import PackageDescription
 
 let package = Package(
     name: "oss",
-    platforms: [.macOS(.v15), .iOS(.v17)],
+    // OSSClient's floor (async URLSession, Task.sleep(for:)); the server and
+    // its CLI run on macOS 15 and Linux.
+    platforms: [.macOS(.v13), .iOS(.v16), .tvOS(.v16), .watchOS(.v9), .visionOS(.v1)],
     products: [
         // The API's types and an async client for it: what an application
         // that uses an oss server depends on.

@@ -12,5 +12,7 @@ The first public version. API level 1.
   and restores, a token of their own for leasing machines, settings for
   every container and per image.
 - `GET /v1/capabilities`: the version, API level and features.
-- `OSSClient`: the API's types and an async Swift client.
+- `OSSClient`: the API's types and an async Swift client (macOS 13, iOS 16,
+  Linux), over any transport (URLSession by default), its token asked on
+  every request, a timeout per client.
 - `oss mcp`: the machine commands as Model Context Protocol tools.
