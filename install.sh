@@ -10,7 +10,9 @@ cd "$(dirname "$0")"
 swift build -c release
 mkdir -p ~/.local/bin
 cp .build/release/oss ~/.local/bin/oss.new
-identity="${OSS_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | grep -v REVOKED | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)}"
+# The first Apple Development identity, by its SHA-1: two certificates can
+# share a name (a renewed one), and codesign refuses an ambiguous name.
+identity="${OSS_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | grep -v REVOKED | awk '/"Apple Development: / {print $2; exit}')}"
 if [ -n "$identity" ]; then
   codesign --force --sign "$identity" --identifier oss ~/.local/bin/oss.new
 else

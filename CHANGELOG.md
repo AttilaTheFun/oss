@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- install.sh signs with the first Apple Development identity by its SHA-1:
+  a keychain with two of the same name (a renewed certificate) made
+  `codesign` refuse the name.
+
 ## 0.2.0
 
 - **Containers are bare.** A container's home (`/root`) is on its own disk,
