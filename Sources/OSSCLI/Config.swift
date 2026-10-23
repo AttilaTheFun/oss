@@ -6,7 +6,10 @@ import OSSClient
 /// lease's known_hosts on a client) and `~/.local/share/oss` (the Android
 /// SDK and AVDs it sets up).
 enum Paths {
-    static let home = FileManager.default.homeDirectoryForCurrentUser.path
+    /// The user's home, or `OSS_HOME`: a second oss with files of its own
+    /// (its settings, token and state), to test one beside a running server
+    /// (`oss container … --local`, which runs containers in-process).
+    static let home = ProcessInfo.processInfo.environment["OSS_HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
     static let config = "\(home)/.config/oss"
     static let state = "\(home)/.local/state/oss"
     static let share = "\(home)/.local/share/oss"
@@ -23,7 +26,8 @@ enum Paths {
     static let imageSettings = "\(config)/images"
     static let leases = "\(state)/leases.json"
     static let containers = "\(state)/containers.json"
-    static let containerHomes = "\(state)/containers"
+    /// Each container's own folder, shared into it at /oss (its home is not).
+    static let containerFolders = "\(state)/containers"
     static let archives = "\(state)/archives"
     /// UTM's VM bases as last listed.
     static let vmBases = "\(state)/vm-bases.json"

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.0
+
+- **Containers are bare.** A container's home (`/root`) is on its own disk,
+  not a folder of the server's shared in: only the container's own small
+  folder is (`/oss`: oss's runner, its processes' output, files on their
+  way in or out). A shared folder costs the server a file handle for every
+  file the container looks at in it, and a Bazel tree in a shared home ran
+  macOS out of them. Files in and out (`cp`, the files API), the template
+  files, the container's token, archives and restores pass through that
+  folder, read and written by the container: its files need it running,
+  and an image needs `tar` (and `find` for templates) besides `/bin/sh`.
+- `OSS_HOME` gives an oss files of its own (settings, token, state): a
+  second one tested beside a running server (`oss container … --local`).
+- `oss container cp` of a directory from a Mac carries no AppleDouble
+  files (`._name`, for extended attributes).
+- `Container.home` is gone (it was the server's folder). Containers made
+  by 0.1 still mount that folder as their home, and 0.2 can't archive
+  them: archive them with 0.1 before upgrading to keep a home (0.2 restores
+  the archive into a bare container), or remove them.
+
 ## 0.1.1
 
 - `oss … --help` (or `-h`) prints the usage and does nothing else: a

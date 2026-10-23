@@ -71,10 +71,12 @@ oss container list | shell <id> | logs <id>
 A container runs its image (Ubuntu 24.04 unless named) with oss's own
 keep-alive; whatever you run in it is a process (`exec`, or the API's
 processes, whose output a client reads from any offset). Its home (`/root`)
-is a directory on the server: `archive` writes it as a tarball (the path
-is printed) and deletes the container; `restart` restores an archived one
-into a new container; `start --from=<archive>` brings a home in from any
-archive.
+is on its own disk; only oss's small folder is shared in (`/oss`), and
+nothing else may be: a shared folder costs the server a file handle per
+file the container reads there. `archive` has the container tar its home
+(the path is printed) and deletes the container; `restart` restores an
+archived one into a new container; `start --from=<archive>` brings a home
+in from any archive.
 
 **If you are running inside an oss container**: `~/.config/oss` holds
 the container's own token and the server's address, so `oss` (if the
@@ -95,8 +97,8 @@ SSH, VNC and adb too. With no `client.json` it tries `127.0.0.1` only.
 - `oss doctor` says whether the server can drive UTM, simulators,
   emulators and containers. The server: `launchctl kickstart -k
   gui/$(id -u)/oss.server`; its log `~/Library/Logs/oss.log`; its state
-  `~/.local/state/oss/` (leases.json, containers.json, the homes and
-  archives). A restart keeps running leases and containers, and deletes
+  `~/.local/state/oss/` (leases.json, containers.json, the containers'
+  folders and archives). A restart keeps running leases and containers, and deletes
   clones nobody holds.
 - After changing oss: `./install.sh --service`, and copy the binary to the
   clients that use it. A change to the API raises `OSS.apiLevel` and goes

@@ -30,13 +30,16 @@ struct ContainerRuntime: Sendable {
         return status
     }
 
-    /// A detached container with its home at /root, kept running by oss's
-    /// own command: the image's entrypoint set aside for a shell that waits
-    /// until it's told to stop (all an image needs is /bin/sh).
-    func create(name: String, image: String, home: String, environmentFile: String?, variables: [String: String],
+    /// A detached container, kept running by oss's own command: the image's
+    /// entrypoint set aside for a shell that waits until it's told to stop.
+    /// Its home is its own; only `folder` (oss's: the runner, processes'
+    /// output, files in transit) is shared into it, at /oss. A shared folder
+    /// costs the server a file handle for every file the container looks at
+    /// in it, so nothing big or many-filed goes there.
+    func create(name: String, image: String, folder: String, environmentFile: String?, variables: [String: String],
                 cpus: Int, memory: String) async throws {
         var arguments = ["run", "-d", "--name", name, self.name == "container" ? "-c" : "--cpus", String(cpus), "-m", memory,
-                         "-v", "\(home):/root"]
+                         "-v", "\(folder):/oss"]
         // Docker has no name for the host unless asked; Podman's is host.containers.internal.
         if self.name == "docker" { arguments += ["--add-host", "host.docker.internal:host-gateway"] }
         if let environmentFile { arguments += ["--env-file", environmentFile] }
@@ -115,14 +118,16 @@ struct ContainerRuntime: Sendable {
     func interactive(_ arguments: [String]) throws -> Int32 { try Shell.passthrough(path, arguments) }
 }
 
-/// Containers, each `oss-container-<id>`, whose home is a directory on the
-/// host (`~/.local/state/oss/containers/<id>`): stopped and restarted as
-/// is, archived as a tarball of that directory (the container deleted), and
-/// restarted from the archive into a new one.
+/// Containers, each `oss-container-<id>`, whose home is on its own disk:
+/// stopped and restarted as is, archived as a tarball of its home (the
+/// container deleted), and restarted from the archive into a new one. Of
+/// the server's, only the container's own folder
+/// (`~/.local/state/oss/containers/<id>`) is shared into it, at /oss; files
+/// in and out pass through it one at a time, made and read by the container.
 ///
 /// What runs in one runs as a process: each in the container on its own
-/// (oss's runner, `~/.oss/run`), its input a FIFO in the container, its
-/// output and errors files in the home (`~/.oss/processes/<id>/`) read from
+/// (oss's runner, `/oss/run`), its input a FIFO in the container, its
+/// output and errors files in the folder (`/oss/processes/<id>/`) read from
 /// any offset.
 actor ContainerManager {
     let config: ServerConfig
@@ -208,23 +213,26 @@ actor ContainerManager {
         return file
     }
 
+    /// The container's own folder on the server, shared into it at /oss.
+    private static func folder(_ id: String) -> String { "\(Paths.containerFolders)/\(id)" }
+
     /// The container for one: its variables (the request's) in an env file
-    /// deleted once it's made, its home prepared.
-    private func createContainer(_ container: Container, home: String, environment: [String: String]?) async throws {
+    /// deleted once it's made, its folder (only the server's user can read
+    /// it) with the runner in it.
+    private func createContainer(_ container: Container, environment: [String: String]?) async throws {
         let runtime = try requireRuntime()
         let file = try Self.environmentFile(environment)
         defer { if let file { try? FileManager.default.removeItem(atPath: file) } }
-        try Self.writeRunner(home)
-        Self.overlayTemplate(home, image: container.image ?? config.containerImage)
-        try await runtime.create(name: container.name, image: container.image ?? config.containerImage, home: home, environmentFile: file,
+        let folder = Self.folder(container.id)
+        Paths.ensure(folder)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder)
+        try Self.writeRunner(folder)
+        try await runtime.create(name: container.name, image: container.image ?? config.containerImage, folder: folder, environmentFile: file,
                                  variables: ["OSS_HOLDER": "container-\(container.id)"],
                                  cpus: container.cpus ?? config.containerCPUs, memory: container.memory ?? config.containerMemory)
     }
 
-    /// The server's home template (~/.config/oss/container-home) copied in,
-    /// file by file, where the home lacks it: archives leave these out, and a
-    /// restore takes them again; what the container changed of its own stays.
-    /// The template's files, by their path in a home: never archived (a
+    /// The templates' files, by their path in a home: never archived (a
     /// restore copies them in again).
     private static func templateFiles(image: String) -> [String] {
         var files: [String] = []
@@ -240,11 +248,25 @@ actor ContainerManager {
         return files
     }
 
-    private static func overlayTemplate(_ home: String, image: String) {
-        for template in templates(image: image) {
+    /// The home made ready once its container runs: an archive's files
+    /// unpacked into it (a restore); the templates' files (the image's, then
+    /// the server's) copied in where it lacks them, so what the container
+    /// changed of its own stays; and its oss settings written (its token, and
+    /// this server as the container reaches it), so `oss` and `oss mcp` there
+    /// lease machines. They pass through the folder (/oss/incoming), which
+    /// the container empties.
+    private func prepareHome(_ id: String, archive: String? = nil) async throws {
+        let runtime = try requireRuntime()
+        let container = try require(id)
+        let incoming = "\(Self.folder(id))/incoming"
+        try? FileManager.default.removeItem(atPath: incoming)
+        Paths.ensure(incoming)
+        defer { try? FileManager.default.removeItem(atPath: incoming) }
+        if let archive { try FileManager.default.copyItem(atPath: archive, toPath: "\(incoming)/home.tar.gz") }
+        for template in Self.templates(image: container.image ?? config.containerImage) {
             guard let enumerator = FileManager.default.enumerator(atPath: template) else { continue }
             while let relative = enumerator.nextObject() as? String {
-                let source = "\(template)/\(relative)", target = "\(home)/\(relative)"
+                let source = "\(template)/\(relative)", target = "\(incoming)/template/\(relative)"
                 var directory: ObjCBool = false
                 guard FileManager.default.fileExists(atPath: source, isDirectory: &directory), !directory.boolValue,
                       (try? FileManager.default.attributesOfItem(atPath: target)) == nil else { continue }
@@ -252,19 +274,33 @@ actor ContainerManager {
                 try? FileManager.default.copyItem(atPath: source, toPath: target)
             }
         }
-    }
-
-    /// The container's oss settings in its home: its token, and this server
-    /// as its container reaches it, so `oss` and `oss mcp` there lease machines.
-    private func writeClientSettings(_ id: String) {
-        guard let container = containers[id], let home = container.home, let token = container.token,
-              let host = container.hostAddress else { return }
-        let directory = "\(home)/.config/oss"
-        Paths.ensure(directory)
-        FileManager.default.createFile(atPath: "\(directory)/token", contents: Data("\(token)\n".utf8),
-                                       attributes: [.posixPermissions: 0o600])
-        let servers = ["servers": ["http://\(host):\(config.port)"]]
-        if let data = try? JSONEncoder().encode(servers) { FileManager.default.createFile(atPath: "\(directory)/client.json", contents: data) }
+        if let token = container.token, let host = container.hostAddress {
+            Paths.ensure("\(incoming)/settings")
+            FileManager.default.createFile(atPath: "\(incoming)/settings/token", contents: Data("\(token)\n".utf8),
+                                           attributes: [.posixPermissions: 0o600])
+            let servers = ["servers": ["http://\(host):\(config.port)"]]
+            if let data = try? JSONEncoder().encode(servers) {
+                FileManager.default.createFile(atPath: "\(incoming)/settings/client.json", contents: data)
+            }
+        }
+        let script = """
+            set -e
+            cd /oss/incoming
+            if [ -f home.tar.gz ]; then tar -xzf home.tar.gz -C /root; fi
+            if [ -d template ]; then
+              (cd template && find . -type f) | while IFS= read -r f; do
+                t="/root/${f#./}"
+                [ -e "$t" ] || { mkdir -p "$(dirname "$t")"; cp -p "template/$f" "$t"; }
+              done
+            fi
+            if [ -d settings ]; then
+              mkdir -p /root/.config/oss
+              cp settings/* /root/.config/oss/
+              chmod 600 /root/.config/oss/token
+            fi
+            """
+        let result = try await runtime.exec(container.name, ["/bin/sh", "-c", script], timeout: 3600)
+        guard result.ok else { throw APIError(error: "preparing container \(id)'s home: \(result.error)\(result.output)") }
     }
 
     /// The container a scoped token belongs to (compared in constant time).
@@ -300,21 +336,18 @@ actor ContainerManager {
         container.cpus = request.cpus
         container.memory = request.memory
         container.token = Random.hex(24)
-        let home = "\(Paths.containerHomes)/\(id)"
-        Paths.ensure(home)
-        if let archive { try await unpack(archive, into: home) }
-        container.home = home
+        if let archive, !FileManager.default.fileExists(atPath: archive) { throw APIError(error: "no archive \(archive)") }
         containers[id] = container
         save()
         do {
-            try await createContainer(container, home: home, environment: request.environment)
+            try await createContainer(container, environment: request.environment)
             containers[id]?.state = .running
             containers[id]?.hostAddress = await runtime.hostAddress(container.name)
-            writeClientSettings(id)
+            try await prepareHome(id, archive: archive)
         } catch {
             // A container that didn't start leaves nothing behind: the answer says why.
             await runtime.remove(container.name)
-            try? FileManager.default.removeItem(atPath: home)
+            try? FileManager.default.removeItem(atPath: Self.folder(id))
             containers[id] = nil
             save()
             log("container \(id): didn't start: \(error)")
@@ -332,7 +365,7 @@ actor ContainerManager {
               let running = try? processes(container.id).filter({ $0.state == .running }), !running.isEmpty else { return }
         for process in running {
             _ = try? await runtime.exec(container.name, ["/bin/sh", "-c", "kill -s TERM \"$(cat \"$1\")\"", "sh",
-                                                             "/root/.oss/processes/\(process.id)/pid"], timeout: 30)
+                                                             "/oss/processes/\(process.id)/pid"], timeout: 30)
         }
         let deadline = Date().addingTimeInterval(grace)
         while Date() < deadline,
@@ -357,91 +390,91 @@ actor ContainerManager {
     func restart(_ id: String, environment: [String: String]? = nil) async throws -> Container {
         let runtime = try requireRuntime()
         var container = try require(id)
+        var restoring: String?
         switch container.state {
         case .stopped, .running:
             if container.state == .running { await runtime.stop(container.name) }
             markLost(container)
-            if let home = container.home { try Self.writeRunner(home) }
+            try Self.writeRunner(Self.folder(id))
             try await runtime.start(container.name)
         case .archived:
             guard let archive = container.archive, FileManager.default.fileExists(atPath: archive) else {
                 throw APIError(error: "container \(id)'s archive is gone")
             }
-            let home = "\(Paths.containerHomes)/\(id)"
-            Paths.ensure(home)
-            try await unpack(archive, into: home)
-            container.home = home
+            if container.token == nil { container.token = Random.hex(24) }
             containers[id] = container
-            try await createContainer(container, home: home, environment: environment)
+            try await createContainer(container, environment: environment)
+            restoring = archive
         default:
             throw APIError(error: "container \(id) is \(container.state.rawValue)")
         }
         containers[id]?.state = .running
         containers[id]?.hostAddress = await runtime.hostAddress(container.name)
         if containers[id]?.token == nil { containers[id]?.token = Random.hex(24) }
-        writeClientSettings(id)
         save()
+        try await prepareHome(id, archive: restoring)
         return containers[id]!
     }
 
     /// The container's home as a tarball (its path is the answer's `archive`),
-    /// its container and directory deleted. Left out: oss's own files
-    /// (`~/.oss`: the runner, processes' output) and the secrets.
+    /// its container and folder deleted. The container packs it (started
+    /// again if it was stopped) into its folder; left out: its token, the
+    /// templates' files and the secrets (a restore writes the first two again).
     func archive(_ id: String) async throws -> Container {
         let runtime = try requireRuntime()
-        guard let container = containers[id], let home = container.home, container.state != .archived else {
+        guard let container = containers[id], container.state == .running || container.state == .stopped else {
             throw APIError(error: "no container \(id) to archive")
         }
+        if container.state == .stopped {
+            try Self.writeRunner(Self.folder(id))
+            try await runtime.start(container.name)
+        }
         await endProcesses(container)
-        await runtime.stop(container.name)
+        let excluded = Self.ownSecrets + Self.templateFiles(image: container.image ?? config.containerImage)
+            + (container.secretFiles ?? [])
+        // `./path`: the members are named from `.`, so a pattern so written
+        // matches at the home's root only (GNU tar and BusyBox's alike).
+        let packed = "\(Self.folder(id))/home.tar.gz"
+        let tar = try await runtime.exec(container.name, ["tar", "-czf", "/oss/home.tar.gz", "-C", "/root"]
+                                             + excluded.map { "--exclude=./\($0)" } + ["."], timeout: 3600)
+        guard tar.ok else {
+            try? FileManager.default.removeItem(atPath: packed)
+            if container.state == .stopped { await runtime.stop(container.name) }
+            throw APIError(error: "archiving \(id): \(tar.error)")
+        }
         Paths.ensure(Paths.archives)
         let archive = "\(Paths.archives)/\(id).tar.gz"
-        // Left out: oss's own files, its token, the server's template files and its secrets.
-        let excluded = [".oss"] + Self.ownSecrets + Self.templateFiles(image: container.image ?? config.containerImage)
-            + (container.secretFiles ?? [])
-        #if os(macOS)
-        // bsdtar: `^` anchors a pattern at the archive's root.
-        let exclusions = excluded.flatMap { ["--exclude", "^./\($0)"] }
-        #else
-        let exclusions = ["--anchored"] + excluded.flatMap { ["--exclude", "./\($0)"] }
-        #endif
-        let tar = try await Shell.run("/usr/bin/tar", ["-czf", archive, "-C", home] + exclusions + ["."], timeout: 3600)
-        guard tar.ok else { throw APIError(error: "archiving \(id): \(tar.error)") }
+        try? FileManager.default.removeItem(atPath: archive)
+        try FileManager.default.moveItem(atPath: packed, toPath: archive)
         guard await runtime.remove(container.name) else {
             try? FileManager.default.removeItem(atPath: archive)
             log("container \(id): \(runtime.name) didn't remove \(container.name); not archived")
-            throw APIError(error: "\(runtime.name) didn't remove \(container.name) (its guest may not be answering): not archived, its home kept")
+            throw APIError(error: "\(runtime.name) didn't remove \(container.name) (its guest may not be answering): not archived")
         }
-        try? FileManager.default.removeItem(atPath: home)
+        try? FileManager.default.removeItem(atPath: Self.folder(id))
         containers[id]?.state = .archived
         containers[id]?.archive = archive
-        containers[id]?.home = nil
         containers[id]?.hostAddress = nil
         save()
         log("container \(id): archived to \(archive)")
         return containers[id]!
     }
 
-    /// The container gone: its container, its directory and its archive.
+    /// The container gone: its container, its folder and its archive.
     func remove(_ id: String) async throws {
         let runtime = try requireRuntime()
         let container = try require(id)
-        // Its home goes only with it: a container still running on it
-        // (a remove that timed out) would have its files pulled away.
+        // Its folder goes only with it: a container still running (a remove
+        // that timed out) would have oss's files pulled away under it.
         guard await runtime.remove(container.name) else {
             log("container \(id): \(runtime.name) didn't remove \(container.name)")
-            throw APIError(error: "\(runtime.name) didn't remove \(container.name) (its guest may not be answering): its home is kept; try again")
+            throw APIError(error: "\(runtime.name) didn't remove \(container.name) (its guest may not be answering): try again")
         }
-        if let home = container.home { try? FileManager.default.removeItem(atPath: home) }
+        try? FileManager.default.removeItem(atPath: Self.folder(id))
         if let archive = container.archive { try? FileManager.default.removeItem(atPath: archive) }
         containers[id] = nil
         save()
         log("container \(id): removed")
-    }
-
-    private func unpack(_ archive: String, into home: String) async throws {
-        let tar = try await Shell.run("/usr/bin/tar", ["-xzf", archive, "-C", home], timeout: 3600)
-        guard tar.ok else { throw APIError(error: "restoring \(archive): \(tar.error)") }
     }
 
     /// After a restart: containers whose containers are gone are marked so.
@@ -457,15 +490,15 @@ actor ContainerManager {
 
     // MARK: Processes
 
-    /// oss's runner, written into each container's home (so any image works):
-    /// the command's input is a FIFO in the container, held open by a
+    /// oss's runner, written into each container's folder (so any image
+    /// works): the command's input is a FIFO in the container, held open by a
     /// placeholder writer until oss closes it; its output, errors, pid and
-    /// exit status are files in the home.
+    /// exit status are files in the folder.
     static let runner = """
         #!/bin/sh
         # oss's process runner: run <id> <command...>
         id="$1"; shift
-        dir="/root/.oss/processes/$id"; run="/tmp/oss/$id"
+        dir="/oss/processes/$id"; run="/tmp/oss/$id"
         mkdir -p "$dir" "$run"
         mkfifo "$run/in"
         tail -f /dev/null > "$run/in" &
@@ -479,9 +512,9 @@ actor ContainerManager {
 
         """
 
-    private static func writeRunner(_ home: String) throws {
-        Paths.ensure("\(home)/.oss/processes")
-        try Data(runner.utf8).write(to: URL(fileURLWithPath: "\(home)/.oss/run"))
+    private static func writeRunner(_ folder: String) throws {
+        Paths.ensure("\(folder)/processes")
+        try Data(runner.utf8).write(to: URL(fileURLWithPath: "\(folder)/run"))
     }
 
     private struct ProcessRecord: Codable {
@@ -490,14 +523,13 @@ actor ContainerManager {
         var started: Date
     }
 
-    private static func processDirectory(_ home: String, _ process: String) -> String { "\(home)/.oss/processes/\(process)" }
+    private static func processDirectory(_ id: String, _ process: String) -> String { "\(folder(id))/processes/\(process)" }
 
     /// Processes with no exit status whose container stopped: they're gone.
     private func markLost(_ container: Container) {
-        guard let home = container.home,
-              let ids = try? FileManager.default.contentsOfDirectory(atPath: "\(home)/.oss/processes") else { return }
+        guard let ids = try? FileManager.default.contentsOfDirectory(atPath: "\(Self.folder(container.id))/processes") else { return }
         for id in ids {
-            let directory = Self.processDirectory(home, id)
+            let directory = Self.processDirectory(container.id, id)
             if !FileManager.default.fileExists(atPath: "\(directory)/status") {
                 FileManager.default.createFile(atPath: "\(directory)/lost", contents: Data())
             }
@@ -507,8 +539,8 @@ actor ContainerManager {
     private func running(_ id: String) throws -> (Container, ContainerRuntime, String) {
         let runtime = try requireRuntime()
         let container = try require(id)
-        guard container.state == .running, let home = container.home else { throw APIError(error: "container \(id) isn't running") }
-        return (container, runtime, home)
+        guard container.state == .running else { throw APIError(error: "container \(id) isn't running") }
+        return (container, runtime, Self.folder(id))
     }
 
     private static func validProcessID(_ process: String) throws {
@@ -516,19 +548,19 @@ actor ContainerManager {
     }
 
     func startProcess(_ id: String, _ request: ProcessRequest) async throws -> ContainerProcess {
-        let (container, runtime, home) = try running(id)
+        let (container, runtime, folder) = try running(id)
         guard !request.command.isEmpty else { throw APIError(error: "no command") }
         let process = Random.hex(4)
-        let directory = Self.processDirectory(home, process)
+        let directory = Self.processDirectory(id, process)
         Paths.ensure(directory)
         try JSONEncoder.oss.encode(ProcessRecord(command: request.command, directory: request.directory, started: Date()))
             .write(to: URL(fileURLWithPath: "\(directory)/command.json"))
-        try Self.writeRunner(home)
+        try Self.writeRunner(folder)
         // The server's container.env, then the request's own variables over it.
         let image = container.image ?? config.containerImage
         let file = try Self.environmentFile(Self.serverEnvironment(image: image).merging(request.environment ?? [:]) { $1 })
         defer { if let file { try? FileManager.default.removeItem(atPath: file) } }
-        let result = try await runtime.exec(container.name, ["/bin/sh", "/root/.oss/run", process] + request.command,
+        let result = try await runtime.exec(container.name, ["/bin/sh", "/oss/run", process] + request.command,
                                             detach: true, environmentFile: file, directory: request.directory)
         guard result.ok else {
             try? FileManager.default.removeItem(atPath: directory)
@@ -539,16 +571,16 @@ actor ContainerManager {
 
     func processes(_ id: String) throws -> [ContainerProcess] {
         let container = try require(id)
-        guard let home = container.home,
-              let ids = try? FileManager.default.contentsOfDirectory(atPath: "\(home)/.oss/processes") else { return [] }
+        guard container.state != .archived,
+              let ids = try? FileManager.default.contentsOfDirectory(atPath: "\(Self.folder(id))/processes") else { return [] }
         return ids.compactMap { try? process(id, $0) }.sorted { $0.started < $1.started }
     }
 
     func process(_ id: String, _ process: String) throws -> ContainerProcess {
         try Self.validProcessID(process)
         let container = try require(id)
-        guard let home = container.home else { throw APIError(error: "container \(id) is archived") }
-        let directory = Self.processDirectory(home, process)
+        guard container.state != .archived else { throw APIError(error: "container \(id) is archived") }
+        let directory = Self.processDirectory(id, process)
         guard let data = FileManager.default.contents(atPath: "\(directory)/command.json"),
               let record = try? JSONDecoder.oss.decode(ProcessRecord.self, from: data) else {
             throw APIError(error: "no process \(process) in container \(id)")
@@ -575,8 +607,7 @@ actor ContainerManager {
         let deadline = Date().addingTimeInterval(min(max(wait, 0), 60))
         while true {
             let info = try self.process(id, process)
-            let home = try require(id).home!
-            let data = Self.read("\(Self.processDirectory(home, process))/\(stream)", from: offset, limit: limit)
+            let data = Self.read("\(Self.processDirectory(id, process))/\(stream)", from: offset, limit: limit)
             if !data.isEmpty || info.state != .running || Date() >= deadline { return (data, info) }
             try await Task.sleep(for: .milliseconds(100))
         }
@@ -632,7 +663,7 @@ actor ContainerManager {
         try Self.validProcessID(process)
         guard ["TERM", "KILL", "INT", "HUP"].contains(signal) else { throw APIError(error: "signal is TERM, KILL, INT or HUP") }
         let result = try await runtime.exec(container.name, ["/bin/sh", "-c", "kill -s \(signal) \"$(cat \"$1\")\"", "sh",
-                                                                "/root/.oss/processes/\(process)/pid"])
+                                                                "/oss/processes/\(process)/pid"])
         guard result.ok else { throw APIError(error: "signalling process \(process): \(result.error)") }
         return try self.process(id, process)
     }
@@ -645,111 +676,94 @@ actor ContainerManager {
         return parts
     }
 
-    /// A path in the container's home, relative to it or absolute as the
-    /// container sees it (/root is the home), its symlinks resolved likewise,
-    /// refused when one leads out of it: a symlink the container made can't
-    /// lead oss's own reads and writes elsewhere on the host.
-    private func resolve(_ id: String, _ path: String) throws -> String {
-        let container = try require(id)
-        guard let home = container.home else { throw APIError(error: "container \(id) is archived: restart it first") }
-        guard let root = Self.realPath(home) else { throw APIError(error: "container \(id)'s home is gone") }
-        let out = APIError(error: "\(path) leads out of the container's home")
-        var given = try Self.components(path)
+    /// A path in the container's home as the container names it: relative to
+    /// the home, or absolute under /root. The container reads and writes it
+    /// itself, so where its symlinks lead is its own business: nothing of the
+    /// server's is in reach.
+    private static func guestPath(_ path: String) throws -> String {
+        var parts = try components(path)
         if path.hasPrefix("/") {
-            guard given.first == "root" else { throw APIError(error: "\(path) is outside the container's home (/root)") }
-            given.removeFirst()
+            guard parts.first == "root" else { throw APIError(error: "\(path) is outside the container's home (/root)") }
+            parts.removeFirst()
         }
-        var resolved: [String] = [], pending = given, hops = 0
-        while !pending.isEmpty {
-            let part = pending.removeFirst()
-            if part.isEmpty || part == "." { continue }
-            if part == ".." {
-                guard !resolved.isEmpty else { throw out }
-                resolved.removeLast()
-                continue
-            }
-            let candidate = ([root] + resolved + [part]).joined(separator: "/")
-            guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: candidate) else {
-                resolved.append(part)
-                continue
-            }
-            hops += 1
-            guard hops <= 40 else { throw APIError(error: "\(path): too many symlinks") }
-            var parts = target.split(separator: "/").map(String.init)
-            if target.hasPrefix("/") {
-                guard parts.first == "root" else { throw out }
-                parts.removeFirst()
-                resolved = []
-            }
-            pending = parts + pending
-        }
-        return ([root] + resolved).joined(separator: "/")
+        return "/" + (["root"] + parts).joined(separator: "/")
     }
 
-    private static func realPath(_ path: String) -> String? {
-        guard let resolved = realpath(path, nil) else { return nil }
-        defer { free(resolved) }
-        return String(cString: resolved)
-    }
+    /// A name in the container's folder for one file on its way in or out.
+    private static func transfer() -> String { "transfer-\(Random.hex(8))" }
 
-    /// A file's bytes, or a directory as a gzipped tarball (`isDirectory`).
+    /// A file's bytes, or a directory as a gzipped tarball (`isDirectory`):
+    /// the container copies (or packs) it into its folder, read from there.
     func readFile(_ id: String, _ path: String) async throws -> (Data, isDirectory: Bool) {
-        let full = try resolve(id, path)
-        var directory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: full, isDirectory: &directory) else { throw APIError(error: "no file \(path)") }
-        if directory.boolValue {
-            let tar = try await Shell.run("/usr/bin/tar", ["-czf", "-", "-C", full, "."], timeout: 3600)
-            guard tar.ok else { throw APIError(error: "packing \(path): \(tar.error)") }
-            return (tar.data, true)
-        }
-        guard let data = FileManager.default.contents(atPath: full) else { throw APIError(error: "can't read \(path)") }
-        return (data, false)
+        let (container, runtime, folder) = try running(id)
+        let target = try Self.guestPath(path), name = Self.transfer()
+        defer { try? FileManager.default.removeItem(atPath: "\(folder)/\(name)") }
+        let result = try await runtime.exec(container.name, ["/bin/sh", "-c", """
+            if [ -d "$1" ]; then tar -czf "$2" -C "$1" . && echo directory
+            elif [ -e "$1" ]; then cp "$1" "$2" && echo file
+            else exit 3; fi
+            """, "sh", target, "/oss/\(name)"], timeout: 3600)
+        guard result.ok else { throw APIError(error: result.status == 3 ? "no file \(path)" : "reading \(path): \(result.error)") }
+        guard let data = FileManager.default.contents(atPath: "\(folder)/\(name)") else { throw APIError(error: "can't read \(path)") }
+        return (data, result.output.trimmingCharacters(in: .whitespacesAndNewlines) == "directory")
     }
 
     /// A file followed as it grows (a transcript being written): its bytes
     /// from `offset`, at most `limit`, waiting up to `wait` seconds while it
     /// has nothing past `offset`; with its size now. A size below `offset`
-    /// means it shrank or was replaced: read it again from 0.
+    /// means it shrank or was replaced: read it again from 0. The container
+    /// waits and reads (one call however long the wait), its answer the size
+    /// on a line, then the bytes.
     func followFile(_ id: String, _ path: String, from offset: Int, limit: Int, wait: Double) async throws -> (Data, size: Int) {
-        let deadline = Date().addingTimeInterval(min(max(wait, 0), 60))
-        while true {
-            let full = try resolve(id, path)
-            var directory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: full, isDirectory: &directory), !directory.boolValue else {
-                throw APIError(error: "no file \(path)")
-            }
-            let size = ((try? FileManager.default.attributesOfItem(atPath: full))?[.size] as? Int) ?? 0
-            if size > offset {
-                return (Self.read(full, from: offset, limit: limit), size)
-            }
-            if size < offset || Date() >= deadline { return (Data(), size) }
-            try await Task.sleep(for: .milliseconds(150))
+        let (container, runtime, _) = try running(id)
+        let target = try Self.guestPath(path)
+        let tries = Int(min(max(wait, 0), 60) / 0.15)
+        let result = try await runtime.exec(container.name, ["/bin/sh", "-c", """
+            [ -f "$1" ] || exit 3
+            i=0
+            while :; do
+              s=$(wc -c < "$1" | tr -d ' ')
+              [ "$s" -ne "$2" ] && break
+              [ "$i" -ge "$4" ] && break
+              i=$((i + 1)); sleep 0.15
+            done
+            echo "$s"
+            if [ "$s" -gt "$2" ]; then tail -c +$(($2 + 1)) "$1" | head -c "$3"; fi
+            """, "sh", target, String(max(offset, 0)), String(max(1, min(limit, 16 << 20))), String(tries)], timeout: 120)
+        guard result.ok else { throw APIError(error: result.status == 3 ? "no file \(path)" : "reading \(path): \(result.error)") }
+        guard let newline = result.data.firstIndex(of: UInt8(ascii: "\n")),
+              let size = Int(String(decoding: result.data[..<newline], as: UTF8.self)) else {
+            throw APIError(error: "reading \(path): no size")
         }
+        return (Data(result.data[result.data.index(after: newline)...]), size)
     }
 
-    /// A file written (its directories made), or with `unpack` a gzipped
-    /// tarball unpacked into the directory `path`.
+    /// A file written (its directories made; replaced whole, never seen half
+    /// written), or with `unpack` a gzipped tarball unpacked into the
+    /// directory `path`: the bytes go to the container's folder, the
+    /// container puts them in place.
     func writeFile(_ id: String, _ path: String, data: Data, unpack: Bool) async throws {
-        let full = try resolve(id, path)
-        if unpack {
-            Paths.ensure(full)
-            _ = try resolve(id, path)
-            let tar = try await Shell.run("/usr/bin/tar", ["-xzf", "-", "-C", full], input: data, timeout: 3600)
-            guard tar.ok else { throw APIError(error: "unpacking into \(path): \(tar.error)") }
-            return
+        let (container, runtime, folder) = try running(id)
+        let target = try Self.guestPath(path), name = Self.transfer()
+        if !unpack, try Self.components(path).isEmpty || target == "/root" { throw APIError(error: "which file?") }
+        guard FileManager.default.createFile(atPath: "\(folder)/\(name)", contents: data, attributes: [.posixPermissions: 0o600]) else {
+            throw APIError(error: "can't write \(path)")
         }
-        guard !(try Self.components(path)).isEmpty else { throw APIError(error: "which file?") }
-        Paths.ensure((full as NSString).deletingLastPathComponent)
-        _ = try resolve(id, path)
-        try data.write(to: URL(fileURLWithPath: full), options: .atomic)
+        defer { try? FileManager.default.removeItem(atPath: "\(folder)/\(name)") }
+        let script = unpack
+            ? "mkdir -p \"$1\" && tar -xzf \"$2\" -C \"$1\""
+            : "mkdir -p \"$(dirname \"$1\")\" && cp \"$2\" \"$1.oss-new\" && mv -f \"$1.oss-new\" \"$1\""
+        let result = try await runtime.exec(container.name, ["/bin/sh", "-c", script, "sh", target, "/oss/\(name)"], timeout: 3600)
+        guard result.ok else { throw APIError(error: "\(unpack ? "unpacking into" : "writing") \(path): \(result.error)") }
     }
 
     /// A file or directory removed (a symlink itself, not what it names).
-    func deleteFile(_ id: String, _ path: String) throws {
-        let parts = try Self.components(path)
-        guard let name = parts.last else { throw APIError(error: "not the whole home: remove the container") }
-        let full = try resolve(id, parts.dropLast().joined(separator: "/")) + "/" + name
-        guard (try? FileManager.default.attributesOfItem(atPath: full)) != nil else { throw APIError(error: "no file \(path)") }
-        try FileManager.default.removeItem(atPath: full)
+    func deleteFile(_ id: String, _ path: String) async throws {
+        let (container, runtime, _) = try running(id)
+        let target = try Self.guestPath(path)
+        guard target != "/root" else { throw APIError(error: "not the whole home: remove the container") }
+        let result = try await runtime.exec(container.name, ["/bin/sh", "-c",
+            "[ -e \"$1\" ] || [ -L \"$1\" ] || exit 3; rm -rf -- \"$1\"", "sh", target], timeout: 600)
+        guard result.ok else { throw APIError(error: result.status == 3 ? "no file \(path)" : "removing \(path): \(result.error)") }
     }
 }
