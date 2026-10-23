@@ -15,6 +15,9 @@
   second one tested beside a running server (`oss container … --local`).
 - `oss container cp` of a directory from a Mac carries no AppleDouble
   files (`._name`, for extended attributes).
+- An absolute path through the server is the container's: `cp f
+  id:/root/x` is the home's `x` (the server dropped the leading slash, and
+  wrote `/root/root/x`), and `id:/etc/x` is refused.
 - `Container.home` is gone (it was the server's folder). Containers made
   by 0.1 still mount that folder as their home, and 0.2 can't archive
   them: archive them with 0.1 before upgrading to keep a home (0.2 restores

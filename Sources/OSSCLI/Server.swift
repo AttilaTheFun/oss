@@ -483,7 +483,14 @@ enum Server {
                 }
             }
             if parts.count >= 4, parts[1] == "containers", parts[3] == "files" {
-                let path = parts[4...].map { $0.removingPercentEncoding ?? $0 }.joined(separator: "/")
+                // The file's path as sent, after `…/files/`: its own leading
+                // slash kept (an absolute path, as the container sees it),
+                // which splitting the request's path on "/" would drop.
+                let raw = String(request.path.split(separator: "?", maxSplits: 1).first ?? "")
+                let tail = raw.range(of: "/containers/\(parts[2])/files/").map { String(raw[$0.upperBound...]) }
+                    ?? parts[4...].joined(separator: "/")
+                let path = tail.split(separator: "/", omittingEmptySubsequences: false)
+                    .map { String($0).removingPercentEncoding ?? String($0) }.joined(separator: "/")
                 switch method {
                 case "GET" where query["from"] != nil:
                     // Followed as it grows: from a byte, waiting for more (404 until it exists).
