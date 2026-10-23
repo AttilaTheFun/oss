@@ -18,6 +18,9 @@
 - An absolute path through the server is the container's: `cp f
   id:/root/x` is the home's `x` (the server dropped the leading slash, and
   wrote `/root/root/x`), and `id:/etc/x` is refused.
+- install.sh signs with the first Apple Development identity by its SHA-1:
+  a keychain with two of the same name (a renewed certificate) made
+  `codesign` refuse the name.
 - `Container.home` is gone (it was the server's folder). Containers made
   by 0.1 still mount that folder as their home, and 0.2 can't archive
   them: archive them with 0.1 before upgrading to keep a home (0.2 restores
