@@ -11,6 +11,10 @@
   files, the container's token, archives and restores pass through that
   folder, read and written by the container: its files need it running,
   and an image needs `tar` (and `find` for templates) besides `/bin/sh`.
+- `OSS_HOME` gives an oss files of its own (settings, token, state): a
+  second one tested beside a running server (`oss container … --local`).
+- `oss container cp` of a directory from a Mac carries no AppleDouble
+  files (`._name`, for extended attributes).
 - `Container.home` is gone (it was the server's folder). Containers made
   by 0.1 still mount that folder as their home, and 0.2 can't archive
   them: archive them with 0.1 before upgrading to keep a home (0.2 restores

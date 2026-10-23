@@ -6,7 +6,10 @@ import OSSClient
 /// lease's known_hosts on a client) and `~/.local/share/oss` (the Android
 /// SDK and AVDs it sets up).
 enum Paths {
-    static let home = FileManager.default.homeDirectoryForCurrentUser.path
+    /// The user's home, or `OSS_HOME`: a second oss with files of its own
+    /// (its settings, token and state), to test one beside a running server
+    /// (`oss container … --local`, which runs containers in-process).
+    static let home = ProcessInfo.processInfo.environment["OSS_HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
     static let config = "\(home)/.config/oss"
     static let state = "\(home)/.local/state/oss"
     static let share = "\(home)/.local/share/oss"

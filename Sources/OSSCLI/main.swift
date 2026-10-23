@@ -443,7 +443,10 @@ do {
                 var directory: ObjCBool = false
                 guard FileManager.default.fileExists(atPath: source, isDirectory: &directory) else { fail("no \(source)") }
                 if directory.boolValue {
-                    let tar = try await Shell.run("/usr/bin/tar", ["-czf", "-", "-C", source, "."], timeout: 3600)
+                    // COPYFILE_DISABLE: no macOS AppleDouble files (._name) for extended attributes.
+                    let tar = try await Shell.run("/usr/bin/tar", ["-czf", "-", "-C", source, "."],
+                                                  environment: ProcessInfo.processInfo.environment.merging(["COPYFILE_DISABLE": "1"]) { $1 },
+                                                  timeout: 3600)
                     guard tar.ok else { fail("packing \(source): \(tar.error)") }
                     try await front.writeFile(container.id, path, tar.data, unpack: true)
                 } else {
