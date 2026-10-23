@@ -63,6 +63,13 @@ struct Arguments {
                 }
             } else {
                 positional.append(a)
+                // `machine simctl|adb <id> …`: the rest is the device
+                // command's, its own options too (`am start --es key value`).
+                if positional.count == 3, positional[0] == "machine", ["simctl", "adb"].contains(positional[1]) {
+                    rest = Array(arguments[(i + 1)...])
+                    if rest.first == "--" { rest.removeFirst() }
+                    break
+                }
             }
             i += 1
         }
@@ -294,6 +301,13 @@ let command = arguments.positional.first ?? "help"
 let sub = arguments.positional.count > 1 ? arguments.positional[1] : nil
 let target = arguments.positional.count > 2 ? arguments.positional[2] : nil
 
+// `--help` or `-h` anywhere: the usage, and nothing done (a subcommand's
+// `--help` once started a container).
+if arguments.flags.contains("help") || arguments.positional.contains("-h") {
+    print(usage)
+    exit(0)
+}
+
 do {
     switch command {
     case "machine":
@@ -452,8 +466,15 @@ do {
                 fail("one side is <id>:<path>, the other a local path")
             }
         case "list":
+            // `--label key=value`: only the containers with that label.
+            let wanted = arguments.options["label"].flatMap { label in
+                label.firstIndex(of: "=").map { (String(label[..<$0]), String(label[label.index(after: $0)...])) }
+            }
             for container in try await front.list() {
-                print("\(container.id)  \(container.state.rawValue)  \(container.image ?? "-")  \(container.holder)  \(container.archive ?? container.home ?? "")")
+                if let (key, value) = wanted, container.labels?[key] != value { continue }
+                let labels = (container.labels ?? [:]).sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
+                print("\(container.id)  \(container.state.rawValue)  \(container.image ?? "-")  \(container.holder)  \(container.archive ?? container.home ?? "")"
+                      + (labels.isEmpty ? "" : "  \(labels)"))
             }
         case "shell", "logs":
             let container = try await front.resolve(target)

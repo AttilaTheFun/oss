@@ -90,6 +90,14 @@ A container's home (`/root`) is a directory on the server,
 token, the server's template files (below), the files it was started with
 as `secretFiles`, and oss's own `~/.oss`.
 
+Keep big trees out of the home: a build's output, a package cache, a
+checkout you build from. The home is shared into the container, and the
+server holds a file handle for every file the container has looked at
+there. A Bazel tree in a home (hundreds of thousands of files) ran macOS
+out of file handles. Put such trees on the container's own disk (`/work`,
+`/var/cache`), which lasts as long as the container; the home is for what
+must outlive it or cross to the server.
+
 **Its own token.** Every container has an oss token of its own, in its
 home with the server's address (`~/.config/oss/token` and `client.json`):
 `oss` (or anything that speaks the API) inside it leases machines as the
@@ -231,12 +239,13 @@ Settings (`~/.config/oss/server.json`, every field optional):
 ```json
 {"port": 7480, "capacity": {"macos": 2, "windows": 2, "linux": 2, "ios": 4, "android": 2}, "containerLimit": 8,
  "defaultMinutes": 60, "maxMinutes": 480, "defaultConfig": {"macos": "vanilla", "ios": "iphone", "android": "phone"},
- "managementKey": "~/.ssh/id_ed25519", "containerImage": "docker.io/library/ubuntu:24.04", "containerCPUs": 2,
- "containerMemory": "4g"}
+ "managementKey": "~/.ssh/id_ed25519", "containerImage": "docker.io/library/ubuntu:24.04", "containerCPUs": 6,
+ "containerMemory": "16g"}
 ```
 
-Apple's container gives a container one CPU more than it's asked for
-(`containerCPUs` 2 shows 3 inside).
+A container is the VMs' size unless it asks for another (`oss container
+start --cpus=N --memory=Ng`). Apple's container gives it one CPU more than
+it's asked for (`containerCPUs` 6 shows 7 inside).
 
 Keep the installers (`*.ipsw`, `*.iso`) in this folder if you like: they
 are ignored by git. Keep the folder out of backups.

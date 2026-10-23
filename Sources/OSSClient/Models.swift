@@ -332,7 +332,7 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
 
 public enum OSS {
     /// This build's version, and the API level it speaks.
-    public static let version = "0.1.0"
+    public static let version = "0.1.1"
     public static let apiLevel = 1
     public static let features = ["machines", "screenshots", "containers", "containers.processes", "containers.files",
                                   "containers.files.follow", "containers.labels", "containers.tokens"]

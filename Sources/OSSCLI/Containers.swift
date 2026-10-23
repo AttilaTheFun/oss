@@ -51,8 +51,25 @@ struct ContainerRuntime: Sendable {
         let result = try await run(["start", name])
         guard result.ok else { throw APIError(error: "\(self.name) start: \(result.error)") }
     }
-    func remove(_ name: String) async {
-        _ = try? await run(self.name == "container" ? ["delete", "--force", name] : ["rm", "-f", name], timeout: 120)
+    /// Removes the container, forcibly; true once the runtime says it is
+    /// gone. A guest that answers nothing (one thrashing for memory) can
+    /// outlast a delete: it is killed and deleted again.
+    @discardableResult
+    func remove(_ name: String) async -> Bool {
+        let delete = self.name == "container" ? ["delete", "--force", name] : ["rm", "-f", name]
+        _ = try? await run(delete, timeout: 120)
+        if await exists(name) == false { return true }
+        _ = try? await run(["kill", name], timeout: 60)
+        _ = try? await run(delete, timeout: 120)
+        return await exists(name) == false
+    }
+
+    /// Whether the runtime has a container of that name; nil when it didn't
+    /// answer.
+    func exists(_ name: String) async -> Bool? {
+        let arguments = self.name == "container" ? ["list", "--all", "--quiet"] : ["ps", "-a", "--format", "{{.Names}}"]
+        guard let result = try? await run(arguments, timeout: 30), result.ok else { return nil }
+        return result.output.split(whereSeparator: \.isNewline).contains { $0.trimmingCharacters(in: .whitespaces) == name }
     }
 
     /// A command in the container: detached (it runs on after this returns),
@@ -390,7 +407,11 @@ actor ContainerManager {
         #endif
         let tar = try await Shell.run("/usr/bin/tar", ["-czf", archive, "-C", home] + exclusions + ["."], timeout: 3600)
         guard tar.ok else { throw APIError(error: "archiving \(id): \(tar.error)") }
-        await runtime.remove(container.name)
+        guard await runtime.remove(container.name) else {
+            try? FileManager.default.removeItem(atPath: archive)
+            log("container \(id): \(runtime.name) didn't remove \(container.name); not archived")
+            throw APIError(error: "\(runtime.name) didn't remove \(container.name) (its guest may not be answering): not archived, its home kept")
+        }
         try? FileManager.default.removeItem(atPath: home)
         containers[id]?.state = .archived
         containers[id]?.archive = archive
@@ -405,7 +426,12 @@ actor ContainerManager {
     func remove(_ id: String) async throws {
         let runtime = try requireRuntime()
         let container = try require(id)
-        await runtime.remove(container.name)
+        // Its home goes only with it: a container still running on it
+        // (a remove that timed out) would have its files pulled away.
+        guard await runtime.remove(container.name) else {
+            log("container \(id): \(runtime.name) didn't remove \(container.name)")
+            throw APIError(error: "\(runtime.name) didn't remove \(container.name) (its guest may not be answering): its home is kept; try again")
+        }
         if let home = container.home { try? FileManager.default.removeItem(atPath: home) }
         if let archive = container.archive { try? FileManager.default.removeItem(atPath: archive) }
         containers[id] = nil
@@ -619,8 +645,8 @@ actor ContainerManager {
         return parts
     }
 
-    /// A path in the container's home, its symlinks resolved as the container
-    /// sees them (an absolute target is the container's: /root is the home),
+    /// A path in the container's home, relative to it or absolute as the
+    /// container sees it (/root is the home), its symlinks resolved likewise,
     /// refused when one leads out of it: a symlink the container made can't
     /// lead oss's own reads and writes elsewhere on the host.
     private func resolve(_ id: String, _ path: String) throws -> String {
@@ -628,7 +654,12 @@ actor ContainerManager {
         guard let home = container.home else { throw APIError(error: "container \(id) is archived: restart it first") }
         guard let root = Self.realPath(home) else { throw APIError(error: "container \(id)'s home is gone") }
         let out = APIError(error: "\(path) leads out of the container's home")
-        var resolved: [String] = [], pending = try Self.components(path), hops = 0
+        var given = try Self.components(path)
+        if path.hasPrefix("/") {
+            guard given.first == "root" else { throw APIError(error: "\(path) is outside the container's home (/root)") }
+            given.removeFirst()
+        }
+        var resolved: [String] = [], pending = given, hops = 0
         while !pending.isEmpty {
             let part = pending.removeFirst()
             if part.isEmpty || part == "." { continue }
