@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0
+
+- **Machines only.** oss lends VMs, iOS simulators and Android emulators,
+  and no longer runs containers: `oss container …`, `oss setup
+  containers`, `oss image build container`, `/v1/containers…`, a
+  container's own token, and the container settings (`containerLimit`,
+  `containerImage`, `containerCPUs`, `containerMemory`, `container.env`,
+  `container-home/`, `images/`) are gone, and so is OSSClient's container
+  half (`Container`, `ContainerRequest`, `ContainerProcess`, the process
+  and file calls). Containers for agents belong to the program that runs
+  the agents: Visor runs its own (Apple's container) from 0.38, and leases
+  machines from oss in its sessions' names.
+- API level 2: OSSClient's `Status` has no `containers` or
+  `containerLimit` and `Capabilities` no `containers`, and the features
+  are `machines` and `screenshots`. The server still sends those fields,
+  empty (`[]`, `0`, `false`), so 0.2's clients (a Visor 0.38 among them)
+  keep reading its status and capabilities; a 0.3 client reads either.
+
 ## 0.2.0
 
 - **Containers are bare.** A container's home (`/root`) is on its own disk,

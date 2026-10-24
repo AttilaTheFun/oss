@@ -2,8 +2,8 @@
 
 When you need a machine (a Mac app to try, a Windows or Linux build, a
 GUI, a clean OS), an iOS simulator or an Android emulator, lease one from
-the oss server instead of making your own. When you need a Linux
-environment apart from your own, start a container.
+the oss server instead of making your own. oss lends machines only;
+containers for agents are Visor's (`visor machine …` leases through it).
 
 ## The rules
 
@@ -11,7 +11,6 @@ environment apart from your own, start a container.
   `oss machine run … -- <command>`, which releases however the command
   ends. A lease left alone is released when its time runs out (60 minutes
   unless you asked for more; `oss machine renew <id>` to keep it).
-  Remove containers you're done with (`oss container remove <id>`).
 - **Capacity is shared** by everyone using the server. If a lease says
   busy, use `--wait` or come back; don't hold what you aren't using.
 - **A lease is yours alone and is deleted afterwards**: install what you
@@ -26,7 +25,7 @@ environment apart from your own, start a container.
 ## Machines
 
 ```sh
-oss status                                       # bases (configs), capacity, leases, containers
+oss status                                       # bases (configs), capacity, leases
 oss machine lease <macos|ios|android|linux|windows> [--config=NAME] [--minutes=N] [--wait]
 oss machine ssh <id> -- <command>                # VMs: as runner; sudo needs no password
 oss machine simctl <id> install ./My.app         # iOS: local paths uploaded first
@@ -58,32 +57,6 @@ For scripts and CI: `oss machine lease linux --exports` prints `export
 OSS_ID=… OSS_SSH=… OSS_HOST=… …`; `oss machine run linux -- ./script.sh`
 gives a script those in its environment.
 
-## Containers
-
-```sh
-oss container start [--image=NAME] [--label=KEY=VALUE] [--env-file=F] [--from=ARCHIVE]   # prints its id
-oss container exec <id> [--input] [--env-file=F] [--cwd=DIR] -- command…
-oss container cp <local> <id>:<path> | <id>:<path> <local>
-oss container stop | restart | archive | remove <id>
-oss container list | shell <id> | logs <id>
-```
-
-A container runs its image (Ubuntu 24.04 unless named) with oss's own
-keep-alive; whatever you run in it is a process (`exec`, or the API's
-processes, whose output a client reads from any offset). Its home (`/root`)
-is on its own disk; only oss's small folder is shared in (`/oss`), and
-nothing else may be: a shared folder costs the server a file handle per
-file the container reads there. `archive` has the container tar its home
-(the path is printed) and deletes the container; `restart` restores an
-archived one into a new container; `start --from=<archive>` brings a home
-in from any archive.
-
-**If you are running inside an oss container**: `~/.config/oss` holds
-the container's own token and the server's address, so `oss` (if the
-image has it) or any client leases machines as your container; you can't
-reach other containers or leases. Release what you lease; whatever you
-still hold is released when your container is archived or removed.
-
 ## Reaching the server
 
 `oss` tries the servers in `~/.config/oss/client.json` in order (this
@@ -94,12 +67,11 @@ SSH, VNC and adb too. With no `client.json` it tries `127.0.0.1` only.
 
 - `README.md` is the setup, the API and how to make each kind of base
   your own; `provision/<platform>/vanilla` are the vanilla layers' scripts.
-- `oss doctor` says whether the server can drive UTM, simulators,
-  emulators and containers. The server: `launchctl kickstart -k
-  gui/$(id -u)/oss.server`; its log `~/Library/Logs/oss.log`; its state
-  `~/.local/state/oss/` (leases.json, containers.json, the containers'
-  folders and archives). A restart keeps running leases and containers, and deletes
-  clones nobody holds.
+- `oss doctor` says whether the server can drive UTM, simulators and
+  emulators. The server: `launchctl kickstart -k gui/$(id -u)/oss.server`;
+  its log `~/Library/Logs/oss.log`; its state `~/.local/state/oss/`
+  (leases.json). A restart keeps running leases, and deletes clones nobody
+  holds.
 - After changing oss: `./install.sh --service`, and copy the binary to the
   clients that use it. A change to the API raises `OSS.apiLevel` and goes
   in CHANGELOG.md.
