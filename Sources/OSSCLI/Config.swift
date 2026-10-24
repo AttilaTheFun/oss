@@ -2,13 +2,11 @@ import Foundation
 import OSSClient
 
 /// Where oss keeps its files: `~/.config/oss` (settings, the token),
-/// `~/.local/state/oss` (leases, containers and their archives, each
-/// lease's known_hosts on a client) and `~/.local/share/oss` (the Android
+/// `~/.local/state/oss` (leases, each lease's known_hosts on a client) and `~/.local/share/oss` (the Android
 /// SDK and AVDs it sets up).
 enum Paths {
     /// The user's home, or `OSS_HOME`: a second oss with files of its own
-    /// (its settings, token and state), to test one beside a running server
-    /// (`oss container … --local`, which runs containers in-process).
+    /// (its settings, token and state), to test one beside a running server.
     static let home = ProcessInfo.processInfo.environment["OSS_HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
     static let config = "\(home)/.config/oss"
     static let state = "\(home)/.local/state/oss"
@@ -16,19 +14,7 @@ enum Paths {
     static let token = "\(config)/token"
     static let serverConfig = "\(config)/server.json"
     static let clientConfig = "\(config)/client.json"
-    /// Variables every container process gets (KEY=VALUE lines).
-    static let containerEnvironment = "\(config)/container.env"
-    /// Files copied into every container's home when it is made, where the
-    /// home lacks them (settings, sign-ins); never archived.
-    static let containerHomeTemplate = "\(config)/container-home"
-    /// An image's own: `<image>.env` (variables) and `<image>.home/` (home
-    /// files), over the server's for containers of that image.
-    static let imageSettings = "\(config)/images"
     static let leases = "\(state)/leases.json"
-    static let containers = "\(state)/containers.json"
-    /// Each container's own folder, shared into it at /oss (its home is not).
-    static let containerFolders = "\(state)/containers"
-    static let archives = "\(state)/archives"
     /// UTM's VM bases as last listed.
     static let vmBases = "\(state)/vm-bases.json"
     static let uploads = "\(state)/uploads"
@@ -45,8 +31,6 @@ struct ServerConfig: Codable, Sendable {
     var port: Int = 7480
     /// How many leases of each platform may exist at once.
     var capacity: [String: Int] = ["macos": 2, "windows": 2, "linux": 2, "ios": 4, "android": 2]
-    /// How many containers may run at once.
-    var containerLimit: Int = 8
     var defaultMinutes: Int = 60
     var maxMinutes: Int = 8 * 60
     /// The range forwarded ports are taken from.
@@ -67,11 +51,6 @@ struct ServerConfig: Codable, Sendable {
     /// The Android SDK oss sets up (`oss setup android`), and its AVDs.
     var androidSDK: String = "\(Paths.share)/android-sdk"
     var androidAVDHome: String = "\(Paths.share)/avd"
-    /// The image a container runs when it names none: Ubuntu as it comes.
-    var containerImage: String = "docker.io/library/ubuntu:24.04"
-    /// A container's size when it names none: the VMs' (6 cores, 16 GB).
-    var containerCPUs: Int = 6
-    var containerMemory: String = "16g"
 
     init() {}
 
@@ -80,7 +59,6 @@ struct ServerConfig: Codable, Sendable {
         let d = ServerConfig()
         port = try c.decodeIfPresent(Int.self, forKey: .port) ?? d.port
         capacity = d.capacity.merging(try c.decodeIfPresent([String: Int].self, forKey: .capacity) ?? [:]) { $1 }
-        containerLimit = try c.decodeIfPresent(Int.self, forKey: .containerLimit) ?? d.containerLimit
         defaultMinutes = try c.decodeIfPresent(Int.self, forKey: .defaultMinutes) ?? d.defaultMinutes
         maxMinutes = try c.decodeIfPresent(Int.self, forKey: .maxMinutes) ?? d.maxMinutes
         firstPort = try c.decodeIfPresent(Int.self, forKey: .firstPort) ?? d.firstPort
@@ -94,9 +72,6 @@ struct ServerConfig: Codable, Sendable {
         defaultConfig = d.defaultConfig.merging(try c.decodeIfPresent([String: String].self, forKey: .defaultConfig) ?? [:]) { $1 }
         androidSDK = try c.decodeIfPresent(String.self, forKey: .androidSDK) ?? d.androidSDK
         androidAVDHome = try c.decodeIfPresent(String.self, forKey: .androidAVDHome) ?? d.androidAVDHome
-        containerImage = try c.decodeIfPresent(String.self, forKey: .containerImage) ?? d.containerImage
-        containerCPUs = try c.decodeIfPresent(Int.self, forKey: .containerCPUs) ?? d.containerCPUs
-        containerMemory = try c.decodeIfPresent(String.self, forKey: .containerMemory) ?? d.containerMemory
     }
 
     static func load() -> ServerConfig {
