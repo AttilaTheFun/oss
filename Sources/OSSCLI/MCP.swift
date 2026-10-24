@@ -2,10 +2,8 @@ import Foundation
 import OSSClient
 
 /// `oss mcp`: oss's machine commands as Model Context Protocol tools, on
-/// stdio (JSON-RPC, a message a line), for programs that speak it. In an
-/// oss container it uses the container's own token and server (its
-/// ~/.config/oss), so what it leases is the container's; anywhere else, the
-/// client's settings as for the CLI.
+/// stdio (JSON-RPC, a message a line), for programs that speak it, with
+/// the client's settings as for the CLI.
 enum MCPServer {
     struct Failure: Error, CustomStringConvertible { var description: String }
 

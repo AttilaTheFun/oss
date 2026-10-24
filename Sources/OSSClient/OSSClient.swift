@@ -72,9 +72,8 @@ public struct OSSError: Error, Sendable, CustomStringConvertible {
     }
 }
 
-/// An oss server's API: machines leased and used, containers run and the
-/// processes and files in them. Every call is one request (a long poll
-/// waits at most a minute) and throws `OSSError` with the server's message.
+/// An oss server's API: machines leased and used. Every call is one
+/// request and throws `OSSError` with the server's message.
 public struct OSSClient: Sendable {
     /// The server's address in use (`http://host:7480`).
     public let server: URL
@@ -210,120 +209,5 @@ public struct OSSClient: Sendable {
     /// A PNG of a lease's screen.
     public func screenshot(_ id: String) async throws -> Data {
         try await send("GET", "/v1/machines/\(id)/screenshot").body
-    }
-
-    // MARK: Containers
-
-    /// Containers, or those with a label (`key=value`).
-    public func containers(label: (key: String, value: String)? = nil) async throws -> [Container] {
-        try await json("GET", "/v1/containers", query: label.map { ["label": "\($0.key)=\($0.value)"] } ?? [:])
-    }
-
-    public func container(_ id: String) async throws -> Container { try await json("GET", "/v1/containers/\(id)") }
-    public func startContainer(_ request: ContainerRequest) async throws -> Container { try await json("POST", "/v1/containers", body: request) }
-    public func stop(container id: String) async throws -> Container { try await json("POST", "/v1/containers/\(id)/stop") }
-
-    /// A stopped container started again; an archived one restored into a new container.
-    public func restart(container id: String, environment: [String: String]? = nil) async throws -> Container {
-        try await json("POST", "/v1/containers/\(id)/restart", body: RestartRequest(environment: environment))
-    }
-
-    /// Its home as a tarball on the server (`archive` is its path), its container deleted.
-    public func archive(container id: String) async throws -> Container { try await json("POST", "/v1/containers/\(id)/archive") }
-
-    /// Its container, home and archive deleted.
-    public func remove(container id: String) async throws {
-        _ = try await send("DELETE", "/v1/containers/\(id)")
-    }
-
-    // MARK: Processes
-
-    public func processes(_ container: String) async throws -> [ContainerProcess] {
-        try await json("GET", "/v1/containers/\(container)/processes")
-    }
-
-    public func process(_ container: String, _ process: String) async throws -> ContainerProcess {
-        try await json("GET", "/v1/containers/\(container)/processes/\(process)")
-    }
-
-    public func startProcess(_ container: String, _ request: ProcessRequest) async throws -> ContainerProcess {
-        try await json("POST", "/v1/containers/\(container)/processes", body: request)
-    }
-
-    public enum Stream: String, Sendable { case output = "out", errors = "err" }
-
-    public struct ProcessOutput: Sendable {
-        public var data: Data
-        /// Where to read from next.
-        public var offset: Int
-        public var state: ProcessState
-        public var status: Int32?
-    }
-
-    /// Its output (or errors) from byte `offset`, at most `limit` bytes,
-    /// waiting up to `wait` seconds (at most 60) while there's nothing new.
-    public func output(_ container: String, _ process: String, stream: Stream = .output, from offset: Int, wait: Int = 0,
-                       limit: Int? = nil) async throws -> ProcessOutput {
-        var query = ["stream": stream.rawValue, "from": String(offset), "wait": String(wait)]
-        if let limit { query["limit"] = String(limit) }
-        let answer = try await send("GET", "/v1/containers/\(container)/processes/\(process)/output", query: query,
-                                    timeout: TimeInterval(wait + 60))
-        return ProcessOutput(data: answer.body, offset: Int(answer.headers["oss-offset"] ?? "") ?? offset + answer.body.count,
-                             state: ProcessState(rawValue: answer.headers["oss-state"] ?? "") ?? .running,
-                             status: answer.headers["oss-status"].flatMap { Int32($0) })
-    }
-
-    /// Bytes for its input, in order with the other writes; `close` then ends
-    /// its input (it reads end of file).
-    public func input(_ container: String, _ process: String, _ data: Data, close: Bool = false) async throws {
-        _ = try await send("POST", "/v1/containers/\(container)/processes/\(process)/input", query: close ? ["close": "1"] : [:],
-                           body: data, contentType: "application/octet-stream")
-    }
-
-    /// TERM, KILL, INT or HUP.
-    public func signal(_ container: String, _ process: String, _ signal: String = "TERM") async throws -> ContainerProcess {
-        try await json("POST", "/v1/containers/\(container)/processes/\(process)/signal", query: ["signal": signal])
-    }
-
-    // MARK: Files
-
-    /// A file in its home (relative to /root), or a directory as a gzipped tarball (`isDirectory`).
-    public func readFile(_ container: String, _ path: String) async throws -> (data: Data, isDirectory: Bool) {
-        let answer = try await send("GET", "/v1/containers/\(container)/files/\(Self.encode(path))")
-        return (answer.body, answer.headers["oss-kind"] == "directory")
-    }
-
-    public struct FileChunk: Sendable {
-        public var data: Data
-        /// The file's length now: below the offset asked from, it shrank or was replaced (read it from 0).
-        public var size: Int
-        /// Where to read from next.
-        public var offset: Int
-    }
-
-    /// A file followed as it grows: its bytes from `offset`, waiting up to
-    /// `wait` seconds (at most 60) while there's nothing new. Nil while it doesn't exist.
-    public func followFile(_ container: String, _ path: String, from offset: Int, wait: Int = 0, limit: Int? = nil) async throws -> FileChunk? {
-        var query = ["from": String(offset), "wait": String(wait)]
-        if let limit { query["limit"] = String(limit) }
-        do {
-            let answer = try await send("GET", "/v1/containers/\(container)/files/\(Self.encode(path))", query: query,
-                                        timeout: TimeInterval(wait + 60))
-            return FileChunk(data: answer.body, size: Int(answer.headers["oss-size"] ?? "") ?? 0,
-                             offset: Int(answer.headers["oss-offset"] ?? "") ?? offset + answer.body.count)
-        } catch let error as OSSError where error.status == 404 {
-            return nil
-        }
-    }
-
-    /// A file written (its directories made), or with `unpack` a gzipped
-    /// tarball unpacked into the directory `path`.
-    public func writeFile(_ container: String, _ path: String, _ data: Data, unpack: Bool = false) async throws {
-        _ = try await send("PUT", "/v1/containers/\(container)/files/\(Self.encode(path))", query: unpack ? ["unpack": "1"] : [:],
-                           body: data, contentType: "application/octet-stream")
-    }
-
-    public func deleteFile(_ container: String, _ path: String) async throws {
-        _ = try await send("DELETE", "/v1/containers/\(container)/files/\(Self.encode(path))")
     }
 }

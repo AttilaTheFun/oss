@@ -418,150 +418,54 @@ enum Server {
         let config = ServerConfig.load()
         let token = Token.ensure()
         let machines = MachineManager(config: config)
-        let containers = ContainerManager(config: config)
         let server = try HTTPServer(port: config.port) { request in
-            await route(request, machines: machines, containers: containers, token: token)
+            await route(request, machines: machines, token: token)
         }
         server.start()
         // Recovery and listings ask UTM, which can be slow to answer (or
         // waiting on a permission prompt): the API serves meanwhile.
         Task {
             await machines.recover()
-            await containers.reconcile()
             while true {
                 try? await machines.refreshBases()
                 try? await Task.sleep(for: .seconds(60))
             }
         }
-        log("oss serving on :\(config.port); capacity \(config.capacity), \(config.containerLimit) containers")
+        log("oss serving on :\(config.port); capacity \(config.capacity)")
         while true {
             try await Task.sleep(for: .seconds(15))
             await machines.expire()
         }
     }
 
-    static func route(_ request: HTTPRequest, machines: MachineManager, containers: ContainerManager, token: String) async -> HTTPResponse {
+    static func route(_ request: HTTPRequest, machines: MachineManager, token: String) async -> HTTPResponse {
         let parts = request.path.split(separator: "?")[0].split(separator: "/").map(String.init)
         if parts == ["v1", "capabilities"] {
             let platforms = ((try? await machines.bases()) ?? []).map(\.platform)
             return .json(Capabilities(version: OSS.version, api: OSS.apiLevel, features: OSS.features,
-                                      platforms: Platform.allCases.filter { platforms.contains($0) },
-                                      containers: ContainerRuntime.detect() != nil))
+                                      platforms: Platform.allCases.filter { platforms.contains($0) }))
         }
         if parts == ["v1", "hello"] {
             return .json(["server": "oss", "host": localHostName])
         }
         let given = request.header("authorization")?.replacingOccurrences(of: "Bearer ", with: "") ?? ""
-        // The server's token, or a container's own: that one leases machines
-        // as the container (holder container-<id>) and nothing else.
-        var holderOnly: String?
-        if !constantTimeEqual(given, token) {
-            guard let owner = await containers.container(forToken: given) else { return .error("unauthorized", status: 401) }
-            holderOnly = "container-\(owner)"
-        }
+        guard constantTimeEqual(given, token) else { return .error("unauthorized", status: 401) }
         do {
             let method = request.method
-            let query = request.query
-            if let holder = holderOnly {
-                switch (method, parts.count, parts.count > 1 ? parts[1] : "") {
-                case ("GET", 2, "status"):
-                    return .json(Status(server: localHostName, bases: try await machines.bases(), capacity: await machines.capacity(),
-                                        leases: await machines.all().filter { $0.holder == holder }, containers: [], containerLimit: 0))
-                case ("GET", 2, "machines"):
-                    return .json(await machines.all().filter { $0.holder == holder })
-                case ("POST", 2, "machines"):
-                    var lease = try JSONDecoder.oss.decode(LeaseRequest.self, from: request.body)
-                    lease.holder = holder
-                    return .json(try await machines.lease(lease), status: 201)
-                case (_, 3..., "machines"):
-                    // Its own leases only; then as anyone's, below.
-                    guard let lease = await machines.lease(parts[2]), lease.holder == holder else {
-                        return .error("no lease \(parts[2])", status: 404)
-                    }
-                default:
-                    return .error("a container's token leases machines, nothing else", status: 403)
-                }
-            }
-            if parts.count >= 4, parts[1] == "containers", parts[3] == "files" {
-                // The file's path as sent, after `…/files/`: its own leading
-                // slash kept (an absolute path, as the container sees it),
-                // which splitting the request's path on "/" would drop.
-                let raw = String(request.path.split(separator: "?", maxSplits: 1).first ?? "")
-                let tail = raw.range(of: "/containers/\(parts[2])/files/").map { String(raw[$0.upperBound...]) }
-                    ?? parts[4...].joined(separator: "/")
-                let path = tail.split(separator: "/", omittingEmptySubsequences: false)
-                    .map { String($0).removingPercentEncoding ?? String($0) }.joined(separator: "/")
-                switch method {
-                case "GET" where query["from"] != nil:
-                    // Followed as it grows: from a byte, waiting for more (404 until it exists).
-                    let from = Int(query["from"] ?? "") ?? 0
-                    do {
-                        let (data, size) = try await containers.followFile(parts[2], path, from: from,
-                                                                       limit: Int(query["limit"] ?? "") ?? (4 << 20),
-                                                                       wait: Double(query["wait"] ?? "") ?? 0)
-                        return HTTPResponse(status: 200, body: data, contentType: "application/octet-stream",
-                                            headers: ["OSS-Size": String(size), "OSS-Offset": String(from + data.count)])
-                    } catch let error as APIError where error.error.hasPrefix("no file") {
-                        return .error(error.error, status: 404)
-                    }
-                case "GET":
-                    let (data, isDirectory) = try await containers.readFile(parts[2], path)
-                    return HTTPResponse(status: 200, body: data, contentType: isDirectory ? "application/gzip" : "application/octet-stream",
-                                        headers: ["OSS-Kind": isDirectory ? "directory" : "file"])
-                case "PUT":
-                    try await containers.writeFile(parts[2], path, data: request.body, unpack: query["unpack"] == "1")
-                    return .json(["written": path])
-                case "DELETE":
-                    try await containers.deleteFile(parts[2], path)
-                    return .json(["removed": path])
-                default:
-                    break
-                }
-            }
-            if parts.count >= 4, parts[1] == "containers", parts[3] == "processes" {
-                let id = parts[2]
-                switch (method, parts.count) {
-                case ("POST", 4):
-                    return .json(try await containers.startProcess(id, try JSONDecoder.oss.decode(ProcessRequest.self, from: request.body)),
-                                 status: 201)
-                case ("GET", 4):
-                    return .json(try await containers.processes(id))
-                case ("GET", 5):
-                    return .json(try await containers.process(id, parts[4]))
-                case ("GET", 6) where parts[5] == "output":
-                    let from = Int(query["from"] ?? "") ?? 0
-                    let (data, info) = try await containers.output(id, parts[4], stream: query["stream"] ?? "out", from: from,
-                                                               limit: Int(query["limit"] ?? "") ?? (4 << 20),
-                                                               wait: Double(query["wait"] ?? "") ?? 0)
-                    var headers = ["OSS-Offset": String(from + data.count), "OSS-State": info.state.rawValue]
-                    if let status = info.status { headers["OSS-Status"] = String(status) }
-                    return HTTPResponse(status: 200, body: data, contentType: "application/octet-stream", headers: headers)
-                case ("POST", 6) where parts[5] == "input":
-                    try await containers.input(id, parts[4], data: request.body, close: query["close"] == "1")
-                    return .json(try await containers.process(id, parts[4]))
-                case ("POST", 6) where parts[5] == "signal":
-                    return .json(try await containers.signal(id, parts[4], signal: query["signal"] ?? "TERM"))
-                default:
-                    break
-                }
-            }
             switch (method, parts.count) {
             case ("GET", 2) where parts[1] == "status":
                 return .json(Status(server: localHostName, bases: try await machines.bases(),
-                                    capacity: await machines.capacity(), leases: await machines.all(),
-                                    containers: await containers.list(), containerLimit: machines.config.containerLimit))
+                                    capacity: await machines.capacity(), leases: await machines.all()))
             case ("GET", 2) where parts[1] == "doctor":
-                // Whether this server can drive UTM (its CLI and AppleScript), simulators, emulators and containers.
+                // Whether this server can drive UTM (its CLI and AppleScript), simulators and emulators.
                 let list = try? await Shell.run(UTM.utmctl, ["list"], timeout: 120)
                 var appleScript = "ok"
                 do { _ = try await UTM.script("tell application \"UTM\" to get name of every virtual machine") } catch { appleScript = "\(error)" }
                 let simctl = (try? await Shell.run("/usr/bin/xcrun", ["simctl", "help"], timeout: 60))?.ok == true
                 let emulator = FileManager.default.isExecutableFile(atPath: Emulators.emulator(machines.config))
-                let runtime = ContainerRuntime.detect()
                 return .json(["utmctl": list?.ok == true ? "ok" : "failed: \(list?.error ?? "")", "appleScript": appleScript,
                               "simctl": simctl ? "ok" : "no Xcode (iOS simulators off)",
-                              "emulator": emulator ? "ok" : "no Android SDK: oss setup android",
-                              "containers": runtime.map { "ok (\($0.name))" } ?? "no container tool (containers off)"])
+                              "emulator": emulator ? "ok" : "no Android SDK: oss setup android"])
             case ("POST", 2) where parts[1] == "machines":
                 return .json(try await machines.lease(try JSONDecoder.oss.decode(LeaseRequest.self, from: request.body)), status: 201)
             case ("GET", 2) where parts[1] == "machines":
@@ -584,36 +488,6 @@ enum Server {
                 return HTTPResponse(status: 200, body: try await machines.screenshot(parts[2]), contentType: "image/png")
             case ("PUT", 5) where parts[1] == "machines" && parts[3] == "files":
                 return .json(try await machines.upload(parts[2], name: parts[4], data: request.body))
-            case ("POST", 2) where parts[1] == "containers":
-                let body = try JSONDecoder.oss.decode(ContainerRequest.self, from: request.body)
-                return .json(try await containers.start(body, archive: body.archive), status: 201)
-            case ("GET", 2) where parts[1] == "containers":
-                // ?label=key=value: the containers a client labelled so.
-                var list = await containers.list()
-                if let label = query["label"], let equals = label.firstIndex(of: "=") {
-                    let key = String(label[..<equals]), value = String(label[label.index(after: equals)...])
-                    list = list.filter { $0.labels?[key] == value }
-                }
-                return .json(list)
-            case ("GET", 3) where parts[1] == "containers":
-                guard let container = await containers.container(parts[2]) else { return .error("no container \(parts[2])", status: 404) }
-                return .json(container)
-            case ("POST", 4) where parts[1] == "containers":
-                switch parts[3] {
-                case "stop": return .json(try await containers.stop(parts[2]))
-                case "restart":
-                    let body = (try? JSONDecoder.oss.decode(RestartRequest.self, from: request.body)) ?? RestartRequest()
-                    return .json(try await containers.restart(parts[2], environment: body.environment))
-                case "archive":
-                    let container = try await containers.archive(parts[2])
-                    await releaseLeases(of: parts[2], machines: machines)
-                    return .json(container)
-                default: break
-                }
-            case ("DELETE", 3) where parts[1] == "containers":
-                try await containers.remove(parts[2])
-                await releaseLeases(of: parts[2], machines: machines)
-                return .json(["removed": parts[2]])
             default:
                 break
             }
@@ -622,13 +496,6 @@ enum Server {
             return .error(error.error, status: error.error.hasPrefix("busy") ? 409 : 400)
         } catch {
             return .error("\(error)", status: 500)
-        }
-    }
-
-    /// The machines a container leased, given back with it.
-    static func releaseLeases(of container: String, machines: MachineManager) async {
-        for lease in await machines.all() where lease.holder == "container-\(container)" && lease.state != .returning {
-            Task { await machines.release(lease.id, reason: "its container \(container) is gone") }
         }
     }
 }
