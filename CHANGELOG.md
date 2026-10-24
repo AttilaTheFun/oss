@@ -12,11 +12,11 @@
   and file calls). Containers for agents belong to the program that runs
   the agents: Visor runs its own (Apple's container) from 0.38, and leases
   machines from oss in its sessions' names.
-- API level 2: OSSClient's `Status` has no `containers` or
-  `containerLimit` and `Capabilities` no `containers`, and the features
-  are `machines` and `screenshots`. The server still sends those fields,
-  empty (`[]`, `0`, `false`), so 0.2's clients (a Visor 0.38 among them)
-  keep reading its status and capabilities; a 0.3 client reads either.
+- API level 2: `Status` has no `containers` or `containerLimit` and
+  `Capabilities` no `containers`, on the wire and in OSSClient, and the
+  features are `machines` and `screenshots`. No compatibility with 0.2:
+  its clients don't read a 0.3 server's status or capabilities (Visor
+  moves to OSSClient 0.3.0 with it).
 
 ## 0.2.0
 

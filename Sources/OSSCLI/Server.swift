@@ -412,26 +412,6 @@ actor MachineManager {
     }
 }
 
-/// Status and Capabilities as the server sends them: with the container
-/// fields 0.2's clients require (none, and no containers), so a Visor or
-/// an `oss` from before 0.3 still reads them. 0.3's own types ignore them.
-struct WireStatus: Encodable {
-    var server: String
-    var bases: [Base]
-    var capacity: [Capacity]
-    var leases: [Lease]
-    var containers: [String] = []
-    var containerLimit = 0
-}
-
-struct WireCapabilities: Encodable {
-    var version: String
-    var api: Int
-    var features: [String]
-    var platforms: [Platform]
-    var containers = false
-}
-
 /// `oss serve`: the API on the configured port, every interface.
 enum Server {
     static func serve() async throws -> Never {
@@ -462,8 +442,8 @@ enum Server {
         let parts = request.path.split(separator: "?")[0].split(separator: "/").map(String.init)
         if parts == ["v1", "capabilities"] {
             let platforms = ((try? await machines.bases()) ?? []).map(\.platform)
-            return .json(WireCapabilities(version: OSS.version, api: OSS.apiLevel, features: OSS.features,
-                                          platforms: Platform.allCases.filter { platforms.contains($0) }))
+            return .json(Capabilities(version: OSS.version, api: OSS.apiLevel, features: OSS.features,
+                                      platforms: Platform.allCases.filter { platforms.contains($0) }))
         }
         if parts == ["v1", "hello"] {
             return .json(["server": "oss", "host": localHostName])
@@ -474,8 +454,8 @@ enum Server {
             let method = request.method
             switch (method, parts.count) {
             case ("GET", 2) where parts[1] == "status":
-                return .json(WireStatus(server: localHostName, bases: try await machines.bases(),
-                                        capacity: await machines.capacity(), leases: await machines.all()))
+                return .json(Status(server: localHostName, bases: try await machines.bases(),
+                                    capacity: await machines.capacity(), leases: await machines.all()))
             case ("GET", 2) where parts[1] == "doctor":
                 // Whether this server can drive UTM (its CLI and AppleScript), simulators and emulators.
                 let list = try? await Shell.run(UTM.utmctl, ["list"], timeout: 120)
