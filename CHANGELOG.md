@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+- **A Bazel cache.** With `"cache"` in server.json the server keeps a
+  Bazel remote cache (HTTP, port 7490): a read token for everyone, a write
+  token for the one job that populates it (CI's, after each merge to
+  main). Every VM lease reads it (its `.bazelrc` and `.netrc`, set up
+  with the lease); `oss cache use` sets up a computer of its own;
+  `oss cache status` and `oss cache token --write|--read` (piped only);
+  `oss cache serve` runs the cache alone. Reads are for the server's Mac,
+  its VMs and its containers unless `lanReads`. It keeps to
+  `maxGigabytes` and keeps `minFreeGigabytes` free on the disk, letting go
+  of the entries read longest ago.
+- API level 3: `GET /v1/cache` (`CacheInfo`, OSSClient's `cache()`), and
+  the `cache` feature in `Capabilities` where a server keeps one.
+
 ## 0.3.0
 
 - **Machines only.** oss lends VMs, iOS simulators and Android emulators,

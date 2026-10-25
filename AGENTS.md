@@ -57,6 +57,16 @@ For scripts and CI: `oss machine lease linux --exports` prints `export
 OSS_ID=… OSS_SSH=… OSS_HOST=… …`; `oss machine run linux -- ./script.sh`
 gives a script those in its environment.
 
+## The Bazel cache
+
+A server may keep a Bazel cache (`oss cache status` says). A VM lease
+already reads it: its `.bazelrc` and `.netrc` are set up, and Bazel
+downloads what the cache's populate job built instead of building it. On
+the server's Mac, `oss cache use` does the same for you. You read it;
+only its populate job writes it. Build with your repository's own flags
+(the cache matches exact command lines). Never print a cache token: `oss
+cache token` only ever piped into what keeps it.
+
 ## Reaching the server
 
 `oss` tries the servers in `~/.config/oss/client.json` in order (this

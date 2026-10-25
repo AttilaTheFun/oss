@@ -78,6 +78,40 @@ struct Guest: Sendable {
         _ = try? await run(script, timeout: 60)
     }
 
+    /// The server's Bazel cache, read-only, for runner's Bazel in every
+    /// workspace: its address in runner's bazelrc, the read token in its
+    /// .netrc (where Bazel's HTTP cache takes credentials from; on Windows,
+    /// whose SSH sessions have no HOME, NETRC names it). What the cache's
+    /// populate job built comes down instead of being built again. The
+    /// token goes in by standard input, as every script does.
+    func useBazelCache(host: String, port: Int, token: String) async {
+        let rc = CacheClientFiles.bazelrc(host: host, port: port).joined(separator: "\n")
+        let netrc = CacheClientFiles.netrcEntry(host: host, token: token)
+        let script: String
+        switch platform {
+        case .macos, .linux:
+            script = """
+                cat >> ~/.bazelrc <<'EOF'
+                \(rc)
+                EOF
+                umask 077
+                echo '\(netrc)' >> ~/.netrc
+                """
+        case .windows:
+            // One line each: PowerShell reads a script from standard input a
+            // line at a time, which breaks a here-string.
+            let values = CacheClientFiles.bazelrc(host: host, port: port).map { "'" + $0.replacingOccurrences(of: "'", with: "''") + "'" }.joined(separator: ", ")
+            script = """
+                Add-Content -Path "$env:USERPROFILE\\.bazelrc" -Value @(\(values))
+                Add-Content -Path "$env:USERPROFILE\\.netrc" -Value '\(netrc)'
+                [Environment]::SetEnvironmentVariable('NETRC', "$env:USERPROFILE\\.netrc", 'User')
+                """
+        case .ios, .android: return
+        }
+        let result = try? await run(script, timeout: 60)
+        if result?.ok != true { log("guest \(address): the Bazel cache not set up: \(result?.error ?? "no answer")") }
+    }
+
     /// The lease's own access: the holder's key let in, and on macOS its
     /// Screen Sharing given the lease's VNC password (Windows and Ubuntu show
     /// their screens through QEMU's VNC, which the server sets up).

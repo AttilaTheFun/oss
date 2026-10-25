@@ -51,6 +51,8 @@ struct ServerConfig: Codable, Sendable {
     /// The Android SDK oss sets up (`oss setup android`), and its AVDs.
     var androidSDK: String = "\(Paths.share)/android-sdk"
     var androidAVDHome: String = "\(Paths.share)/avd"
+    /// A Bazel cache (Cache.swift), when set.
+    var cache: CacheConfig?
 
     init() {}
 
@@ -72,6 +74,7 @@ struct ServerConfig: Codable, Sendable {
         defaultConfig = d.defaultConfig.merging(try c.decodeIfPresent([String: String].self, forKey: .defaultConfig) ?? [:]) { $1 }
         androidSDK = try c.decodeIfPresent(String.self, forKey: .androidSDK) ?? d.androidSDK
         androidAVDHome = try c.decodeIfPresent(String.self, forKey: .androidAVDHome) ?? d.androidAVDHome
+        cache = try c.decodeIfPresent(CacheConfig.self, forKey: .cache)
     }
 
     static func load() -> ServerConfig {
