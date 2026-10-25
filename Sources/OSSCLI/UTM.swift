@@ -160,6 +160,24 @@ enum UTM {
         }
     }
 
+    /// What a VM is given: its CPU cores (nil for UTM's default) and memory.
+    static func allotment(_ name: String) async throws -> (cpus: Int?, memoryBytes: Int64?) {
+        let answer = try await script("""
+            on run argv
+              tell application "UTM"
+                set config to configuration of (virtual machine named (item 1 of argv))
+              end tell
+              using terms from application "UTM"
+                return ((memory of config) as text) & "," & ((cpu cores of config) as text)
+              end using terms from
+            end run
+            """, [name])
+        let parts = answer.split(separator: ",").map { Int($0.trimmingCharacters(in: .whitespaces)) }
+        let memory = parts.first.flatMap { $0 }.map { Int64($0) * 1024 * 1024 }
+        let cores = parts.count > 1 ? parts[1].flatMap { $0 > 0 ? $0 : nil } : nil
+        return (cores, memory)
+    }
+
     /// Renames a stopped VM.
     static func rename(_ name: String, to newName: String) async throws {
         try await configure(name, """

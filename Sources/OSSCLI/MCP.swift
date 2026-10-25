@@ -74,6 +74,17 @@ enum MCPServer {
         tool("oss_adb", "Run adb against a leased Android emulator: install <path to an .apk>, shell …, logcat -d, … (local paths are uploaded first).",
              ["id": leaseID, "arguments": ["type": "array", "items": ["type": "string"]]], required: ["id", "arguments"]),
         tool("oss_screenshot", "A picture of a leased machine's screen.", ["id": leaseID], required: ["id"]),
+        tool("oss_tap", "Tap (click) a leased machine's screen at x, y: its screenshot's pixels.",
+             ["id": leaseID, "x": ["type": "number"], "y": ["type": "number"]], required: ["id", "x", "y"]),
+        tool("oss_swipe", "Swipe (drag) on a leased machine's screen from x, y to toX, toY, in its screenshot's pixels.",
+             ["id": leaseID, "x": ["type": "number"], "y": ["type": "number"], "toX": ["type": "number"], "toY": ["type": "number"],
+              "milliseconds": ["type": "integer", "description": "how long the swipe takes (default 300)"]],
+             required: ["id", "x", "y", "toX", "toY"]),
+        tool("oss_type", "Type text into what has focus on a leased machine.", ["id": leaseID, "text": ["type": "string"]],
+             required: ["id", "text"]),
+        tool("oss_key", "Press a key on a leased machine: return, tab, escape, backspace, delete, space, up, down, left, right, pageup, pagedown, home, back (Android); on a VM with modifiers too (cmd+a, ctrl+shift+t); or the platform's own code.",
+             ["id": leaseID, "key": ["type": "string"]], required: ["id", "key"]),
+        tool("oss_usage", "The oss server's CPU and memory, and each lease's (100% CPU is one core).", [:]),
     ] }
 
     private static func text(_ string: String, error: Bool = false) -> [String: Any] {
@@ -140,6 +151,23 @@ enum MCPServer {
                 let held = try await lease()
                 let data = try await client.screenshot(held.id)
                 return ["content": [["type": "image", "data": data.base64EncodedString(), "mimeType": "image/png"]], "isError": false]
+            case "oss_tap", "oss_swipe", "oss_type", "oss_key":
+                let held = try await lease()
+                func number(_ key: String) -> Double? { (arguments[key] as? NSNumber)?.doubleValue }
+                let action: InputRequest.Action = ["oss_tap": .tap, "oss_swipe": .swipe, "oss_type": .type, "oss_key": .key][name]!
+                try await client.input(held.id, InputRequest(action: action, x: number("x"), y: number("y"), toX: number("toX"),
+                                                             toY: number("toY"), milliseconds: (arguments["milliseconds"] as? NSNumber)?.intValue,
+                                                             text: arguments["text"] as? String, key: arguments["key"] as? String))
+                return text("done: take a screenshot to see what it did")
+            case "oss_usage":
+                let usage = try await client.usage()
+                let h = usage.host
+                var lines = ["\(h.name): CPU \(Int(h.cpuPercent))% of \(h.cpus * 100)%, memory \(gigabytes(h.memoryUsedBytes)) of \(gigabytes(h.memoryBytes))"]
+                for m in usage.machines {
+                    let cpu = m.cpuPercent.map { "\(Int($0))%" } ?? "?"
+                    lines.append("  \(m.id) \(m.platform.rawValue)/\(m.config): CPU \(cpu), memory \(m.memoryBytes.map(gigabytes) ?? "?") (\(m.holder))")
+                }
+                return text(lines.joined(separator: "\n"))
             default:
                 throw Failure(description: "no tool \(name)")
             }

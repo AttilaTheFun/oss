@@ -53,6 +53,8 @@ struct ServerConfig: Codable, Sendable {
     var androidAVDHome: String = "\(Paths.share)/avd"
     /// A Bazel cache (Cache.swift), when set.
     var cache: CacheConfig?
+    /// AXe, for a simulator's input, where it isn't Homebrew's.
+    var axePath: String?
 
     init() {}
 
@@ -75,6 +77,7 @@ struct ServerConfig: Codable, Sendable {
         androidSDK = try c.decodeIfPresent(String.self, forKey: .androidSDK) ?? d.androidSDK
         androidAVDHome = try c.decodeIfPresent(String.self, forKey: .androidAVDHome) ?? d.androidAVDHome
         cache = try c.decodeIfPresent(CacheConfig.self, forKey: .cache)
+        axePath = try c.decodeIfPresent(String.self, forKey: .axePath)
     }
 
     static func load() -> ServerConfig {
@@ -84,6 +87,20 @@ struct ServerConfig: Codable, Sendable {
 
     func limit(_ platform: Platform) -> Int { capacity[platform.rawValue] ?? 0 }
     func defaultConfig(_ platform: Platform) -> String { defaultConfig[platform.rawValue] ?? "vanilla" }
+}
+
+/// The VM bases' `runner` passwords, where the server's owner keeps them
+/// (`~/.config/oss/guest-passwords.json`, mode 600): `{"macos": "…"}`, or
+/// `"macos/xcode-27.0"` for one config. A VM lease carries its own, for
+/// its holder to log in at its screen or unlock it.
+enum GuestPasswords {
+    static let path = "\(Paths.config)/guest-passwords.json"
+
+    static func password(for platform: Platform, config: String) -> String? {
+        guard let data = FileManager.default.contents(atPath: path),
+              let passwords = try? JSONDecoder().decode([String: String].self, from: data) else { return nil }
+        return passwords["\(platform.rawValue)/\(config)"] ?? passwords[platform.rawValue]
+    }
 }
 
 /// A client's settings (`~/.config/oss/client.json`): the server's

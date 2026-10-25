@@ -212,4 +212,12 @@ public struct OSSClient: Sendable {
     public func screenshot(_ id: String) async throws -> Data {
         try await send("GET", "/v1/machines/\(id)/screenshot").body
     }
+
+    /// A tap, swipe, text or key on a lease's screen, in its screenshot's pixels.
+    public func input(_ id: String, _ request: InputRequest) async throws {
+        _ = try await send("POST", "/v1/machines/\(id)/input", body: try JSONEncoder.oss.encode(request))
+    }
+
+    /// What the server's Mac and each lease use now.
+    public func usage() async throws -> Usage { try await json("GET", "/v1/usage") }
 }

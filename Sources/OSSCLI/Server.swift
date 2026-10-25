@@ -157,6 +157,9 @@ actor MachineManager {
         leases[id]?.consolePort = port
         let pid = try await Emulators.lease(base: base, name: lease.name, port: port)
         leases[id]?.emulatorPID = pid
+        let allotted = Emulators.allotment(config, avd: lease.name)
+        leases[id]?.cpus = allotted.cpus
+        leases[id]?.memoryLimitBytes = allotted.memoryBytes
         guard leases[id]?.state == .creating else { return }
         // adb from anywhere: `adb connect <server>:<adbPort>` reaches the emulator's own adb port.
         let adb = try forward(id, to: "127.0.0.1", port: port + 1)
@@ -208,6 +211,11 @@ actor MachineManager {
         let password = Random.vncPassword()
         try await guest.prepare(holderKey: holderKey, vncPassword: password)
         await guest.setTimeZone(TimeZone.current.identifier)
+        if let allotted = try? await UTM.allotment(lease.name) {
+            leases[id]?.cpus = allotted.cpus
+            leases[id]?.memoryLimitBytes = allotted.memoryBytes
+        }
+        leases[id]?.guestPassword = GuestPasswords.password(for: lease.platform, config: lease.config)
         if let bazelCache, let host = LocalNetworks.hostAddress(facing: address) {
             await guest.useBazelCache(host: host, port: bazelCache.port, token: bazelCache.readToken)
         }
@@ -301,6 +309,38 @@ actor MachineManager {
     func ready(_ id: String) throws -> Lease {
         guard let lease = leases[id], lease.state == .ready else { throw APIError(error: "no ready lease \(id)") }
         return lease
+    }
+
+    /// A tap, swipe, text or key on a lease's screen.
+    func input(_ id: String, _ request: InputRequest) async throws {
+        let lease = try ready(id)
+        try MachineInput.check(request)
+        switch lease.platform {
+        case .android: try await MachineInput.android(request, port: lease.consolePort ?? 0)
+        case .ios: try await MachineInput.simulator(request, udid: lease.udid ?? "")
+        case .macos, .linux, .windows:
+            #if canImport(CommonCrypto)
+            // The guest's VNC directly, as screenshots: macOS's Screen Sharing, or QEMU's on loopback.
+            if let qemu = lease.qemuVNCPort {
+                try MachineInput.vnc(request, host: "127.0.0.1", port: qemu, password: "")
+            } else {
+                try MachineInput.vnc(request, host: lease.guestAddress ?? "", port: 5900, password: lease.vncPassword ?? "")
+            }
+            #else
+            throw APIError(error: "VM input needs a Mac server")
+            #endif
+        }
+    }
+
+    private var lastUsage: Usage?
+
+    /// What the server's Mac and the leases use: sampled at most every
+    /// three seconds (`ps` and `lsof` cost a moment).
+    func usage() async -> Usage {
+        if let lastUsage, Date().timeIntervalSince(lastUsage.sampledAt) < 3 { return lastUsage }
+        let sampled = await UsageProbe.usage(of: leases.values.filter { $0.state == .ready }.sorted { $0.created < $1.created })
+        lastUsage = sampled
+        return sampled
     }
 
     /// `simctl` for a simulator, `adb` for an emulator, with `@name`
@@ -486,6 +526,11 @@ enum Server {
             case ("GET", 2) where parts[1] == "status":
                 return .json(Status(server: localHostName, bases: try await machines.bases(),
                                     capacity: await machines.capacity(), leases: await machines.all()))
+            case ("GET", 2) where parts[1] == "usage":
+                return .json(await machines.usage())
+            case ("POST", 4) where parts[1] == "machines" && parts[3] == "input":
+                try await machines.input(parts[2], try JSONDecoder.oss.decode(InputRequest.self, from: request.body))
+                return .json(["done": "input"])
             case ("GET", 2) where parts[1] == "cache":
                 guard let cache else { return .error("this server keeps no Bazel cache", status: 404) }
                 return .json(await cache.store.info(port: cache.config.port, readToken: cache.readToken))

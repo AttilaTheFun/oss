@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.0
+
+- **Input.** `oss machine tap|swipe|type|key` (and `POST
+  /v1/machines/<id>/input`, OSSClient's `input`, the MCP tools `oss_tap`,
+  `oss_swipe`, `oss_type`, `oss_key`): in a screenshot's pixels, on any
+  lease. An emulator by `adb input`; a VM by VNC's pointer and key events
+  (with modifiers: `cmd+a`); a simulator by AXe, which the server's Mac needs
+  (`brew install cameroncooke/axe/axe`, or `axePath` in server.json).
+- **Usage.** `oss usage` (and `GET /v1/usage`, OSSClient's `usage()`, the
+  MCP tool `oss_usage`): the server's CPU and memory, and each lease's, from
+  its processes on the Mac, against what it was given (`cpus`,
+  `memoryLimitBytes`, now on a VM's and an emulator's lease too).
+- **A VM lease's `guestPassword`**, from `~/.config/oss/guest-passwords.json`
+  where the server's owner keeps the bases' `runner` passwords.
+- `oss machine upload` and `download` (scp, VMs).
+- The README says why a VNC client must ask macOS's Screen Sharing for
+  VNC's password by name.
+- API level 4. A 0.4 client keeps working: the API only gained things.
+
 ## 0.4.0
 
 - **A Bazel cache.** With `"cache"` in server.json the server keeps a

@@ -71,6 +71,13 @@ public struct Lease: Codable, Sendable {
     public var adbPort: Int?
     public var emulatorPID: Int32?
 
+    // What it was given (VMs, emulators; a simulator has no allotment)
+    public var cpus: Int?
+    public var memoryLimitBytes: Int64?
+    /// The guest's `runner` password, where the server knows it (VMs): to
+    /// log in at its screen, or unlock it.
+    public var guestPassword: String?
+
     public init(id: String, platform: Platform, config: String, name: String, holder: String, state: LeaseState,
                 created: Date, expires: Date, error: String? = nil) {
         self.id = id
@@ -175,6 +182,96 @@ public struct Capabilities: Codable, Sendable {
     }
 }
 
+/// A tap, a swipe, text typed or a key pressed on a lease's screen
+/// (`POST /v1/machines/<id>/input`). Positions are its screenshot's pixels.
+public struct InputRequest: Codable, Sendable {
+    public enum Action: String, Codable, Sendable { case tap, swipe, type, key }
+    public var action: Action
+    /// Where a tap is, or a swipe starts.
+    public var x: Double?
+    public var y: Double?
+    /// Where a swipe ends, and how long it takes (default 300 ms).
+    public var toX: Double?
+    public var toY: Double?
+    public var milliseconds: Int?
+    /// What `type` types.
+    public var text: String?
+    /// What `key` presses: a name (return, tab, escape, backspace, delete,
+    /// space, up, down, left, right, pageup, pagedown, home, back), on a VM
+    /// with modifiers (`cmd+a`, `ctrl+shift+t`); or the platform's own code
+    /// (an Android keycode, an iOS HID usage, a VNC keysym as 0x…).
+    public var key: String?
+
+    public init(action: Action, x: Double? = nil, y: Double? = nil, toX: Double? = nil, toY: Double? = nil,
+                milliseconds: Int? = nil, text: String? = nil, key: String? = nil) {
+        self.action = action
+        self.x = x
+        self.y = y
+        self.toX = toX
+        self.toY = toY
+        self.milliseconds = milliseconds
+        self.text = text
+        self.key = key
+    }
+}
+
+/// What the server's Mac and each lease use (`GET /v1/usage`), as sampled
+/// at `sampledAt`. A CPU percentage is of one core: 100 is one core busy.
+public struct Usage: Codable, Sendable {
+    public var sampledAt: Date
+    public var host: HostUsage
+    public var machines: [MachineUsage]
+
+    public init(sampledAt: Date, host: HostUsage, machines: [MachineUsage]) {
+        self.sampledAt = sampledAt
+        self.host = host
+        self.machines = machines
+    }
+}
+
+public struct HostUsage: Codable, Sendable {
+    public var name: String
+    public var cpus: Int
+    public var cpuPercent: Double
+    public var memoryBytes: Int64
+    public var memoryUsedBytes: Int64
+
+    public init(name: String, cpus: Int, cpuPercent: Double, memoryBytes: Int64, memoryUsedBytes: Int64) {
+        self.name = name
+        self.cpus = cpus
+        self.cpuPercent = cpuPercent
+        self.memoryBytes = memoryBytes
+        self.memoryUsedBytes = memoryUsedBytes
+    }
+}
+
+/// A lease's use: its processes on the server's Mac (a VM's, a simulator's,
+/// an emulator's), against what it was given where it was given anything.
+/// A value the server couldn't measure is left out.
+public struct MachineUsage: Codable, Sendable {
+    public var id: String
+    public var platform: Platform
+    public var config: String
+    public var holder: String
+    public var cpus: Int?
+    public var memoryLimitBytes: Int64?
+    public var cpuPercent: Double?
+    /// Resident memory.
+    public var memoryBytes: Int64?
+
+    public init(id: String, platform: Platform, config: String, holder: String, cpus: Int? = nil, memoryLimitBytes: Int64? = nil,
+                cpuPercent: Double? = nil, memoryBytes: Int64? = nil) {
+        self.id = id
+        self.platform = platform
+        self.config = config
+        self.holder = holder
+        self.cpus = cpus
+        self.memoryLimitBytes = memoryLimitBytes
+        self.cpuPercent = cpuPercent
+        self.memoryBytes = memoryBytes
+    }
+}
+
 /// The server's Bazel cache (`GET /v1/cache`): its port on the server's
 /// addresses, the token that reads it (`Authorization: Bearer <token>`;
 /// writing takes another, kept on the server's Mac), and how it is doing
@@ -215,13 +312,16 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
 
 public enum OSS {
     /// This build's version, and the API level it speaks.
-    public static let version = "0.4.0"
+    public static let version = "0.5.0"
+    /// 4 from 0.5.0: input (`POST /v1/machines/<id>/input`), usage
+    /// (`GET /v1/usage`), and a lease's `cpus`, `memoryLimitBytes` and
+    /// `guestPassword`.
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 3
+    public static let apiLevel = 4
     /// What every server does; one that keeps a Bazel cache adds `cache`.
-    public static let features = ["machines", "screenshots"]
+    public static let features = ["machines", "screenshots", "input", "usage"]
 }
 
 extension JSONEncoder {
