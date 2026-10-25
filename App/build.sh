@@ -20,8 +20,18 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp .build/release/OSSApp "$APP/Contents/MacOS/oss"
 cp ../.build/release/oss "$APP/Contents/Helpers/oss"
+# The icon: Icon/OSServer.icon (Icon Composer), rendered at each size an
+# .icns holds by Xcode's ictool.
+ICTOOL="${ICTOOL:-$(xcode-select -p)/../Applications/Icon Composer.app/Contents/Executables/ictool}"
 ICONSET="$(mktemp -d)/AppIcon.iconset"
-swift Icon/make_icon.swift "$ICONSET"
+mkdir -p "$ICONSET"
+for points in 16 32 128 256 512; do
+  for scale in 1 2; do
+    suffix=$([ "$scale" = 2 ] && echo "@2x" || true)
+    "$ICTOOL" Icon/OSServer.icon --export-image --output-file "$ICONSET/icon_${points}x${points}${suffix}.png" \
+      --platform macOS --rendition Default --width "$points" --height "$points" --scale "$scale" >/dev/null
+  done
+done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 sed -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$BUILD/" Info.plist > "$APP/Contents/Info.plist"
 

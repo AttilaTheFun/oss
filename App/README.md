@@ -4,7 +4,10 @@ The server, run and watched from a Mac app (macOS 15). `build.sh` makes
 `build/oss.app`: the app (`OSSApp`, this package's) with the server's own
 binary (`oss`, the root package's) in `Contents/Helpers`, signed with the
 Mac's Apple Development identity (ad hoc without one). `--zip` also makes
-`build/oss.zip`; `--install` copies the app to /Applications.
+`build/oss.zip`; `--install` copies the app to /Applications. Its icon is
+`Icon/OSServer.icon` (Icon Composer: a glass stack of machines), rendered
+with Xcode's `ictool`; the repository's `.github/icon.png` is the same
+document at 512 px.
 
 - **The server** is `Contents/Helpers/oss serve`, the app's child
   (`ServerSupervisor`): started at launch, started again a second later if
