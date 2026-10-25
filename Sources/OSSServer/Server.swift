@@ -576,8 +576,8 @@ public final class ServerHost: Sendable {
         Task {
             await machines.recover()
             #if canImport(Virtualization)
-            // 0.7's first start: UTM's macOS bases become OS Server's own.
-            if config.useUTM && config.lends(.macos) { await MacImport.fromUTMIfNone() }
+            // UTM's macOS bases become OS Server's own (0.7's first start takes them all).
+            if config.useUTM && config.lends(.macos) { await MacImport.fromUTMWhereMissing() }
             #endif
             while true {
                 try? await machines.refreshBases()

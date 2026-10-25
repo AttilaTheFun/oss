@@ -365,11 +365,14 @@ enum MacImport {
         log("macOS \(config) is OS Server's own now (from UTM's \(name))")
     }
 
-    /// Every `oss-macos-` VM UTM has, when OS Server has no macOS base of
-    /// its own yet: the first start of 0.7 takes them in.
-    static func fromUTMIfNone() async {
-        guard MacVMStore.configs().isEmpty, let vms = try? await UTM.list() else { return }
-        for vm in vms where vm.name.hasPrefix("oss-macos-") && !vm.name.hasPrefix("oss-macos-lease") && vm.status == "stopped" {
+    /// Each `oss-macos-` VM UTM has whose config OS Server hasn't got of
+    /// its own: the first start of 0.7 takes them all in, and a base made
+    /// in UTM later comes in at the next start.
+    static func fromUTMWhereMissing() async {
+        guard let vms = try? await UTM.list() else { return }
+        let own = Set(MacVMStore.configs())
+        for vm in vms where vm.status == "stopped" {
+            guard let base = Base(name: vm.name), base.platform == .macos, !own.contains(base.config) else { continue }
             do { try await fromUTM(vm.name) } catch { log("importing \(vm.name): \(error)") }
         }
     }

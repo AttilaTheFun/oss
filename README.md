@@ -292,8 +292,8 @@ the server's key only, no sleep or screen lock (`provision/<platform>/vanilla`).
   screen; a script can't turn it on). Then
   `oss image build macos vanilla --from=base`. A macOS VM UTM already has
   becomes OS Server's own with `oss image import-utm <name> [--as=<config>]`
-  (an APFS clone: no space, a moment); 0.7's first start takes in every
-  `oss-macos-` VM UTM has when OS Server has none of its own.
+  (an APFS clone: no space, a moment); each start takes in every
+  `oss-macos-` VM UTM has whose config OS Server hasn't got of its own.
 - **Windows 11** (Virtualize → Windows, the ISO, "Install drivers and
   SPICE tools", 16 GB, 6 cores, 128 GB; display card `virtio-ramfb`, not
   `-gl`): a local account `runner`; UTM's guest tools from its CD; then

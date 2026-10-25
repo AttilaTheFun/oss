@@ -22,9 +22,10 @@
   bases as on UTM's. Screen Sharing still needs its switch turned on once
   in a new base's System Settings (at its live view).
 - **`oss image import-utm <name>…`** takes UTM's macOS VMs in as OS
-  Server's own bases (UTM exports an APFS clone: no space, a moment). The
-  first start of 0.7 does it for every `oss-macos-` VM in UTM when OS
-  Server has no macOS base yet, so the configs stay what they were.
+  Server's own bases (UTM exports an APFS clone: no space, a moment). Each
+  start does it for every `oss-macos-` VM in UTM whose config OS Server
+  hasn't got of its own (the first start of 0.7: all of them), so the
+  configs stay what they were.
 - **Its files are in `~/Library/Application Support/OS Server`**: settings
   (server.json), the token, the guest passwords, the cache's tokens, the
   leases (`State/`), the macOS bases (`Machines/`). The first start moves
