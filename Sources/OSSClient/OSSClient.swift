@@ -152,6 +152,8 @@ public struct OSSClient: Sendable {
 
     public func capabilities() async throws -> Capabilities { try await json("GET", "/v1/capabilities") }
     public func status() async throws -> Status { try await json("GET", "/v1/status") }
+    /// The server's Bazel cache, where it keeps one (the `cache` feature).
+    public func cache() async throws -> CacheInfo { try await json("GET", "/v1/cache") }
 
     // MARK: Machines
 

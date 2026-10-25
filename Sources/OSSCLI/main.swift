@@ -23,6 +23,11 @@ let usage = """
       oss image build ios <config> [--device="iPhone 17 Pro"] [--runtime=ID] [--script=PATH]
       oss image build android <config> [--api=35] [--tag=google_apis] [--script=PATH]
       oss image provision-macos --vm=NAME [--install]
+    The Bazel cache (a server's with "cache" in its server.json; its populate job writes, everyone else reads):
+      oss cache status                                      its size, and how many lookups it answered
+      oss cache use [--remove]                              this computer's Bazel reads it (~/.bazelrc, the token in ~/.netrc)
+      oss cache token --write | <what keeps it>             a token (the server's Mac only; piped, never shown)
+      oss cache serve                                       the cache alone (to try one, with an OSS_HOME of its own)
     Tools for programs that speak the Model Context Protocol:
       oss mcp                                               an MCP server on stdio: lease, use and release machines
 
@@ -107,6 +112,13 @@ func describe(_ lease: Lease, _ client: OSSClient) -> String {
     lines.append("  renew: oss machine renew \(lease.id)    release: oss machine release \(lease.id)")
     return lines.joined(separator: "\n")
 }
+
+/// A secret goes to a file or a pipe, never to the screen.
+func refuseTerminal(_ message: String) {
+    if isatty(STDOUT_FILENO) != 0 { fail(message) }
+}
+
+func gigabytes(_ bytes: Int64) -> String { String(format: "%.1f GB", Double(bytes) / 1_000_000_000) }
 
 func shellQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
@@ -240,6 +252,39 @@ do {
 
     case "capabilities":
         try printJSON(try await OSSClient.connect().capabilities())
+
+    case "cache":
+        switch sub {
+        case "status":
+            let client = try await OSSClient.connect()
+            let cache = try await client.cache()
+            let lookups = cache.hits + cache.misses
+            print("Bazel cache at \(client.host):\(cache.port): \(gigabytes(cache.bytes)) of \(gigabytes(cache.maxBytes)), "
+                  + "\(gigabytes(cache.freeBytes)) free on the server's disk")
+            print("  since the server started: \(cache.hits) of \(lookups) action lookups answered"
+                  + (lookups > 0 ? " (\(cache.hits * 100 / lookups)%)" : "") + ", \(cache.writes) entries written, \(cache.evicted) evicted")
+        case "use":
+            let client = try await OSSClient.connect()
+            let cache = try await client.cache()
+            let remove = arguments.flags.contains("remove")
+            try CacheClientFiles.use(host: client.host, port: cache.port, token: remove ? nil : cache.readToken)
+            print(remove ? "Bazel here no longer reads the cache (~/.bazelrc and ~/.netrc)"
+                         : "Bazel here reads the cache at http://\(client.host):\(cache.port) (~/.bazelrc; the token in ~/.netrc)")
+        case "token":
+            let write = arguments.flags.contains("write")
+            guard write || arguments.flags.contains("read") else { fail("oss cache token --write | --read") }
+            guard let token = CacheTokens.read(write ? CacheTokens.writePath : CacheTokens.readPath) else {
+                fail("no cache token here: the server's Mac makes them when it first keeps a cache")
+            }
+            refuseTerminal("a token is a secret: pipe it into what keeps it (oss cache token --write | gh secret set …)")
+            print(token)
+        #if canImport(Network)
+        case "serve":
+            try await Server.serveCache()
+        #endif
+        default:
+            fail("oss cache status | use [--remove] | token --write|--read | serve")
+        }
 
     case "doctor":
         let client = try await OSSClient.connect()

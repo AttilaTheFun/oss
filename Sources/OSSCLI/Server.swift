@@ -35,9 +35,12 @@ actor MachineManager {
     private var knownBases: [Base] = []
     private var forwarders: [String: [Forwarder]] = [:]
     private let utm = UTMQueue()
+    /// The server's Bazel cache, which every VM lease reads.
+    private let bazelCache: (port: Int, readToken: String)?
 
-    init(config: ServerConfig) {
+    init(config: ServerConfig, bazelCache: (port: Int, readToken: String)? = nil) {
         self.config = config
+        self.bazelCache = bazelCache
     }
 
     // MARK: Status
@@ -205,6 +208,9 @@ actor MachineManager {
         let password = Random.vncPassword()
         try await guest.prepare(holderKey: holderKey, vncPassword: password)
         await guest.setTimeZone(TimeZone.current.identifier)
+        if let bazelCache, let host = LocalNetworks.hostAddress(facing: address) {
+            await guest.useBazelCache(host: host, port: bazelCache.port, token: bazelCache.readToken)
+        }
         if !(await guest.waitForDesktop(seconds: 240)) { log("lease \(id): no desktop after 240 s; handing it over anyway") }
         guard leases[id]?.state == .creating else { return }   // released meanwhile
         let ssh = try forward(id, to: address, port: 22)
@@ -417,9 +423,10 @@ enum Server {
     static func serve() async throws -> Never {
         let config = ServerConfig.load()
         let token = Token.ensure()
-        let machines = MachineManager(config: config)
+        let cache = config.cache.flatMap(startCache)
+        let machines = MachineManager(config: config, bazelCache: cache.map { ($0.config.port, $0.readToken) })
         let server = try HTTPServer(port: config.port) { request in
-            await route(request, machines: machines, token: token)
+            await route(request, machines: machines, token: token, cache: cache)
         }
         server.start()
         // Recovery and listings ask UTM, which can be slow to answer (or
@@ -438,11 +445,34 @@ enum Server {
         }
     }
 
-    static func route(_ request: HTTPRequest, machines: MachineManager, token: String) async -> HTTPResponse {
+    /// The Bazel cache, with its tokens (made the first time); nil when its
+    /// port can't be had (the machines go on without it).
+    static func startCache(_ config: CacheConfig) -> CacheServer? {
+        do {
+            let cache = try CacheServer(config: config, store: CacheStore(config: config),
+                                        readToken: CacheTokens.ensure(CacheTokens.readPath),
+                                        writeToken: CacheTokens.ensure(CacheTokens.writePath))
+            cache.start()
+            log("oss Bazel cache on :\(config.port), at most \(config.maxGigabytes) GB, \(config.minFreeGigabytes) GB kept free on the disk")
+            return cache
+        } catch {
+            log("oss Bazel cache off: \(error)")
+            return nil
+        }
+    }
+
+    /// `oss cache serve`: the cache alone (to try one beside a running
+    /// server, with an `OSS_HOME` of its own).
+    static func serveCache() async throws -> Never {
+        guard startCache(ServerConfig.load().cache ?? CacheConfig()) != nil else { exit(1) }
+        while true { try await Task.sleep(for: .seconds(3600)) }
+    }
+
+    static func route(_ request: HTTPRequest, machines: MachineManager, token: String, cache: CacheServer?) async -> HTTPResponse {
         let parts = request.path.split(separator: "?")[0].split(separator: "/").map(String.init)
         if parts == ["v1", "capabilities"] {
             let platforms = ((try? await machines.bases()) ?? []).map(\.platform)
-            return .json(Capabilities(version: OSS.version, api: OSS.apiLevel, features: OSS.features,
+            return .json(Capabilities(version: OSS.version, api: OSS.apiLevel, features: OSS.features + (cache == nil ? [] : ["cache"]),
                                       platforms: Platform.allCases.filter { platforms.contains($0) }))
         }
         if parts == ["v1", "hello"] {
@@ -456,6 +486,9 @@ enum Server {
             case ("GET", 2) where parts[1] == "status":
                 return .json(Status(server: localHostName, bases: try await machines.bases(),
                                     capacity: await machines.capacity(), leases: await machines.all()))
+            case ("GET", 2) where parts[1] == "cache":
+                guard let cache else { return .error("this server keeps no Bazel cache", status: 404) }
+                return .json(await cache.store.info(port: cache.config.port, readToken: cache.readToken))
             case ("GET", 2) where parts[1] == "doctor":
                 // Whether this server can drive UTM (its CLI and AppleScript), simulators and emulators.
                 let list = try? await Shell.run(UTM.utmctl, ["list"], timeout: 120)

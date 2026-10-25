@@ -13,6 +13,10 @@ for automation, for anything that needs a machine of its own for a while:
   Android emulators. Every one is a clone of a **base**: an APFS clone,
   ready in seconds, taking no disk until it changes, deleted when it's
   released or its time runs out.
+- **A Bazel cache** (if you want one): one job writes what it builds (CI's,
+  after each merge), and the server's VMs, its containers and the Mac
+  itself read it, so a fresh machine downloads what was built instead of
+  building it again.
 
 One binary, `oss`, is the server (`oss serve`) and the command line. The
 command line calls the server's HTTP API, which programs can call too:
@@ -70,6 +74,38 @@ or `oss machine lease linux --exports >> "$GITHUB_ENV"`, then `$OSS_SSH '…'`
 in later steps and `oss machine release "$OSS_ID"` in an `if: always()`
 step.
 
+### A Bazel cache
+
+With `"cache"` in its settings (below), the server keeps a [Bazel remote
+cache](https://bazel.build/remote/caching) on its port 7490, Bazel's HTTP
+protocol. It has two tokens, made with it in `~/.config/oss/`:
+
+- **The read token** is for everyone. Every VM lease is set up with it:
+  runner's `.bazelrc` names the cache, read-only
+  (`--noremote_upload_local_results`), and the token is in runner's
+  `.netrc`, where Bazel's HTTP cache takes credentials from (not the
+  bazelrc, which `--announce_rc` prints). On this Mac,
+  or a computer of its own, `oss cache use` writes the same two files
+  (`oss cache use --remove` takes them away); a program gets the token
+  from `GET /v1/cache`. Reading is for the server's Mac, its VMs and its
+  containers: the LAN can't read unless `lanReads` says so.
+- **The write token** is for one job: CI's, building `main` after each
+  merge, with the same flags everyone else builds with (the cache matches
+  an action by its exact command line). It never leaves the server's Mac
+  but piped into what keeps it, such as a GitHub environment only `main`
+  may use:
+
+  ```sh
+  oss cache token --write | gh secret set OSS_CACHE_WRITE_TOKEN --env main --repo <owner>/<repo>
+  ```
+
+  and the job writes its own `.netrc` from the secret
+  (`machine <server> login bazel password <token>`).
+
+`oss cache status` says how big it is and how many lookups it answered.
+It keeps to its size, and keeps the disk's free space above its floor,
+by letting go of the entries read longest ago.
+
 ### From other computers
 
 `oss` reaches the server through the addresses in
@@ -124,8 +160,12 @@ Bodies are JSON; errors are `{"error": "…"}`.
 | `PUT /v1/machines/<id>/files/<name>` (raw body) | a file for its commands, as `@<name>` (a `.zip` is unpacked: an `.app`) |
 | `POST /v1/machines/<id>/simctl` or `/adb` `{"arguments": [...]}` | `simctl` against the simulator / `adb` against the emulator: `{"status", "output", "error"}` |
 | `GET /v1/machines/<id>/screenshot` | a PNG of its screen |
-| `POST …/processes/<p>/input` (raw body) `?close=1` | bytes for its input, in order; `close` then ends it (end of file) |
-| `POST …/processes/<p>/signal?signal=TERM\|KILL\|INT\|HUP` | signalled |
+| `GET /v1/cache` | the Bazel cache's port and read token, its size and how many lookups it answered (404 without one) |
+
+The Bazel cache is on a port of its own (7490): `GET`, `HEAD` and `PUT` of
+`/ac/<sha256>` and `/cas/<sha256>`, with the read or the write token as
+`Authorization: Bearer <token>` or as Basic's password (what Bazel sends
+from a `.netrc`).
 
 `oss mcp` serves the machine commands as [Model Context
 Protocol](https://modelcontextprotocol.io) tools on stdio (`oss_status`,
@@ -156,6 +196,13 @@ Settings (`~/.config/oss/server.json`, every field optional):
 {"port": 7480, "capacity": {"macos": 2, "windows": 2, "linux": 2, "ios": 4, "android": 2},
  "defaultMinutes": 60, "maxMinutes": 480, "defaultConfig": {"macos": "vanilla", "ios": "iphone", "android": "phone"},
  "managementKey": "~/.ssh/id_ed25519"}
+```
+
+A Bazel cache (off without `"cache"`; `{}` for these defaults):
+
+```json
+{"cache": {"port": 7490, "directory": "~/.local/state/oss/bazel-cache", "maxGigabytes": 20,
+           "minFreeGigabytes": 30, "lanReads": false}}
 ```
 
 Keep the installers (`*.ipsw`, `*.iso`) in this folder if you like: they
@@ -279,6 +326,19 @@ snapshot.
   holds every request the same way.
 - **Ubuntu hangs on a reboot from inside** under UTM; leases are never
   rebooted. A clone that doesn't come up is made again, once.
+- **Credentials for Bazel's HTTP cache**: a `.netrc` (or a credential
+  helper), or `--remote_header`; `--remote_cache_header` never reaches an
+  HTTP cache (Bazel 9.1). oss uses `.netrc`, so no bazelrc holds a token
+  (`--announce_rc` prints a bazelrc's lines). In a bazelrc a header's value
+  must be quoted: an unquoted `Authorization=Bearer <token>` is two words,
+  the second taken for a target and printed in the error.
+  Bazel warns once a build that the credentials go in plaintext; they stay
+  on the Mac's own networks (its bridges), which is also how the cache
+  tells a VM or container from the LAN: by the bridge subnets the Mac has
+  at that moment (vmnet makes them as VMs and containers start).
+- **PowerShell reads a script from standard input a line at a time**
+  (`-Command -`), which breaks a here-string: Windows scripts are one line
+  per command.
 - **Emulators** use oss's own adb server port (5137) so they never meet
   another adb on the Mac, and keep running when the server restarts
   (launchd's job leaves its process group alone).

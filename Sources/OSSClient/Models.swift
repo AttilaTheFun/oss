@@ -175,6 +175,37 @@ public struct Capabilities: Codable, Sendable {
     }
 }
 
+/// The server's Bazel cache (`GET /v1/cache`): its port on the server's
+/// addresses, the token that reads it (`Authorization: Bearer <token>`;
+/// writing takes another, kept on the server's Mac), and how it is doing
+/// since the server started.
+public struct CacheInfo: Codable, Sendable {
+    public var port: Int
+    public var readToken: String
+    public var bytes: Int64
+    public var maxBytes: Int64
+    /// The disk's free space, which the cache keeps above its floor.
+    public var freeBytes: Int64
+    /// Action cache lookups answered, and not.
+    public var hits: Int
+    public var misses: Int
+    public var writes: Int
+    public var evicted: Int
+
+    public init(port: Int, readToken: String, bytes: Int64, maxBytes: Int64, freeBytes: Int64,
+                hits: Int, misses: Int, writes: Int, evicted: Int) {
+        self.port = port
+        self.readToken = readToken
+        self.bytes = bytes
+        self.maxBytes = maxBytes
+        self.freeBytes = freeBytes
+        self.hits = hits
+        self.misses = misses
+        self.writes = writes
+        self.evicted = evicted
+    }
+}
+
 /// An error the server answers with (any status but 2xx).
 public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
     public var error: String
@@ -184,10 +215,12 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
 
 public enum OSS {
     /// This build's version, and the API level it speaks.
-    public static let version = "0.3.0"
+    public static let version = "0.4.0"
+    /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 2
+    public static let apiLevel = 3
+    /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots"]
 }
 
