@@ -243,6 +243,24 @@ enum Emulators {
         try? FileManager.default.removeItem(atPath: "\(c.androidAVDHome)/\(name).ini")
     }
 
+    /// What an AVD is given: hw.cpu.ncore and hw.ramSize (megabytes, or with
+    /// an M or G) from its config.ini.
+    static func allotment(_ c: ServerConfig, avd: String) -> (cpus: Int?, memoryBytes: Int64?) {
+        guard let text = try? String(contentsOfFile: "\(c.androidAVDHome)/\(avd).avd/config.ini", encoding: .utf8) else { return (nil, nil) }
+        var values: [String: String] = [:]
+        for line in text.split(separator: "\n") {
+            let pair = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            if pair.count == 2 { values[pair[0]] = pair[1] }
+        }
+        var memory: Int64?
+        if var ram = values["hw.ramSize"]?.uppercased() {
+            var unit: Int64 = 1024 * 1024
+            if ram.hasSuffix("G") { unit *= 1024; ram.removeLast() } else if ram.hasSuffix("M") { ram.removeLast() }
+            memory = Int64(ram).map { $0 * unit }
+        }
+        return (values["hw.cpu.ncore"].flatMap(Int.init), memory)
+    }
+
     static func stopADB() async {
         _ = try? await adb(ServerConfig.load(), ["kill-server"], timeout: 30)
     }

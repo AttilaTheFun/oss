@@ -157,6 +157,9 @@ actor MachineManager {
         leases[id]?.consolePort = port
         let pid = try await Emulators.lease(base: base, name: lease.name, port: port)
         leases[id]?.emulatorPID = pid
+        let allotted = Emulators.allotment(config, avd: lease.name)
+        leases[id]?.cpus = allotted.cpus
+        leases[id]?.memoryLimitBytes = allotted.memoryBytes
         guard leases[id]?.state == .creating else { return }
         // adb from anywhere: `adb connect <server>:<adbPort>` reaches the emulator's own adb port.
         let adb = try forward(id, to: "127.0.0.1", port: port + 1)
@@ -182,6 +185,7 @@ actor MachineManager {
                 try await UTM.clone(base.name, as: lease.name)
                 try await UTM.setMAC(lease.name, mac)
                 if let qemuVNC { try await UTM.setQEMUVNC(lease.name, port: qemuVNC) }
+                if self.config.headlessVMs { try await UTM.makeHeadless(lease.name, qemuVNCPort: qemuVNC) }
                 try await UTM.start(lease.name)
             }
             let deadline = Date().addingTimeInterval(bootAllowance)
@@ -203,11 +207,25 @@ actor MachineManager {
             }
         }
         guard let address else { throw APIError(error: "\(lease.name) reported no address, twice") }
+        if let qemuVNC {
+            // VNC's pointer absolute: the tablet alone (QMPConnection.removeRelativeMice).
+            do {
+                let removed = try await Task.detached { try QMPConnection(port: UTM.qmpPort(vncPort: qemuVNC)).removeRelativeMice() }.value
+                if removed == 0 { log("lease \(id): no USB mouse to take out; VNC's pointer may be relative") }
+            } catch {
+                log("lease \(id): taking out the USB mouse failed (\(error)); VNC's pointer may be relative")
+            }
+        }
         let guest = Guest(platform: lease.platform, address: address, user: config.guestUser, key: config.managementKey)
         guard await guest.waitUntilReachable(seconds: 300) else { throw APIError(error: "\(lease.name) at \(address): no SSH") }
         let password = Random.vncPassword()
         try await guest.prepare(holderKey: holderKey, vncPassword: password)
         await guest.setTimeZone(TimeZone.current.identifier)
+        if let allotted = try? await UTM.allotment(lease.name) {
+            leases[id]?.cpus = allotted.cpus
+            leases[id]?.memoryLimitBytes = allotted.memoryBytes
+        }
+        leases[id]?.guestPassword = GuestPasswords.password(for: lease.platform, config: lease.config)
         if let bazelCache, let host = LocalNetworks.hostAddress(facing: address) {
             await guest.useBazelCache(host: host, port: bazelCache.port, token: bazelCache.readToken)
         }
@@ -303,6 +321,37 @@ actor MachineManager {
         return lease
     }
 
+    /// A tap, swipe, text or key on a lease's screen.
+    func input(_ id: String, _ request: InputRequest) async throws {
+        let lease = try ready(id)
+        try MachineInput.check(request)
+        switch lease.platform {
+        case .android: try await MachineInput.android(request, port: lease.consolePort ?? 0)
+        case .ios: try await MachineInput.simulator(request, udid: lease.udid ?? "")
+        case .macos, .linux, .windows:
+            #if canImport(CommonCrypto)
+            // The guest's VNC directly, as screenshots: macOS's Screen Sharing, or QEMU's on loopback.
+            // Off the actor: its reads block, and nothing else may wait for them.
+            let (host, port, password) = lease.qemuVNCPort.map { ("127.0.0.1", $0, "") }
+                ?? (lease.guestAddress ?? "", 5900, lease.vncPassword ?? "")
+            try await Task.detached { try MachineInput.vnc(request, host: host, port: port, password: password) }.value
+            #else
+            throw APIError(error: "VM input needs a Mac server")
+            #endif
+        }
+    }
+
+    private var lastUsage: Usage?
+
+    /// What the server's Mac and the leases use: sampled at most every
+    /// three seconds (`ps` and `lsof` cost a moment).
+    func usage() async -> Usage {
+        if let lastUsage, Date().timeIntervalSince(lastUsage.sampledAt) < 3 { return lastUsage }
+        let sampled = await UsageProbe.usage(of: leases.values.filter { $0.state == .ready }.sorted { $0.created < $1.created })
+        lastUsage = sampled
+        return sampled
+    }
+
     /// `simctl` for a simulator, `adb` for an emulator, with `@name`
     /// arguments the lease's uploaded files.
     func command(_ id: String, _ arguments: [String]) async throws -> DeviceCommandResult {
@@ -345,11 +394,10 @@ actor MachineManager {
             let path = NSTemporaryDirectory() + "oss-vnc-\(Random.hex(4)).png"
             defer { try? FileManager.default.removeItem(atPath: path) }
             // The guest's VNC directly (no relay): macOS's Screen Sharing, or QEMU's on loopback.
-            if let qemu = lease.qemuVNCPort {
-                try RFBScreenshot(host: "127.0.0.1", port: qemu, password: "").capture(to: path)
-            } else {
-                try RFBScreenshot(host: lease.guestAddress ?? "", port: 5900, password: lease.vncPassword ?? "").capture(to: path)
-            }
+            // Off the actor, as input is.
+            let (host, port, password) = lease.qemuVNCPort.map { ("127.0.0.1", $0, "") }
+                ?? (lease.guestAddress ?? "", 5900, lease.vncPassword ?? "")
+            try await Task.detached { try RFBScreenshot(host: host, port: port, password: password).capture(to: path) }.value
             guard let data = FileManager.default.contents(atPath: path) else { throw APIError(error: "no screenshot") }
             return data
         }
@@ -486,6 +534,11 @@ enum Server {
             case ("GET", 2) where parts[1] == "status":
                 return .json(Status(server: localHostName, bases: try await machines.bases(),
                                     capacity: await machines.capacity(), leases: await machines.all()))
+            case ("GET", 2) where parts[1] == "usage":
+                return .json(await machines.usage())
+            case ("POST", 4) where parts[1] == "machines" && parts[3] == "input":
+                try await machines.input(parts[2], try JSONDecoder.oss.decode(InputRequest.self, from: request.body))
+                return .json(["done": "input"])
             case ("GET", 2) where parts[1] == "cache":
                 guard let cache else { return .error("this server keeps no Bazel cache", status: 404) }
                 return .json(await cache.store.info(port: cache.config.port, readToken: cache.readToken))

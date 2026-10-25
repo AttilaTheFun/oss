@@ -6,19 +6,23 @@ import OSSClient
 import ImageIO
 import UniformTypeIdentifiers
 
-/// Just enough of VNC's protocol (RFB 3.8, VNC password authentication,
-/// raw pixels) to save one frame of a guest's screen as a PNG. The
+/// Just enough of VNC's protocol (RFB 3.8, VNC password authentication)
+/// to see a guest's screen and use its pointer and keyboard. The
 /// connection goes through Apple's `/usr/bin/nc`, which macOS's local
 /// network privacy allows.
-struct RFBScreenshot {
-    var host: String
-    var port: Int
-    var password: String
-
+final class RFBConnection {
     struct Failure: Error, CustomStringConvertible { var description: String }
 
-    func capture(to path: String) throws {
-        let nc = Process()
+    private(set) var width = 0
+    private(set) var height = 0
+    private let nc: Process
+    private let reader: FileHandle
+    private let writer: FileHandle
+
+    /// A connection lasts at most `seconds`: a server that stops answering
+    /// (a guest with no screen sends no frame) ends a read then, not never.
+    init(host: String, port: Int, password: String, seconds: Double = 60) throws {
+        nc = Process()
         nc.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
         nc.arguments = [host, String(port)]
         let input = Pipe(), output = Pipe()
@@ -26,47 +30,93 @@ struct RFBScreenshot {
         nc.standardOutput = output
         nc.standardError = FileHandle.nullDevice
         try nc.run()
-        defer { if nc.isRunning { nc.terminate() } }
-        let reader = output.fileHandleForReading, writer = input.fileHandleForWriting
-
-        func read(_ count: Int) throws -> [UInt8] {
-            var bytes = [UInt8]()
-            bytes.reserveCapacity(count)
-            while bytes.count < count {
-                let chunk = reader.readData(ofLength: count - bytes.count)
-                if chunk.isEmpty { throw Failure(description: "the VNC server closed the connection") }
-                bytes.append(contentsOf: chunk)
+        reader = output.fileHandleForReading
+        writer = input.fileHandleForWriting
+        let process = nc
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { if process.isRunning { process.terminate() } }
+        do {
+            // Version: whatever the server says (Apple's is 3.889), 3.8 back.
+            _ = try read(12)
+            write(Array("RFB 003.008\n".utf8))
+            let count = Int(try read(1)[0])
+            if count == 0 {
+                let length = Self.u32(try read(4), 0)
+                throw Failure(description: "VNC refused: \(String(decoding: try read(length), as: UTF8.self))")
             }
-            return bytes
+            // macOS's Screen Sharing offers Apple's own authentication (30)
+            // first; VNC's password (2) is asked for by name.
+            let types = try read(count)
+            if types.contains(2) && !password.isEmpty {
+                write([2])
+                let challenge = try read(16)
+                write(try RFBScreenshot.vncResponse(challenge: challenge, password: password))
+            } else if types.contains(1) {
+                write([1])   // a server that asks for nothing (QEMU's, on loopback)
+            } else {
+                throw Failure(description: "the VNC server offers no authentication this client knows (types \(types))")
+            }
+            guard Self.u32(try read(4), 0) == 0 else { throw Failure(description: "VNC authentication failed") }
+            write([1])   // ClientInit: share the desktop.
+            let serverInit = try read(24)
+            width = Self.u16(serverInit, 0)
+            height = Self.u16(serverInit, 2)
+            _ = try read(Self.u32(serverInit, 20))   // the desktop's name
+        } catch {
+            if nc.isRunning { nc.terminate() }
+            throw error
         }
-        func u16(_ b: [UInt8], _ i: Int) -> Int { Int(b[i]) << 8 | Int(b[i + 1]) }
-        func u32(_ b: [UInt8], _ i: Int) -> Int { Int(b[i]) << 24 | Int(b[i + 1]) << 16 | Int(b[i + 2]) << 8 | Int(b[i + 3]) }
-        func write(_ bytes: [UInt8]) { writer.write(Data(bytes)) }
+    }
 
-        // Version: whatever the server says (Apple's is 3.889), 3.8 back.
-        _ = try read(12)
-        write(Array("RFB 003.008\n".utf8))
-        let count = Int(try read(1)[0])
-        if count == 0 {
-            let length = u32(try read(4), 0)
-            throw Failure(description: "VNC refused: \(String(decoding: try read(length), as: UTF8.self))")
-        }
-        let types = try read(count)
-        if types.contains(2) && !password.isEmpty {
-            write([2])
-            let challenge = try read(16)
-            write(try Self.vncResponse(challenge: challenge, password: password))
-        } else if types.contains(1) {
-            write([1])   // a server that asks for nothing (QEMU's, on loopback)
-        } else {
-            throw Failure(description: "the VNC server offers no authentication this client knows (types \(types))")
-        }
-        guard u32(try read(4), 0) == 0 else { throw Failure(description: "VNC authentication failed") }
+    deinit { close() }
 
-        write([1])   // ClientInit: share the desktop.
-        let serverInit = try read(24)
-        let width = u16(serverInit, 0), height = u16(serverInit, 2)
-        _ = try read(u32(serverInit, 20))   // the desktop's name
+    func close() {
+        if nc.isRunning { nc.terminate() }
+    }
+
+    func read(_ count: Int) throws -> [UInt8] {
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(count)
+        while bytes.count < count {
+            let chunk = reader.readData(ofLength: count - bytes.count)
+            if chunk.isEmpty { throw Failure(description: "the VNC server closed the connection") }
+            bytes.append(contentsOf: chunk)
+        }
+        return bytes
+    }
+
+    func write(_ bytes: [UInt8]) { writer.write(Data(bytes)) }
+
+    static func u16(_ b: [UInt8], _ i: Int) -> Int { Int(b[i]) << 8 | Int(b[i + 1]) }
+    static func u32(_ b: [UInt8], _ i: Int) -> Int { Int(b[i]) << 24 | Int(b[i + 1]) << 16 | Int(b[i + 2]) << 8 | Int(b[i + 3]) }
+
+    /// PointerEvent: the pointer at (x, y) in the framebuffer's pixels,
+    /// with these buttons down (1 the left).
+    func pointer(x: Int, y: Int, buttons: UInt8) {
+        let x = max(0, min(width - 1, x)), y = max(0, min(height - 1, y))
+        write([5, buttons, UInt8(x >> 8), UInt8(x & 255), UInt8(y >> 8), UInt8(y & 255)])
+    }
+
+    /// KeyEvent: an X keysym, down or up.
+    func key(_ keysym: UInt32, down: Bool) {
+        write([4, down ? 1 : 0, 0, 0, UInt8(keysym >> 24), UInt8(keysym >> 16 & 255), UInt8(keysym >> 8 & 255), UInt8(keysym & 255)])
+    }
+}
+
+/// One frame of a guest's screen, saved as a PNG (raw pixels).
+struct RFBScreenshot {
+    var host: String
+    var port: Int
+    var password: String
+
+    typealias Failure = RFBConnection.Failure
+
+    func capture(to path: String) throws {
+        let connection = try RFBConnection(host: host, port: port, password: password)
+        defer { connection.close() }
+        let width = connection.width, height = connection.height
+        let u16 = RFBConnection.u16, u32 = RFBConnection.u32
+        func read(_ count: Int) throws -> [UInt8] { try connection.read(count) }
+        func write(_ bytes: [UInt8]) { connection.write(bytes) }
 
         // 32 bits a pixel, little-endian, 8 bits a channel: blue, green, red, unused.
         write([0, 0, 0, 0, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0])

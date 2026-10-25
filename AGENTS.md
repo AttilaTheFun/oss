@@ -32,6 +32,11 @@ oss machine simctl <id> install ./My.app         # iOS: local paths uploaded fir
 oss machine simctl <id> launch <bundle id> | openurl <url> | terminate … | listapps
 oss machine adb <id> install ./app.apk | shell … | logcat -d   # Android
 oss machine screenshot <id> /tmp/screen.png      # any lease
+oss machine tap <id> <x> <y>                     # any lease, in the screenshot's pixels
+oss machine swipe <id> <x> <y> <to x> <to y> [--ms=300]
+oss machine type <id> <text…>
+oss machine key <id> return                      # names; on a VM cmd+a…
+oss machine upload|download <id> <from> <to>     # VMs (scp)
 oss machine vnc <id>                             # VMs: vnc://host:port and its password
 oss machine renew <id> --minutes=60
 oss machine release <id>

@@ -147,17 +147,63 @@ enum UTM {
 
     /// QEMU's own VNC server for a stopped QEMU VM: its screen on this Mac's
     /// loopback at `port`. Without a password: UTM's QEMU has no DES for
-    /// VNC's; the forwarder asks the client for the lease's instead.
+    /// VNC's; the forwarder asks the client for the lease's instead. Its QMP
+    /// beside it, at `qmpPort(vncPort:)` (QMPConnection).
     static func setQEMUVNC(_ name: String, port: Int?) async throws {
         if let port {
             try await configure(name, """
-                    set qemu additional arguments of config to {{argument string:"-vnc"}, {argument string:("127.0.0.1:" & (item 2 of argv))}}
-                """, [String(port - 5900)])
+                    set qemu additional arguments of config to {{argument string:"-vnc"}, {argument string:("127.0.0.1:" & (item 2 of argv))}, {argument string:"-qmp"}, {argument string:(item 3 of argv)}}
+                """, [String(port - 5900), qmpArgument(vncPort: port)])
         } else {
             try await configure(name, """
                     set qemu additional arguments of config to {}
                 """)
         }
+    }
+
+    /// A QEMU VM's QMP port: a thousand below its VNC's (46500-46999 by
+    /// default, so 45500-45999), on this Mac's loopback.
+    static func qmpPort(vncPort: Int) -> Int { vncPort - 1000 }
+
+    private static func qmpArgument(vncPort: Int) -> String {
+        "tcp:127.0.0.1:\(qmpPort(vncPort: vncPort)),server=on,wait=off"
+    }
+
+    /// A stopped clone made headless: UTM opens a window for each display a
+    /// VM has, so it gets none. A QEMU VM's graphics card (the first
+    /// display's) goes on QEMU's own command line instead, beside the `-vnc`
+    /// that shows its screen (setQEMUVNC's), so the guest keeps its screen
+    /// and only UTM's window goes.
+    static func makeHeadless(_ name: String, qemuVNCPort: Int?) async throws {
+        // An Apple VM keeps its display: without one the guest has no
+        // screen for Screen Sharing to show, and its window stays.
+        guard let port = qemuVNCPort else { return }
+        try await configure(name, """
+                set card to "virtio-gpu-pci"
+                -- Counted through a variable: `count of (displays of config)` answers 0.
+                set shown to displays of config
+                if (count of shown) > 0 then set card to hardware of item 1 of shown
+                set displays of config to {}
+                set qemu additional arguments of config to {{argument string:"-vnc"}, {argument string:("127.0.0.1:" & (item 2 of argv))}, {argument string:"-qmp"}, {argument string:(item 3 of argv)}, {argument string:"-device"}, {argument string:card}}
+            """, [String(port - 5900), qmpArgument(vncPort: port)])
+    }
+
+    /// What a VM is given: its CPU cores (nil for UTM's default) and memory.
+    static func allotment(_ name: String) async throws -> (cpus: Int?, memoryBytes: Int64?) {
+        let answer = try await script("""
+            on run argv
+              tell application "UTM"
+                set config to configuration of (virtual machine named (item 1 of argv))
+              end tell
+              using terms from application "UTM"
+                return ((memory of config) as text) & "," & ((cpu cores of config) as text)
+              end using terms from
+            end run
+            """, [name])
+        let parts = answer.split(separator: ",").map { Int($0.trimmingCharacters(in: .whitespaces)) }
+        let memory = parts.first.flatMap { $0 }.map { Int64($0) * 1024 * 1024 }
+        let cores = parts.count > 1 ? parts[1].flatMap { $0 > 0 ? $0 : nil } : nil
+        return (cores, memory)
     }
 
     /// Renames a stopped VM.

@@ -55,8 +55,20 @@ oss machine simctl <id> install ./My.app       # iOS: local paths are uploaded f
 oss machine simctl <id> launch com.example.app
 oss machine adb <id> install ./app.apk         # Android (or: adb connect <host>:<adbPort>)
 oss machine screenshot <id> screen.png         # any lease
+oss machine tap <id> 120 480                   # any lease: in the screenshot's pixels
+oss machine swipe <id> 500 1600 500 400 --ms=400
+oss machine type <id> hello world              # into what has focus
+oss machine key <id> return                    # names, a VM's cmd+a, or the platform's code
+oss machine upload <id> ./build ~/build        # VMs (scp; download the other way)
 oss machine run windows -- ./test.sh           # lease, run with OSS_* set, release
+oss usage                                      # the server's CPU and memory, and each lease's
 ```
+
+Input goes in by the platform's own means: `adb input` on an emulator,
+VNC's pointer and key events on a VM, and on a simulator
+[AXe](https://github.com/cameroncooke/AXe) (idb's HID client: `simctl` has
+no input), which the server's Mac needs for it (`brew install
+cameroncooke/axe/axe`).
 
 A lease names its platform and, optionally, a **config**: which base it's
 cloned from. oss makes vanilla bases (below); a server can have as many
@@ -160,6 +172,8 @@ Bodies are JSON; errors are `{"error": "…"}`.
 | `PUT /v1/machines/<id>/files/<name>` (raw body) | a file for its commands, as `@<name>` (a `.zip` is unpacked: an `.app`) |
 | `POST /v1/machines/<id>/simctl` or `/adb` `{"arguments": [...]}` | `simctl` against the simulator / `adb` against the emulator: `{"status", "output", "error"}` |
 | `GET /v1/machines/<id>/screenshot` | a PNG of its screen |
+| `POST /v1/machines/<id>/input` `{"action": "tap"\|"swipe"\|"type"\|"key", "x"?, "y"?, "toX"?, "toY"?, "milliseconds"?, "text"?, "key"?}` | a tap, swipe, text or key on its screen, in its screenshot's pixels |
+| `GET /v1/usage` | the server's CPU and memory, and each lease's (its processes on the Mac; 100% CPU is one core), against what it was given |
 | `GET /v1/cache` | the Bazel cache's port and read token, its size and how many lookups it answered (404 without one) |
 
 The Bazel cache is on a port of its own (7490): `GET`, `HEAD` and `PUT` of
@@ -204,6 +218,18 @@ A Bazel cache (off without `"cache"`; `{}` for these defaults):
 {"cache": {"port": 7490, "directory": "~/.local/state/oss/bazel-cache", "maxGigabytes": 20,
            "minFreeGigabytes": 30, "lanReads": false}}
 ```
+
+`"headlessVMs": true` runs Linux and Windows leases without UTM's windows:
+a clone has its displays taken away before it starts (UTM opens a window
+for each), and its graphics card goes on QEMU's own command line beside
+its VNC, so its screen is still there for screenshots, input and VNC. A
+macOS lease keeps its display, and so its window: an Apple VM without one
+has no screen for Screen Sharing to show.
+
+The VM bases' `runner` passwords, if you want leases to carry them (for
+logging in at a VM's screen, or unlocking it):
+`~/.config/oss/guest-passwords.json`, mode 600, `{"macos": "…", "linux":
+"…", "windows": "…"}` (or `"macos/xcode-27.0"` for one config).
 
 Keep the installers (`*.ipsw`, `*.iso`) in this folder if you like: they
 are ignored by git. Keep the folder out of backups.
@@ -339,6 +365,17 @@ snapshot.
 - **PowerShell reads a script from standard input a line at a time**
   (`-Command -`), which breaks a here-string: Windows scripts are one line
   per command.
+- **macOS's Screen Sharing offers Apple's own authentication first**
+  (type 30, ARD) and VNC's password (type 2) after it. A VNC client must ask
+  for type 2 by name (oss's own does); one that takes the first offered
+  asks for a macOS user and password instead of the lease's VNC password.
+- **A lease's usage** is its processes on the server's Mac: a VM's are those
+  with files open in its `.utm` bundle (`lsof`: UTM's QEMU, or
+  Virtualization's VM service), a simulator's its `launchd_sim` and what it
+  started, an emulator's its process tree. CPU is `ps`'s decaying average;
+  memory each process's physical footprint, as Activity Monitor counts it
+  (resident sizes count shared libraries once a process, and a simulator's
+  hundred processes added up to six times its memory).
 - **Emulators** use oss's own adb server port (5137) so they never meet
   another adb on the Mac, and keep running when the server restarts
   (launchd's job leaves its process group alone).

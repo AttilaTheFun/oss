@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.5.0
+
+- **Input.** `oss machine tap|swipe|type|key` (and `POST
+  /v1/machines/<id>/input`, OSSClient's `input`, the MCP tools `oss_tap`,
+  `oss_swipe`, `oss_type`, `oss_key`): in a screenshot's pixels, on any
+  lease. An emulator by `adb input`; a VM by VNC's pointer and key events
+  (with modifiers: `cmd+a`); a simulator by AXe, which the server's Mac needs
+  (`brew install cameroncooke/axe/axe`, or `axePath` in server.json).
+- **Usage.** `oss usage` (and `GET /v1/usage`, OSSClient's `usage()`, the
+  MCP tool `oss_usage`): the server's CPU and memory, and each lease's, from
+  its processes on the Mac, against what it was given (`cpus`,
+  `memoryLimitBytes`, now on a VM's and an emulator's lease too).
+- **A VM lease's `guestPassword`**, from `~/.config/oss/guest-passwords.json`
+  where the server's owner keeps the bases' `runner` passwords.
+- `oss machine upload` and `download` (scp, VMs).
+- **Headless VMs** (`"headlessVMs": true` in server.json): a Linux or
+  Windows clone has no displays, so UTM opens no window; its graphics card
+  moves to QEMU's command line beside its VNC. A macOS VM keeps its display
+  (without one it has no screen to share).
+- **A QEMU VM's VNC pointer is absolute.** UTM gives its QEMU VMs a USB
+  mouse beside the tablet, and while the guest followed the mouse a VNC
+  client's clicks landed wherever the pointer already was. oss takes the
+  mouse out (over QMP, which it now asks QEMU for on a loopback port a
+  thousand below the VM's VNC), and its own input tells QEMU's VNC its
+  encodings first, which is when QEMU looks at the pointer's kind.
+- **VNC screenshots and input no longer hold up the server.** They ran on
+  the server's one actor with no deadline, so a guest that never drew a
+  frame stopped every other request; they run beside it now, and a VNC
+  connection gives up after 60 seconds.
+- The README says why a VNC client must ask macOS's Screen Sharing for
+  VNC's password by name.
+- API level 4. A 0.4 client keeps working: the API only gained things.
+
 ## 0.4.0
 
 - **A Bazel cache.** With `"cache"` in server.json the server keeps a

@@ -7,7 +7,7 @@ import OSSClient
 /// of it (an APFS clone of the device's directory: seconds, no disk until
 /// it changes), booted, and deleted when the lease ends.
 enum Simulators {
-    struct Device: Decodable { var udid: String; var name: String; var state: String }
+    struct Device: Decodable { var udid: String; var name: String; var state: String; var deviceTypeIdentifier: String? }
 
     static func devices() async throws -> [Device] {
         let result = try await Shell.run("/usr/bin/xcrun", ["simctl", "list", "devices", "-j"], timeout: 60)
@@ -59,6 +59,22 @@ enum Simulators {
         var rest = Array(arguments.dropFirst())
         if let booted = rest.firstIndex(of: "booted") { rest[booted] = udid } else { rest.insert(udid, at: 0) }
         return try await simctl([command] + rest)
+    }
+
+    /// A device's screen scale (pixels a point), from its device type's
+    /// profile: what turns a screenshot's pixels into the points input takes.
+    static func screenScale(udid: String) async throws -> Double {
+        guard let type = try await devices().first(where: { $0.udid == udid })?.deviceTypeIdentifier else {
+            throw APIError(error: "no simulator \(udid)")
+        }
+        struct Types: Decodable { var devicetypes: [DeviceType] }
+        struct DeviceType: Decodable { var identifier: String; var bundlePath: String? }
+        let listed = try await simctl(["list", "devicetypes", "-j"], timeout: 60)
+        let types = try JSONDecoder().decode(Types.self, from: Data(listed.output.utf8)).devicetypes
+        guard let bundle = types.first(where: { $0.identifier == type })?.bundlePath,
+              let profile = NSDictionary(contentsOfFile: "\(bundle)/Contents/Resources/profile.plist"),
+              let scale = (profile["mainScreenScale"] as? NSNumber)?.doubleValue, scale > 0 else { return 3 }
+        return scale
     }
 
     static func screenshot(udid: String) async throws -> Data {

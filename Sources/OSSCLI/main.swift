@@ -14,10 +14,18 @@ let usage = """
       oss machine simctl <id> <simctl arguments…>          iOS: install ./My.app, launch <bundle id>, openurl …
       oss machine adb <id> <adb arguments…>                 Android: install ./app.apk, shell …, logcat -d …
       oss machine screenshot <id> <file.png>                any lease
+      oss machine tap <id> <x> <y>                          any lease, in its screenshot's pixels
+      oss machine swipe <id> <x> <y> <to x> <to y> [--ms=300]
+      oss machine type <id> <text…>                         typed into what has focus
+      oss machine key <id> <key>                            return, tab, escape, backspace, delete, space, up, down,
+                                                            left, right, pageup, pagedown, home, back; on a VM cmd+a…
+      oss machine upload <id> <local> <remote>              macOS, Linux, Windows (scp; a directory too)
+      oss machine download <id> <remote> <local>
       oss machine run <platform> [--config=NAME] [--minutes=N] -- command…
                                                             lease, run the command with OSS_* set, release
     The server and its bases (on the server's Mac):
       oss serve | status | capabilities | doctor
+      oss usage [--json]                                    the server's CPU and memory, and each lease's
       oss setup android [--api=35] [--tag=google_apis]     the Android SDK (emulator, platform-tools, a system image)
       oss image build <macos|linux|windows> <config> --from=<base config> [--script=PATH] [--copy=HOST:GUEST]
       oss image build ios <config> [--device="iPhone 17 Pro"] [--runtime=ID] [--script=PATH]
@@ -200,6 +208,40 @@ do {
             print(result.output, terminator: "")
             FileHandle.standardError.write(Data(result.error.utf8))
             exit(result.status)
+        case "tap", "swipe", "type", "key":
+            let lease = try await resolveLease(target, client)
+            let values = Array(arguments.positional.dropFirst(3))
+            func number(_ i: Int) -> Double {
+                guard i < values.count, let value = Double(values[i]) else { fail("oss machine \(sub!) <id> …: see oss --help") }
+                return value
+            }
+            let request: InputRequest
+            switch sub {
+            case "tap": request = InputRequest(action: .tap, x: number(0), y: number(1))
+            case "swipe":
+                request = InputRequest(action: .swipe, x: number(0), y: number(1), toX: number(2), toY: number(3),
+                                       milliseconds: arguments.options["ms"].flatMap(Int.init))
+            case "type":
+                let text = (values + arguments.rest).joined(separator: " ")
+                guard !text.isEmpty else { fail("oss machine type <id> <text…>") }
+                request = InputRequest(action: .type, text: text)
+            default:
+                guard let key = values.first else { fail("oss machine key <id> <key>") }
+                request = InputRequest(action: .key, key: key)
+            }
+            try await client.input(lease.id, request)
+        case "upload", "download":
+            guard arguments.positional.count >= 5 else { fail("oss machine \(sub!) <id> <from> <to>") }
+            let lease = try await resolveLease(target, client)
+            guard lease.platform.isVM else { fail("upload and download are for VMs: a simulator takes simctl, an emulator adb push") }
+            let remote = "\(lease.sshUser ?? "runner")@\(client.host):"
+            let (from, to) = sub == "upload"
+                ? (arguments.positional[3], remote + arguments.positional[4])
+                : (remote + arguments.positional[3], arguments.positional[4])
+            var scp = ["-q", "-r", "-P", String(lease.sshPort ?? 22), "-o", "UserKnownHostsFile=\(OSSClient.knownHosts(lease.id))",
+                       "-o", "StrictHostKeyChecking=accept-new"]
+            if let identity = arguments.options["identity"] { scp += ["-i", identity] }
+            exit(try Shell.passthrough("/usr/bin/scp", scp + [from, to]))
         case "screenshot":
             guard arguments.positional.count >= 4 else { fail("oss machine screenshot <id> <file.png>") }
             let lease = try await resolveLease(target, client)
@@ -252,6 +294,23 @@ do {
 
     case "capabilities":
         try printJSON(try await OSSClient.connect().capabilities())
+
+    case "usage":
+        let client = try await OSSClient.connect()
+        let usage = try await client.usage()
+        if arguments.flags.contains("json") {
+            try printJSON(usage)
+        } else {
+            let h = usage.host
+            print("\(h.name): CPU \(String(format: "%.0f", h.cpuPercent))% of \(h.cpus * 100)%, memory \(gigabytes(h.memoryUsedBytes)) of \(gigabytes(h.memoryBytes))")
+            for m in usage.machines {
+                let cpu = m.cpuPercent.map { String(format: "%.0f%%", $0) } ?? "?"
+                let cpus = m.cpus.map { " of \($0 * 100)%" } ?? ""
+                let memory = m.memoryBytes.map(gigabytes) ?? "?"
+                let limit = m.memoryLimitBytes.map { " of \(gigabytes($0))" } ?? ""
+                print("  \(m.id)  \(m.platform.rawValue)/\(m.config)  CPU \(cpu)\(cpus), memory \(memory)\(limit)  \(m.holder)")
+            }
+        }
 
     case "cache":
         switch sub {
