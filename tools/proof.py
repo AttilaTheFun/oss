@@ -2,7 +2,7 @@
 """The oss app's proof: its screens, for review before a release.
 
   tools/proof.py --review <dir> [--version 0.6.0] [--commit <sha>] [--held <exports file>]
-                 [--no-build] [--publish <ssh host>]
+                 [--no-build] [--publish <ssh host>] [--pull-request <N>]
 
 Builds the app (App/build.sh --zip), leases a macOS VM from this Mac's oss
 (or uses a held lease: `oss machine lease macos --exports > file`), installs
@@ -44,6 +44,8 @@ def main():
     parser.add_argument("--held", default=None, help="a held macOS lease's `oss machine lease macos --exports` output")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--publish", default=None, metavar="HOST", help="the review store's host (ssh)")
+    parser.add_argument("--pull-request", type=int, default=None, metavar="N",
+                        help="a pull request's run: filed as pr-<N>-<commit>, never counted toward a release")
     args = parser.parse_args()
     version = args.version or open(os.path.join(ROOT, "Sources/OSSClient/Models.swift")).read().split('public static let version = "')[1].split('"')[0]
     if not args.no_build:
@@ -108,14 +110,16 @@ def main():
         if not args.held:
             sh(["oss", "machine", "release", lease_id], check=False)
 
-    json.dump({"schema": 1, "app": "oss", "version": version, "release": version, "commit": args.commit,
+    folder = f"pr-{args.pull_request}-{args.commit[:8]}" if args.pull_request else version
+    json.dump({"schema": 1, "app": "oss", "version": version if not args.pull_request else f"{version} (#{args.pull_request})",
+               "release": None if args.pull_request else version, "commit": args.commit,
                "kind": "snapshots", "target": "macos", "device": "macOS VM (an oss lease)", "orientation": "landscape",
                "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "items": items},
               open(os.path.join(out, "manifest.json"), "w"), indent=1)
     expected = len(APPEARANCES) * (len(SCREENS) + 1)
     print(f"review-macos: {len(items)} of {expected} screens")
     if args.publish:
-        store = f"ReleaseReview/runs/oss/{version}/macos"
+        store = f"ReleaseReview/runs/oss/{folder}/macos"
         sh(["ssh", "-o", "BatchMode=yes", args.publish, f"mkdir -p {store}"])
         sh(["rsync", "-a", "--delete", out + "/", f"{args.publish}:{store}/"])
         icon = os.path.join(work, "icon.png")
