@@ -370,7 +370,10 @@ snapshot.
 - **A lease's usage** is its processes on the server's Mac: a VM's are those
   with files open in its `.utm` bundle (`lsof`: UTM's QEMU, or
   Virtualization's VM service), a simulator's its `launchd_sim` and what it
-  started, an emulator's its process tree. CPU is `ps`'s decaying average.
+  started, an emulator's its process tree. CPU is `ps`'s decaying average;
+  memory each process's physical footprint, as Activity Monitor counts it
+  (resident sizes count shared libraries once a process, and a simulator's
+  hundred processes added up to six times its memory).
 - **Emulators** use oss's own adb server port (5137) so they never meet
   another adb on the Mac, and keep running when the server restarts
   (launchd's job leaves its process group alone).

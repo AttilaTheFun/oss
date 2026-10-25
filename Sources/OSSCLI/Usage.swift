@@ -5,8 +5,8 @@ import OSSClient
 import Darwin
 
 /// What the server's Mac and each lease use, from its processes: `ps`'s
-/// CPU (a decaying average, 100 one core) and resident memory, a lease's
-/// summed over its own processes. A VM's are those with files open in its
+/// CPU (a decaying average, 100 one core) and each process's physical
+/// footprint, a lease's summed over its own processes. A VM's are those with files open in its
 /// `.utm` bundle (UTM's QEMU, or Virtualization's VM service); a simulator's
 /// its `launchd_sim` and what that started; an emulator's its process and
 /// what that started.
@@ -34,6 +34,17 @@ enum UsageProbe {
             guard f.count == 4, let pid = Int(f[0]), let ppid = Int(f[1]), let cpu = Double(f[2]), let rss = Int64(f[3]) else { return nil }
             return Process(pid: pid, ppid: ppid, cpu: cpu, rss: rss * 1024, command: command[pid] ?? "")
         }
+    }
+
+    /// A process's physical footprint, as Activity Monitor's Memory counts
+    /// it (resident size counts every shared library once a process: a
+    /// simulator's hundred processes added up to many times its memory).
+    static func footprint(_ pid: Int) -> Int64? {
+        var info = rusage_info_v4()
+        let status = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(Int32(pid), RUSAGE_INFO_V4, $0) }
+        }
+        return status == 0 ? Int64(info.ri_phys_footprint) : nil
     }
 
     /// A process and every process under it.
@@ -100,7 +111,7 @@ enum UsageProbe {
             return MachineUsage(id: lease.id, platform: lease.platform, config: lease.config, holder: lease.holder,
                                 cpus: lease.cpus, memoryLimitBytes: lease.memoryLimitBytes,
                                 cpuPercent: processes.isEmpty ? nil : (processes.reduce(0) { $0 + $1.cpu } * 10).rounded() / 10,
-                                memoryBytes: processes.isEmpty ? nil : processes.reduce(0) { $0 + $1.rss })
+                                memoryBytes: processes.isEmpty ? nil : processes.reduce(0) { $0 + (footprint($1.pid) ?? $1.rss) })
         }
         return Usage(sampledAt: Date(), host: host(all), machines: machines)
     }
