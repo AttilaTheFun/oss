@@ -19,7 +19,9 @@ final class RFBConnection {
     private let reader: FileHandle
     private let writer: FileHandle
 
-    init(host: String, port: Int, password: String) throws {
+    /// A connection lasts at most `seconds`: a server that stops answering
+    /// (a guest with no screen sends no frame) ends a read then, not never.
+    init(host: String, port: Int, password: String, seconds: Double = 60) throws {
         nc = Process()
         nc.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
         nc.arguments = [host, String(port)]
@@ -30,6 +32,8 @@ final class RFBConnection {
         try nc.run()
         reader = output.fileHandleForReading
         writer = input.fileHandleForWriting
+        let process = nc
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { if process.isRunning { process.terminate() } }
         do {
             // Version: whatever the server says (Apple's is 3.889), 3.8 back.
             _ = try read(12)

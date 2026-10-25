@@ -131,6 +131,10 @@ enum MachineInput {
 
     static func vnc(_ request: InputRequest, host: String, port: Int, password: String) throws {
         let connection = try RFBConnection(host: host, port: port, password: password)
+        // SetEncodings, though nothing is drawn: QEMU's VNC asks whether its
+        // pointer is absolute only then, and until it has, moves are
+        // relative, so a tap lands where the pointer already was.
+        connection.write([2, 0, 0, 1, 0, 0, 0, 0])
         defer {
             // A moment for the server to act before the connection closes.
             Thread.sleep(forTimeInterval: 0.15)

@@ -207,6 +207,15 @@ actor MachineManager {
             }
         }
         guard let address else { throw APIError(error: "\(lease.name) reported no address, twice") }
+        if let qemuVNC {
+            // VNC's pointer absolute: the tablet alone (QMPConnection.removeRelativeMice).
+            do {
+                let removed = try await Task.detached { try QMPConnection(port: UTM.qmpPort(vncPort: qemuVNC)).removeRelativeMice() }.value
+                if removed == 0 { log("lease \(id): no USB mouse to take out; VNC's pointer may be relative") }
+            } catch {
+                log("lease \(id): taking out the USB mouse failed (\(error)); VNC's pointer may be relative")
+            }
+        }
         let guest = Guest(platform: lease.platform, address: address, user: config.guestUser, key: config.managementKey)
         guard await guest.waitUntilReachable(seconds: 300) else { throw APIError(error: "\(lease.name) at \(address): no SSH") }
         let password = Random.vncPassword()
@@ -322,11 +331,10 @@ actor MachineManager {
         case .macos, .linux, .windows:
             #if canImport(CommonCrypto)
             // The guest's VNC directly, as screenshots: macOS's Screen Sharing, or QEMU's on loopback.
-            if let qemu = lease.qemuVNCPort {
-                try MachineInput.vnc(request, host: "127.0.0.1", port: qemu, password: "")
-            } else {
-                try MachineInput.vnc(request, host: lease.guestAddress ?? "", port: 5900, password: lease.vncPassword ?? "")
-            }
+            // Off the actor: its reads block, and nothing else may wait for them.
+            let (host, port, password) = lease.qemuVNCPort.map { ("127.0.0.1", $0, "") }
+                ?? (lease.guestAddress ?? "", 5900, lease.vncPassword ?? "")
+            try await Task.detached { try MachineInput.vnc(request, host: host, port: port, password: password) }.value
             #else
             throw APIError(error: "VM input needs a Mac server")
             #endif
@@ -386,11 +394,10 @@ actor MachineManager {
             let path = NSTemporaryDirectory() + "oss-vnc-\(Random.hex(4)).png"
             defer { try? FileManager.default.removeItem(atPath: path) }
             // The guest's VNC directly (no relay): macOS's Screen Sharing, or QEMU's on loopback.
-            if let qemu = lease.qemuVNCPort {
-                try RFBScreenshot(host: "127.0.0.1", port: qemu, password: "").capture(to: path)
-            } else {
-                try RFBScreenshot(host: lease.guestAddress ?? "", port: 5900, password: lease.vncPassword ?? "").capture(to: path)
-            }
+            // Off the actor, as input is.
+            let (host, port, password) = lease.qemuVNCPort.map { ("127.0.0.1", $0, "") }
+                ?? (lease.guestAddress ?? "", 5900, lease.vncPassword ?? "")
+            try await Task.detached { try RFBScreenshot(host: host, port: port, password: password).capture(to: path) }.value
             guard let data = FileManager.default.contents(atPath: path) else { throw APIError(error: "no screenshot") }
             return data
         }
