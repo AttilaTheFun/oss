@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0
+
+- **The oss app** (App/, `App/build.sh`): a Mac app that runs the server
+  (the same `oss` binary, in the app) and shows what is used through it:
+  the Mac's CPU and memory with their last minutes, each lease's CPU and
+  memory against what it was given, the capacity per platform with the
+  bases, the Bazel cache, the server's log. It collapses to the menu bar
+  (the leases' count beside its icon, a panel with the Mac and the leases)
+  when its window is closed; opens at login if asked; links
+  `~/.local/bin/oss` to its own. It replaces the launch agent
+  (`./install.sh --service`), whose server it can take over.
+- **Its proof** (`tools/proof.py`): the app's window, its menu bar panel and
+  its menu bar item, light and dark, from a macOS lease running it with a
+  canned server (`-fixture YES`), for review before a release.
+- No change to the server or the API (level 4).
+
 ## 0.5.0
 
 - **Input.** `oss machine tap|swipe|type|key` (and `POST

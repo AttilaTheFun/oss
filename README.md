@@ -188,14 +188,25 @@ Protocol](https://modelcontextprotocol.io) tools on stdio (`oss_status`,
 
 ## Setting it up (the server's Mac)
 
-1. **oss**: `./install.sh` builds it, signs it with the Mac's Apple
-   Development identity if it has one (so macOS's permissions survive
-   rebuilds) and puts it in `~/.local/bin`. `./install.sh --service` also
-   runs `oss serve` under launchd (`~/Library/LaunchAgents/oss.server.plist`,
-   log `~/Library/Logs/oss.log`). On a client, `./install.sh` alone.
+1. **oss**, the app: `App/build.sh --install` builds `oss.app` into
+   /Applications. It runs the server (its own `oss`, in
+   `Contents/Helpers`), restarting it if it ends, and shows what the Mac
+   and each lease use: CPU and memory against what each was given, the
+   capacity per platform, the Bazel cache, the server's log. Closing its
+   window leaves it in the menu bar (no Dock icon), with the leases and
+   the Mac's CPU and memory one click away. Settings: open at login, and
+   `~/.local/bin/oss` linked to the app's own (the command line and the
+   server the same version). Quitting it stops the server; leases are
+   kept and taken up again when it starts. A Mac still running
+   `oss serve` from the launch agent (`./install.sh --service`, before
+   0.6) shows "Another oss server answers": **Run It Here Instead**
+   unloads the agent (its plist kept as `.disabled`) and starts the app's.
+   Without the app, `./install.sh` puts the command line in `~/.local/bin`
+   (`--service` runs `oss serve` under launchd, log
+   `~/Library/Logs/oss.log`); on a client, `./install.sh` alone.
 2. **UTM** (VMs): `brew install --cask utm` (5.0.8 or later), and its CLI
    on PATH: `ln -sf /Applications/UTM.app/Contents/MacOS/utmctl /opt/homebrew/bin/utmctl`.
-   The first time oss drives UTM, macOS asks whether `oss` may control it:
+   The first time oss drives UTM, macOS asks whether oss may control it:
    **Allow** (System Settings → Privacy & Security → Automation, if a
    "Don't Allow" needs undoing; while a prompt waits, UTM answers no one).
 3. **Xcode** (simulators): any Xcode with the iOS runtime you want.
