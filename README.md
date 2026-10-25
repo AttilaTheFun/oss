@@ -83,7 +83,8 @@ protocol. It has two tokens, made with it in `~/.config/oss/`:
 - **The read token** is for everyone. Every VM lease is set up with it:
   runner's `.bazelrc` names the cache, read-only
   (`--noremote_upload_local_results`), and the token is in runner's
-  `.netrc`, where Bazel's HTTP cache takes credentials from. On this Mac,
+  `.netrc`, where Bazel's HTTP cache takes credentials from (not the
+  bazelrc, which `--announce_rc` prints). On this Mac,
   or a computer of its own, `oss cache use` writes the same two files
   (`oss cache use --remove` takes them away); a program gets the token
   from `GET /v1/cache`. Reading is for the server's Mac, its VMs and its
@@ -325,10 +326,12 @@ snapshot.
   holds every request the same way.
 - **Ubuntu hangs on a reboot from inside** under UTM; leases are never
   rebooted. A clone that doesn't come up is made again, once.
-- **Bazel's HTTP cache takes credentials only from a `.netrc`** (or a
-  credential helper): `--remote_cache_header` reaches gRPC caches, not an
-  HTTP one. And an unquoted `Authorization=Bearer <token>` in a bazelrc is
-  two words, the second taken for a target and printed in the error.
+- **Credentials for Bazel's HTTP cache**: a `.netrc` (or a credential
+  helper), or `--remote_header`; `--remote_cache_header` never reaches an
+  HTTP cache (Bazel 9.1). oss uses `.netrc`, so no bazelrc holds a token
+  (`--announce_rc` prints a bazelrc's lines). In a bazelrc a header's value
+  must be quoted: an unquoted `Authorization=Bearer <token>` is two words,
+  the second taken for a target and printed in the error.
   Bazel warns once a build that the credentials go in plaintext; they stay
   on the Mac's own networks (its bridges), which is also how the cache
   tells a VM or container from the LAN: by the bridge subnets the Mac has

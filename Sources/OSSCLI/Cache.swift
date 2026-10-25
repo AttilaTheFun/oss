@@ -66,9 +66,11 @@ enum CacheTokens {
 
 /// What a computer's Bazel needs to read the cache: an address in its
 /// bazelrc (no secret there), the read token in its .netrc, which Bazel's
-/// HTTP cache takes credentials from (`--remote_cache_header` never reaches
-/// an HTTP cache). Bazel warns, once a build, that they go in plaintext:
-/// they stay on this Mac's own networks.
+/// HTTP cache takes credentials from. (`--remote_cache_header` never
+/// reaches an HTTP cache; `--remote_header`, quoted, does, but then the
+/// token is in the bazelrc, and `--announce_rc` prints it.) Bazel warns,
+/// once a build, that credentials go in plaintext: they stay on this Mac's
+/// own networks.
 enum CacheClientFiles {
     static let begin = "# oss: the server's Bazel cache, read-only (its populate job writes it; the token is in .netrc)"
     static let end = "# oss: end"
