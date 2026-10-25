@@ -78,7 +78,9 @@ enum MachineInput {
         let arguments: [String]
         switch request.action {
         case .tap:
-            arguments = ["tap", "-x", pt(request.x), "-y", pt(request.y)]
+            // A touch down and up, as a finger's: AXe's default for a point
+            // (its simulator tap) leaves a SwiftUI switch as it was.
+            arguments = ["tap", "-x", pt(request.x), "-y", pt(request.y), "--tap-style", "physical"]
         case .swipe:
             arguments = ["swipe", "--start-x", pt(request.x), "--start-y", pt(request.y), "--end-x", pt(request.toX),
                          "--end-y", pt(request.toY), "--duration", String(format: "%.2f", Double(milliseconds(request)) / 1000)]
