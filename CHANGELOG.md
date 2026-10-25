@@ -15,6 +15,9 @@
 - **A VM lease's `guestPassword`**, from `~/.config/oss/guest-passwords.json`
   where the server's owner keeps the bases' `runner` passwords.
 - `oss machine upload` and `download` (scp, VMs).
+- **Headless VMs** (`"headlessVMs": true` in server.json): a clone has no
+  displays, so UTM opens no window; a QEMU VM's graphics card moves to
+  QEMU's command line beside its VNC.
 - The README says why a VNC client must ask macOS's Screen Sharing for
   VNC's password by name.
 - API level 4. A 0.4 client keeps working: the API only gained things.

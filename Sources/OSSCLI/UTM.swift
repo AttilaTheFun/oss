@@ -160,6 +160,26 @@ enum UTM {
         }
     }
 
+    /// A stopped clone made headless: UTM opens a window for each display a
+    /// VM has, so it gets none. A QEMU VM's graphics card (the first
+    /// display's) goes on QEMU's own command line instead, beside the `-vnc`
+    /// that shows its screen (setQEMUVNC's), so the guest keeps its screen
+    /// and only UTM's window goes. An Apple VM keeps no display at all.
+    static func makeHeadless(_ name: String, qemuVNCPort: Int?) async throws {
+        if let port = qemuVNCPort {
+            try await configure(name, """
+                    set card to "virtio-gpu-pci"
+                    if (count of (displays of config)) > 0 then set card to hardware of item 1 of (displays of config)
+                    set displays of config to {}
+                    set qemu additional arguments of config to {{argument string:"-vnc"}, {argument string:("127.0.0.1:" & (item 2 of argv))}, {argument string:"-device"}, {argument string:card}}
+                """, [String(port - 5900)])
+        } else {
+            try await configure(name, """
+                    set displays of config to {}
+                """)
+        }
+    }
+
     /// What a VM is given: its CPU cores (nil for UTM's default) and memory.
     static func allotment(_ name: String) async throws -> (cpus: Int?, memoryBytes: Int64?) {
         let answer = try await script("""

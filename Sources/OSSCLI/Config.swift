@@ -55,6 +55,9 @@ struct ServerConfig: Codable, Sendable {
     var cache: CacheConfig?
     /// AXe, for a simulator's input, where it isn't Homebrew's.
     var axePath: String?
+    /// VMs run without UTM's windows (UTM.makeHeadless): their screens are
+    /// VNC's alone.
+    var headlessVMs: Bool = false
 
     init() {}
 
@@ -78,6 +81,7 @@ struct ServerConfig: Codable, Sendable {
         androidAVDHome = try c.decodeIfPresent(String.self, forKey: .androidAVDHome) ?? d.androidAVDHome
         cache = try c.decodeIfPresent(CacheConfig.self, forKey: .cache)
         axePath = try c.decodeIfPresent(String.self, forKey: .axePath)
+        headlessVMs = try c.decodeIfPresent(Bool.self, forKey: .headlessVMs) ?? d.headlessVMs
     }
 
     static func load() -> ServerConfig {

@@ -185,6 +185,7 @@ actor MachineManager {
                 try await UTM.clone(base.name, as: lease.name)
                 try await UTM.setMAC(lease.name, mac)
                 if let qemuVNC { try await UTM.setQEMUVNC(lease.name, port: qemuVNC) }
+                if self.config.headlessVMs { try await UTM.makeHeadless(lease.name, qemuVNCPort: qemuVNC) }
                 try await UTM.start(lease.name)
             }
             let deadline = Date().addingTimeInterval(bootAllowance)
