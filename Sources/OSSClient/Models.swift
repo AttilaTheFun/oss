@@ -312,7 +312,7 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
 
 public enum OSS {
     /// This build's version, and the API level it speaks.
-    public static let version = "0.5.0"
+    public static let version = "0.6.0"
     /// 4 from 0.5.0: input (`POST /v1/machines/<id>/input`), usage
     /// (`GET /v1/usage`), and a lease's `cpus`, `memoryLimitBytes` and
     /// `guestPassword`.
