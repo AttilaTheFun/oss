@@ -15,9 +15,20 @@
 - **A VM lease's `guestPassword`**, from `~/.config/oss/guest-passwords.json`
   where the server's owner keeps the bases' `runner` passwords.
 - `oss machine upload` and `download` (scp, VMs).
-- **Headless VMs** (`"headlessVMs": true` in server.json): a clone has no
-  displays, so UTM opens no window; a QEMU VM's graphics card moves to
-  QEMU's command line beside its VNC.
+- **Headless VMs** (`"headlessVMs": true` in server.json): a Linux or
+  Windows clone has no displays, so UTM opens no window; its graphics card
+  moves to QEMU's command line beside its VNC. A macOS VM keeps its display
+  (without one it has no screen to share).
+- **A QEMU VM's VNC pointer is absolute.** UTM gives its QEMU VMs a USB
+  mouse beside the tablet, and while the guest followed the mouse a VNC
+  client's clicks landed wherever the pointer already was. oss takes the
+  mouse out (over QMP, which it now asks QEMU for on a loopback port a
+  thousand below the VM's VNC), and its own input tells QEMU's VNC its
+  encodings first, which is when QEMU looks at the pointer's kind.
+- **VNC screenshots and input no longer hold up the server.** They ran on
+  the server's one actor with no deadline, so a guest that never drew a
+  frame stopped every other request; they run beside it now, and a VNC
+  connection gives up after 60 seconds.
 - The README says why a VNC client must ask macOS's Screen Sharing for
   VNC's password by name.
 - API level 4. A 0.4 client keeps working: the API only gained things.

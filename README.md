@@ -219,10 +219,12 @@ A Bazel cache (off without `"cache"`; `{}` for these defaults):
            "minFreeGigabytes": 30, "lanReads": false}}
 ```
 
-`"headlessVMs": true` runs VM leases without UTM's windows: a clone has
-its displays taken away before it starts (UTM opens a window for each),
-and a QEMU VM's graphics card goes on QEMU's own command line beside its
-VNC, so its screen is still there for screenshots, input and VNC.
+`"headlessVMs": true` runs Linux and Windows leases without UTM's windows:
+a clone has its displays taken away before it starts (UTM opens a window
+for each), and its graphics card goes on QEMU's own command line beside
+its VNC, so its screen is still there for screenshots, input and VNC. A
+macOS lease keeps its display, and so its window: an Apple VM without one
+has no screen for Screen Sharing to show.
 
 The VM bases' `runner` passwords, if you want leases to carry them (for
 logging in at a VM's screen, or unlocking it):
