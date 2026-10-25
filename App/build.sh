@@ -2,7 +2,10 @@
 # Builds OS Server: App/build/OS Server.app, the server (in the app's own
 # process) with its window and menu bar, and the command line (`oss`) in
 # Contents/Helpers; both signed with your Apple Development identity (ad hoc
-# without one), with Virtualization's entitlement (they run macOS VMs).
+# without one; OSS_SIGN_IDENTITY for another, a Developer ID's for
+# notarizing), with App/entitlements.plist (Apple events for UTM,
+# Virtualization for its macOS VMs). The version is OSS.version
+# (Sources/OSSClient/Models.swift); the build number OSS_APP_BUILD (1).
 #
 #   App/build.sh                 # build/OS Server.app
 #   App/build.sh --zip           # and build/OS-Server.zip (for a VM, or Reviews)
@@ -35,9 +38,13 @@ done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 sed -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$BUILD/" Info.plist > "$APP/Contents/Info.plist"
 
+# OSS_SIGN_IDENTITY names another identity: a Developer ID's signature
+# carries a secure timestamp, which notarization requires.
 identity="${OSS_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | grep -v REVOKED | awk '/"Apple Development: / {print $2; exit}')}"
+timestamp=--timestamp=none
+case "$identity" in *"Developer ID"*) timestamp=--timestamp ;; esac
 sign() {
-  if [ -n "$identity" ]; then codesign --force --options runtime --timestamp=none --sign "$identity" "$@"
+  if [ -n "$identity" ]; then codesign --force --options runtime "$timestamp" --sign "$identity" "$@"
   else codesign --force --sign - "$@"; fi
 }
 sign --identifier oss --entitlements entitlements.plist "$APP/Contents/Helpers/oss"
