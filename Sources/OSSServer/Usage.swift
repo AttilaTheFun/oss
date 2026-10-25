@@ -7,7 +7,7 @@ import Darwin
 /// What the server's Mac and each lease use, from its processes: `ps`'s
 /// CPU (a decaying average, 100 one core) and each process's physical
 /// footprint, a lease's summed over its own processes. A VM's are those with files open in its
-/// `.utm` bundle (UTM's QEMU, or Virtualization's VM service); a simulator's
+/// `.utm` bundle or OS Server's `.vm` folder (UTM's QEMU, or Virtualization's VM service); a simulator's
 /// its `launchd_sim` and what that started; an emulator's its process and
 /// what that started.
 enum UsageProbe {
@@ -88,7 +88,9 @@ enum UsageProbe {
         for line in open.output.split(separator: "\n") {
             if line.hasPrefix("p") { pid = Int(line.dropFirst()) ?? 0; continue }
             guard line.hasPrefix("n") else { continue }
-            for lease in leases where line.contains("/\(lease.name).utm/") { found[lease.id, default: []].insert(pid) }
+            for lease in leases where line.contains("/\(lease.name).utm/") || line.contains("/\(lease.name).vm/") {
+                found[lease.id, default: []].insert(pid)
+            }
         }
         return found.mapValues { Array($0) }
     }

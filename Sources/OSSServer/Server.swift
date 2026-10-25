@@ -19,7 +19,15 @@ actor UTMQueue {
 
 func log(_ message: String) {
     let stamp = ISO8601DateFormatter().string(from: Date())
-    FileHandle.standardError.write(Data("\(stamp) \(message)\n".utf8))
+    let line = "\(stamp) \(message)"
+    FileHandle.standardError.write(Data((line + "\n").utf8))
+    ServerLog.sink?(line)
+}
+
+/// Where the server's log lines go besides standard error: the OS Server
+/// app shows them and keeps them in a file.
+public enum ServerLog {
+    nonisolated(unsafe) public static var sink: (@Sendable (String) -> Void)?
 }
 
 #if canImport(Network)
@@ -61,6 +69,7 @@ actor MachineManager {
     private var listing: Task<[Base]?, Never>?
 
     func refreshBases() async throws {
+        guard config.useUTM else { return await combineBases() }
         let task = listing ?? Task {
             (try? await UTM.list()).map { $0.compactMap { Base(name: $0.name) }.filter { $0.platform.isVM } }
         }
@@ -75,8 +84,18 @@ actor MachineManager {
     }
 
     private func combineBases() async {
-        let all = knownVMBases + (await Simulators.bases()) + Emulators.bases(config)
-        knownBases = all.filter { $0.config != "base" }.sorted { ($0.platform.rawValue, $0.config) < ($1.platform.rawValue, $1.config) }
+        // OS Server's own macOS bases (Virtualization's) before UTM's of the same config.
+        #if canImport(Virtualization)
+        let own = MacVMStore.configs().map { Base(platform: .macos, config: $0) }
+        #else
+        let own: [Base] = []
+        #endif
+        let utm = !config.useUTM ? [] : knownVMBases.filter { base in !own.contains { $0.platform == base.platform && $0.config == base.config } }
+        let simulators = config.lends(.ios) ? await Simulators.bases() : []
+        let emulators = config.lends(.android) ? Emulators.bases(config) : []
+        let all = own + utm + simulators + emulators
+        knownBases = all.filter { $0.config != "base" && config.lends($0.platform) }
+            .sorted { ($0.platform.rawValue, $0.config) < ($1.platform.rawValue, $1.config) }
     }
 
     private func findBase(_ platform: Platform, _ config: String) async -> Base? {
@@ -103,6 +122,7 @@ actor MachineManager {
     // MARK: Leasing
 
     func lease(_ request: LeaseRequest) async throws -> Lease {
+        guard self.config.lends(request.platform) else { throw APIError(error: "this server lends no \(request.platform.rawValue) machines") }
         let config = request.config ?? self.config.defaultConfig(request.platform)
         guard let base = await findBase(request.platform, config) else {
             let offered = knownBases.filter { $0.platform == request.platform }.map(\.config)
@@ -170,6 +190,11 @@ actor MachineManager {
     }
 
     private func createVM(_ id: String, lease: Lease, base: Base, holderKey: String?) async throws {
+        #if canImport(Virtualization)
+        if lease.platform == .macos, MacVMStore.hasBase(base.config) {
+            return try await createMacVM(id, lease: lease, base: base, holderKey: holderKey)
+        }
+        #endif
         // Windows and Linux show their screens through QEMU's VNC, on a loopback port of their own.
         let qemuVNC = lease.platform == .macos ? nil : freeQEMUVNCPort()
         leases[id]?.qemuVNCPort = qemuVNC
@@ -216,15 +241,46 @@ actor MachineManager {
                 log("lease \(id): taking out the USB mouse failed (\(error)); VNC's pointer may be relative")
             }
         }
+        if let allotted = try? await UTM.allotment(lease.name) {
+            leases[id]?.cpus = allotted.cpus
+            leases[id]?.memoryLimitBytes = allotted.memoryBytes
+        }
+        try await handOver(id, lease: lease, address: address, qemuVNC: qemuVNC, holderKey: holderKey)
+    }
+
+    #if canImport(Virtualization)
+    /// A macOS lease on OS Server's own VM: its base cloned and started in
+    /// this process, with a network card of its own. A clone that gets no
+    /// address is made again, once.
+    private func createMacVM(_ id: String, lease: Lease, base: Base, holderKey: String?) async throws {
+        let path = MacVMStore.leasePath(lease.name)
+        var address: String?
+        for attempt in 1...2 where address == nil {
+            let vm = try await MacVMs.startClone(of: base.config, as: lease.name, at: path)
+            leases[id]?.mac = vm.spec.mac
+            leases[id]?.cpus = vm.spec.cpus
+            leases[id]?.memoryLimitBytes = Int64(vm.spec.memoryBytes)
+            address = try? await MacVMs.address(of: vm.spec.mac, seconds: 150)
+            if address == nil {
+                log("lease \(id): \(lease.name) got no address after 150 s (try \(attempt) of 2)")
+                await vm.stop()
+                MacVMStore.remove(path)
+                guard leases[id]?.state == .creating else { return }
+            }
+        }
+        guard let address else { throw APIError(error: "\(lease.name) got no address, twice") }
+        try await handOver(id, lease: lease, address: address, qemuVNC: nil, holderKey: holderKey)
+    }
+    #endif
+
+    /// A VM with an address made the holder's: their key let in, its
+    /// screen's password set, the cache wired, SSH and VNC forwarded.
+    private func handOver(_ id: String, lease: Lease, address: String, qemuVNC: Int?, holderKey: String?) async throws {
         let guest = Guest(platform: lease.platform, address: address, user: config.guestUser, key: config.managementKey)
         guard await guest.waitUntilReachable(seconds: 300) else { throw APIError(error: "\(lease.name) at \(address): no SSH") }
         let password = Random.vncPassword()
         try await guest.prepare(holderKey: holderKey, vncPassword: password)
         await guest.setTimeZone(TimeZone.current.identifier)
-        if let allotted = try? await UTM.allotment(lease.name) {
-            leases[id]?.cpus = allotted.cpus
-            leases[id]?.memoryLimitBytes = allotted.memoryBytes
-        }
         leases[id]?.guestPassword = GuestPasswords.password(for: lease.platform, config: lease.config)
         if let bazelCache, let host = LocalNetworks.hostAddress(facing: address) {
             await guest.useBazelCache(host: host, port: bazelCache.port, token: bazelCache.readToken)
@@ -278,6 +334,13 @@ actor MachineManager {
         log("lease \(id): \(reason); deleting \(lease.name)")
         switch lease.platform {
         case .macos, .linux, .windows:
+            #if canImport(Virtualization)
+            if lease.platform == .macos, FileManager.default.fileExists(atPath: MacVMStore.leasePath(lease.name)) {
+                await MainActor.run { MacVMs.running[lease.name] }?.stop()
+                MacVMStore.remove(MacVMStore.leasePath(lease.name))
+                break
+            }
+            #endif
             do {
                 try await utm.run {
                     if try await UTM.vm(named: lease.name) != nil {
@@ -304,6 +367,14 @@ actor MachineManager {
         }
         leases[id] = nil
         save()
+    }
+
+    /// Every lease ended now (OS Server removing itself).
+    func releaseAll() async {
+        for lease in leases.values where lease.state != .returning {
+            leases[lease.id]?.error = nil
+            await release(lease.id, reason: "OS Server removed")
+        }
     }
 
     /// Leases whose time ran out are released.
@@ -417,11 +488,17 @@ actor MachineManager {
     func recover() async {
         let saved = (FileManager.default.contents(atPath: Paths.leases))
             .flatMap { try? JSONDecoder.oss.decode([Lease].self, from: $0) } ?? []
-        let simulators = (try? await Simulators.devices()) ?? []
+        // What this server doesn't lend, it leaves alone (a second server's
+        // machines, named like its own).
+        let simulators = config.lends(.ios) ? ((try? await Simulators.devices()) ?? []) : []
         // Simulators and emulators first (quick); VMs last, as UTM can be slow to answer.
         let ordered = saved.filter { !$0.platform.isVM } + saved.filter { $0.platform.isVM }
-        let vms = saved.contains(where: { $0.platform.isVM }) ? ((try? await UTM.list()) ?? []) : []
+        let vms = config.useUTM && config.lends.map({ $0.contains(where: \.isVM) }) ?? true ? ((try? await UTM.list()) ?? []) : []
         for var lease in ordered where lease.state == .ready && lease.expires > Date() {
+            #if canImport(Virtualization)
+            // OS Server's own macOS VMs ran in the process that ended: theirs went with it.
+            if lease.platform == .macos, FileManager.default.fileExists(atPath: MacVMStore.leasePath(lease.name)) { continue }
+            #endif
             switch lease.platform {
             case .macos, .linux, .windows:
                 guard vms.contains(where: { $0.name == lease.name && $0.status == "started" }) else { continue }
@@ -455,42 +532,101 @@ actor MachineManager {
                 try await UTM.delete(vm.name)
             }
         }
+        #if canImport(Virtualization)
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: MacVMStore.leases)) ?? []
+        where name.hasSuffix(".vm") && !leases.values.contains(where: { "\($0.name).vm" == name }) {
+            log("deleting \(name): no lease holds it")
+            MacVMStore.remove("\(MacVMStore.leases)/\(name)")
+        }
+        #endif
         for device in simulators where device.name.hasPrefix("oss-lease-") && !leases.values.contains(where: { $0.udid == device.udid }) {
             log("deleting simulator \(device.name): no lease holds it")
             await Simulators.release(udid: device.udid)
         }
-        for lease in saved where lease.platform == .android && leases[lease.id] == nil {
+        for lease in saved where lease.platform == .android && leases[lease.id] == nil && config.lends(.android) {
             await Emulators.release(name: lease.name, port: lease.consolePort, pid: lease.emulatorPID)
         }
         save()
     }
 }
 
-/// `oss serve`: the API on the configured port, every interface.
-enum Server {
-    static func serve() async throws -> Never {
+/// The server running in this process (OS Server's, or `oss serve`'s):
+/// the API on the configured port, every interface; the machines it lends;
+/// its Bazel cache.
+public final class ServerHost: Sendable {
+    public let port: Int
+    let machines: MachineManager
+    private let http: HTTPServer
+    private let cache: CacheServer?
+
+    /// Starts it: listening once this returns; recovery (leases a restart
+    /// left), base listings and expiry go on in the background.
+    public static func start() throws -> ServerHost {
+        Paths.migrate()
         let config = ServerConfig.load()
         let token = Token.ensure()
-        let cache = config.cache.flatMap(startCache)
+        let cache = config.cache.flatMap(Server.startCache)
         let machines = MachineManager(config: config, bazelCache: cache.map { ($0.config.port, $0.readToken) })
-        let server = try HTTPServer(port: config.port) { request in
-            await route(request, machines: machines, token: token, cache: cache)
+        let http = try HTTPServer(port: config.port) { request in
+            await Server.route(request, machines: machines, token: token, cache: cache)
         }
-        server.start()
+        http.start()
         // Recovery and listings ask UTM, which can be slow to answer (or
         // waiting on a permission prompt): the API serves meanwhile.
         Task {
             await machines.recover()
+            #if canImport(Virtualization)
+            // 0.7's first start: UTM's macOS bases become OS Server's own.
+            if config.useUTM && config.lends(.macos) { await MacImport.fromUTMIfNone() }
+            #endif
             while true {
                 try? await machines.refreshBases()
                 try? await Task.sleep(for: .seconds(60))
             }
         }
-        log("oss serving on :\(config.port); capacity \(config.capacity)")
-        while true {
-            try await Task.sleep(for: .seconds(15))
-            await machines.expire()
+        Task {
+            while true {
+                try? await Task.sleep(for: .seconds(15))
+                await machines.expire()
+            }
         }
+        log("oss serving on :\(config.port); capacity \(config.capacity)")
+        return ServerHost(port: config.port, machines: machines, http: http, cache: cache)
+    }
+
+    /// Every lease ended and everything the server keeps on this Mac
+    /// deleted: its folder (settings, token, state, the macOS bases), and
+    /// what an oss before 0.7 kept in ~/.config, ~/.local/state and
+    /// ~/.local/share; UTM's `oss-` VMs too when asked.
+    public func removeEverything(includingUTMMachines: Bool) async {
+        await machines.releaseAll()
+        if includingUTMMachines, let vms = try? await UTM.list() {
+            for vm in vms where vm.name.hasPrefix("oss-") {
+                log("deleting UTM's \(vm.name)")
+                if vm.status != "stopped" { try? await UTM.stop(vm.name) }
+                try? await UTM.delete(vm.name)
+            }
+        }
+        for path in [Paths.support, Paths.config, Paths.state, Paths.share, Paths.clientDirectory, Paths.clientState,
+                     "\(Paths.home)/.local/share/oss"] {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+        log("removed everything OS Server kept")
+    }
+
+    private init(port: Int, machines: MachineManager, http: HTTPServer, cache: CacheServer?) {
+        self.port = port
+        self.machines = machines
+        self.http = http
+        self.cache = cache
+    }
+}
+
+/// `oss serve`: the API on the configured port, every interface.
+enum Server {
+    static func serve() async throws -> Never {
+        _ = try ServerHost.start()
+        while true { try await Task.sleep(for: .seconds(3600)) }
     }
 
     /// The Bazel cache, with its tokens (made the first time); nil when its

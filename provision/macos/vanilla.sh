@@ -2,7 +2,8 @@
 # The vanilla layer on macOS: nothing installed, only what the lab needs to
 # manage the machine. Run in the guest as `runner` over SSH, with sudo
 # (`oss image build` runs it; the first time, sudo asks for the password).
-# `runner` and Remote Login come from UTM's provisioning
+# `runner` and Remote Login come from the base's first boot: OS Server's
+# `oss image install macos` (macOS 27's guest provisioning), or UTM's
 # (`utmctl start --provision-username runner --provision-ssh …`).
 set -euo pipefail
 # Throwaway machines: runner's sudo asks nothing.

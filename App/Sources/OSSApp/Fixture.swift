@@ -31,7 +31,7 @@ enum Fixture {
     static let now = Date(timeIntervalSince1970: 1_793_534_400)
 
     @MainActor
-    static func apply(to monitor: Monitor, supervisor: ServerSupervisor) {
+    static func apply(to monitor: Monitor, server: ServerRunner) {
         let gb: Int64 = 1_073_741_824
         func lease(_ id: String, _ platform: Platform, _ config: String, _ holder: String, minutesAgo: Double,
                    minutesLeft: Double, cpus: Int?, memory: Int64?) -> Lease {
@@ -82,14 +82,14 @@ enum Fixture {
                                   memoryFraction: 0.31 + 0.02 * sin(t / 17))
         }
         monitor.pretend(
-            capabilities: Capabilities(version: "0.6.0", api: 4, features: ["machines", "screenshots", "input", "usage", "cache"],
+            capabilities: Capabilities(version: "0.7.0", api: 4, features: ["machines", "screenshots", "input", "usage", "cache"],
                                        platforms: Platform.allCases),
             status: Status(server: "Mac Studio", bases: bases, capacity: capacity, leases: leases),
             usage: usage,
             cache: CacheInfo(port: 7490, readToken: "", bytes: 61 * gb, maxBytes: 200 * gb, freeBytes: 2_900 * gb,
                              hits: 48_213, misses: 3_907, writes: 11_542, evicted: 0),
             history: history)
-        supervisor.pretend(.running(pid: 4242, since: now.addingTimeInterval(-3 * 3600 - 17 * 60)), lines: [
+        server.pretend(.running(since: now.addingTimeInterval(-3 * 3600 - 17 * 60)), lines: [
             "2026-11-01T09:18:02Z lease a90c3e17: oss-linux-dev for ci@runner, 60 min",
             "2026-11-01T09:18:27Z lease a90c3e17: ready at 192.168.65.12, ssh :47502, vnc :47503",
             "2026-11-01T09:22:10Z lease c44d8a20: oss-ios-iphone for visor:session-b, 60 min",

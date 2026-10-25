@@ -17,10 +17,12 @@ containers for agents are Visor's (`visor machine …` leases through it).
   like, use sudo (it asks nothing), break it. Copy back what you need first.
 - **Never touch the bases or the server's tools directly**: no `utmctl`
   against an `oss-*` VM, no `simctl` against an `oss-ios-*` simulator, no
-  starting a base, no clicking UTM's window. Bases change only through
+  starting a base, no clicking UTM's or OS Server's windows, nothing in
+  `~/Library/Application Support/OS Server`. Bases change only through
   `oss image build` on the server's Mac, by whoever keeps it.
-- **The token is a secret**: `~/.config/oss/token`. Never print it, paste
-  it into a message or commit it.
+- **The token is a secret**: `~/.config/oss/token` on a client (the
+  server's own in its folder). Never print it, paste it into a message or
+  commit it.
 
 ## Machines
 
@@ -82,11 +84,25 @@ SSH, VNC and adb too. With no `client.json` it tries `127.0.0.1` only.
 
 - `README.md` is the setup, the API and how to make each kind of base
   your own; `provision/<platform>/vanilla` are the vanilla layers' scripts.
+- The server is OS Server, the app (since 0.7: in the app's own process,
+  `App/`). Its files are `~/Library/Application Support/OS Server`
+  (server.json, the token, `State/leases.json`, the macOS bases in
+  `Machines/`); its log `~/Library/Logs/OS Server.log`. macOS leases are
+  OS Server's own VMs (Apple's Virtualization, in its process): quitting
+  the app ends them. Linux and Windows are still UTM's, iOS simulators
+  and Android emulators the Mac's; a restart keeps those leases and
+  deletes clones nobody holds.
+- Never restart or quit OS Server while others hold leases without
+  asking them first: their macOS machines end with it.
 - `oss doctor` says whether the server can drive UTM, simulators and
-  emulators. The server: `launchctl kickstart -k gui/$(id -u)/oss.server`;
-  its log `~/Library/Logs/oss.log`; its state `~/.local/state/oss/`
-  (leases.json). A restart keeps running leases, and deletes clones nobody
-  holds.
-- After changing oss: `./install.sh --service`, and copy the binary to the
-  clients that use it. A change to the API raises `OSS.apiLevel` and goes
-  in CHANGELOG.md.
+  emulators.
+- To try a change beside the running server: a server of its own with
+  `OSS_HOME` (its own folder, port and ports range) and `"lends":
+  ["macos"], "useUTM": false` in its server.json, so it leaves the running
+  server's machines alone (a server deletes clones it doesn't hold, of
+  every platform it lends). `oss serve` there, from a build signed with
+  Virtualization's entitlement (`codesign --force --sign - --entitlements
+  App/entitlements.plist .build/debug/oss`).
+- After changing oss: `App/build.sh --install`, then OS Server quit and
+  opened again (when no one holds a macOS lease). A change to the API
+  raises `OSS.apiLevel` and goes in CHANGELOG.md.

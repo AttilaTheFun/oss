@@ -1,15 +1,15 @@
 #!/bin/bash
-# Builds the oss app: App/build/oss.app, the window and menu bar app with
-# the server's binary (the same `oss` as the command line) in
-# Contents/Helpers, signed with your Apple Development identity (ad hoc
-# without one).
+# Builds OS Server: App/build/OS Server.app, the server (in the app's own
+# process) with its window and menu bar, and the command line (`oss`) in
+# Contents/Helpers; both signed with your Apple Development identity (ad hoc
+# without one), with Virtualization's entitlement (they run macOS VMs).
 #
-#   App/build.sh                 # build/oss.app
-#   App/build.sh --zip           # and build/oss.zip (for a VM, or Reviews)
+#   App/build.sh                 # build/OS Server.app
+#   App/build.sh --zip           # and build/OS-Server.zip (for a VM, or Reviews)
 #   App/build.sh --install       # and copy it to /Applications (not opened)
 set -euo pipefail
 cd "$(dirname "$0")"
-APP=build/oss.app
+APP="build/OS Server.app"
 VERSION="$(sed -n 's/.*public static let version = "\(.*\)".*/\1/p' ../Sources/OSSClient/Models.swift | head -1)"
 BUILD="${OSS_APP_BUILD:-1}"
 
@@ -18,7 +18,7 @@ swift build -c release --product OSSApp
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
-cp .build/release/OSSApp "$APP/Contents/MacOS/oss"
+cp .build/release/OSSApp "$APP/Contents/MacOS/OS Server"
 cp ../.build/release/oss "$APP/Contents/Helpers/oss"
 # The icon: Icon/OSServer.icon (Icon Composer), rendered at each size an
 # .icns holds by Xcode's ictool.
@@ -40,17 +40,17 @@ sign() {
   if [ -n "$identity" ]; then codesign --force --options runtime --timestamp=none --sign "$identity" "$@"
   else codesign --force --sign - "$@"; fi
 }
-sign --identifier oss "$APP/Contents/Helpers/oss"
+sign --identifier oss --entitlements entitlements.plist "$APP/Contents/Helpers/oss"
 sign --entitlements entitlements.plist "$APP"
 codesign --verify --strict "$APP"
 echo "built $APP ($VERSION, build $BUILD)"
 
 case "${1:-}" in
   --zip)
-    ditto -c -k --keepParent "$APP" build/oss.zip
-    echo "zipped build/oss.zip" ;;
+    ditto -c -k --keepParent "$APP" build/OS-Server.zip
+    echo "zipped build/OS-Server.zip" ;;
   --install)
-    rm -rf /Applications/oss.app
-    ditto "$APP" /Applications/oss.app
-    echo "installed /Applications/oss.app" ;;
+    rm -rf "/Applications/OS Server.app"
+    ditto "$APP" "/Applications/OS Server.app"
+    echo "installed /Applications/OS Server.app" ;;
 esac

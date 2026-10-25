@@ -19,6 +19,11 @@ enum Images {
         guard FileManager.default.fileExists(atPath: scriptPath) else {
             throw ShellError(description: "no script \(scriptPath): give the layer's with --script")
         }
+        #if canImport(Virtualization)
+        if platform == .macos, MacVMStore.hasBase(base) {
+            return try await buildMac(layer: layer, from: base, scriptPath: scriptPath, copies: copies, config: config)
+        }
+        #endif
         guard try await UTM.vm(named: source) != nil else { throw ShellError(description: "no image \(source)") }
 
         log("building \(target): \(source) cloned as \(work)")
@@ -27,22 +32,7 @@ enum Images {
         do {
             try await UTM.start(work)
             let guest = try await reach(work, platform: platform, config: config)
-            for (host, guestPath) in copies { try await copy(host, to: guestPath, guest: guest, platform: platform) }
-            try await upload(scriptPath, to: guest, platform: platform)
-            log("running \(URL(fileURLWithPath: scriptPath).lastPathComponent) in \(work) (\(guest.address))")
-            let run = platform == .windows
-                ? "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\\(config.guestUser)\\layer.ps1"
-                : "bash ~/layer.sh"
-            // The guest's password, when given (a base image's first sudo,
-            // Windows' auto-login), goes on standard input, never a command line.
-            let password = ProcessInfo.processInfo.environment["OSS_GUEST_PASSWORD"]
-            let remote = platform == .windows ? run
-                : (password == nil ? "" : "IFS= read -r pw; printf '%s\\n' \"$pw\" | sudo -S -p '' -v; ") + run
-            let result = try await Shell.run("/usr/bin/ssh", sshOptions(config) + ["\(config.guestUser)@\(guest.address)", remote],
-                                             input: password.map { Data(($0 + "\n").utf8) }, timeout: 4 * 3600)
-            print(result.output, terminator: "")
-            FileHandle.standardError.write(Data(result.error.utf8))
-            guard result.ok else { throw ShellError(description: "the layer's script failed (\(result.status)); \(work) is kept for a look") }
+            try await runLayer(scriptPath, copies: copies, in: guest, named: work, platform: platform, config: config)
             if platform == .windows {
                 // Settled before it's sealed: a restart, runner's first sign-in
                 // since the layer (Active Setup), and the devices set up. A clone
@@ -67,6 +57,57 @@ enum Images {
         try await UTM.rename(work, to: target)
         log("\(target) is ready")
     }
+
+    /// The layer's copies and script, in a running guest.
+    static func runLayer(_ scriptPath: String, copies: [(String, String)], in guest: Guest, named work: String,
+                         platform: Platform, config: ServerConfig) async throws {
+        for (host, guestPath) in copies { try await copy(host, to: guestPath, guest: guest, platform: platform) }
+        try await upload(scriptPath, to: guest, platform: platform)
+        log("running \(URL(fileURLWithPath: scriptPath).lastPathComponent) in \(work) (\(guest.address))")
+        let run = platform == .windows
+            ? "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\\(config.guestUser)\\layer.ps1"
+            : "bash ~/layer.sh"
+        // The guest's password, when given (a base image's first sudo,
+        // Windows' auto-login), goes on standard input, never a command line.
+        let password = ProcessInfo.processInfo.environment["OSS_GUEST_PASSWORD"]
+        let remote = platform == .windows ? run
+            : (password == nil ? "" : "IFS= read -r pw; printf '%s\\n' \"$pw\" | sudo -S -p '' -v; ") + run
+        let result = try await Shell.run("/usr/bin/ssh", sshOptions(config) + ["\(config.guestUser)@\(guest.address)", remote],
+                                         input: password.map { Data(($0 + "\n").utf8) }, timeout: 4 * 3600)
+        print(result.output, terminator: "")
+        FileHandle.standardError.write(Data(result.error.utf8))
+        guard result.ok else { throw ShellError(description: "the layer's script failed (\(result.status)); \(work) is kept for a look") }
+    }
+
+    #if canImport(Virtualization)
+    /// A layer on one of OS Server's own macOS bases: the base cloned and
+    /// started here, the layer run in it, shut down from inside, and put in
+    /// the layer's place (the previous one deleted).
+    static func buildMac(layer: String, from base: String, scriptPath: String, copies: [(String, String)],
+                         config: ServerConfig) async throws {
+        let work = "build-macos-\(layer)-\(Random.hex(3))"
+        let path = "\(MacVMStore.bases)/\(work).building"
+        log("building macOS \(layer): \(base) cloned as \(work)")
+        let vm = try await MacVMs.startClone(of: base, as: work, at: path)
+        do {
+            let address = try await MacVMs.address(of: vm.spec.mac, seconds: 300)
+            let guest = Guest(platform: .macos, address: address, user: config.guestUser, key: config.managementKey)
+            guard await guest.waitUntilReachable(seconds: 300) else { throw ShellError(description: "\(work) at \(address): no SSH") }
+            try await runLayer(scriptPath, copies: copies, in: guest, named: work, platform: .macos, config: config)
+            try await MacVMs.seal(vm, guest: guest)
+        } catch {
+            await vm.stop()
+            log("\(error)")
+            throw error
+        }
+        var spec = try MacMachineSpec.load(path)
+        spec.origin = base
+        try spec.save(path)
+        MacVMStore.remove(MacVMStore.basePath(layer))
+        try FileManager.default.moveItem(atPath: path, toPath: MacVMStore.basePath(layer))
+        log("macOS \(layer) is ready")
+    }
+    #endif
 
     /// A file or directory of the server's Mac copied into the guest
     /// (rsync over SSH; on macOS and Linux owned by root once it's there, the

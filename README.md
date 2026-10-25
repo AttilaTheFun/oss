@@ -8,9 +8,10 @@
 A server on a Mac that lends out operating systems, for CI, for testing,
 for automation, for anything that needs a machine of its own for a while:
 
-- **Machines**, each its own for as long as its holder needs it: macOS,
-  Windows and Linux VMs ([UTM](https://mac.getutm.app)), iOS simulators and
-  Android emulators. Every one is a clone of a **base**: an APFS clone,
+- **Machines**, each its own for as long as its holder needs it: macOS VMs
+  (OS Server's own, on Apple's Virtualization framework), Windows and Linux
+  VMs ([UTM](https://mac.getutm.app)), iOS simulators and Android
+  emulators. Every one is a clone of a **base**: an APFS clone,
   ready in seconds, taking no disk until it changes, deleted when it's
   released or its time runs out.
 - **A Bazel cache** (if you want one): one job writes what it builds (CI's,
@@ -18,13 +19,16 @@ for automation, for anything that needs a machine of its own for a while:
   itself read it, so a fresh machine downloads what was built instead of
   building it again.
 
-One binary, `oss`, is the server (`oss serve`) and the command line. The
-command line calls the server's HTTP API, which programs can call too:
-Swift ones through the `OSSClient` library in this package.
+**OS Server**, a Mac app, is the server: the API, the machines and the
+cache run in its own process, and its window (or its menu bar item) shows
+what each lease uses and any macOS VM live. `oss` is the command line
+(`oss serve` runs the server without the app). The command line calls the
+server's HTTP API, which programs can call too: Swift ones through the
+`OSSClient` library in this package.
 
 | Platform | What a lease is | Ready in | Reached through |
 | --- | --- | --- | --- |
-| `macos` | a UTM VM (Apple Virtualization) | ~20 s | SSH and VNC (Screen Sharing), forwarded |
+| `macos` | OS Server's own VM (Apple Virtualization) | ~15 s | SSH and VNC (Screen Sharing), forwarded |
 | `linux` | a UTM VM (QEMU) | ~30 s | SSH and VNC (QEMU's), forwarded |
 | `windows` | a UTM VM (QEMU) | ~40 s | SSH (PowerShell) and VNC (QEMU's), forwarded |
 | `ios` | a simulator on the server's Mac | ~7 s | `oss machine simctl` (install, launch, openurl, …), screenshots |
@@ -188,34 +192,40 @@ Protocol](https://modelcontextprotocol.io) tools on stdio (`oss_status`,
 
 ## Setting it up (the server's Mac)
 
-1. **oss**, the app: `App/build.sh --install` builds `oss.app` into
-   /Applications. It runs the server (its own `oss`, in
-   `Contents/Helpers`), restarting it if it ends, and shows what the Mac
-   and each lease use: CPU and memory against what each was given, the
-   capacity per platform, the Bazel cache, the server's log. Closing its
-   window leaves it in the menu bar (no Dock icon), with the leases and
-   the Mac's CPU and memory one click away. Settings: open at login, and
-   `~/.local/bin/oss` linked to the app's own (the command line and the
-   server the same version). Quitting it stops the server; leases are
-   kept and taken up again when it starts. A Mac still running
+1. **OS Server**, the app: `App/build.sh --install` builds `OS Server.app`
+   into /Applications. It is the server (in its own process), and shows
+   what the Mac and each lease use: CPU and memory against what each was
+   given, the capacity per platform, the Bazel cache, the server's log,
+   and **Screen** beside a macOS lease for its screen, live. Closing its
+   window leaves it in the menu bar (no Dock icon). Settings: open at
+   login, `~/.local/bin/oss` linked to the app's own command line (the
+   same version as the server), and **Remove Everything**. Quitting it
+   ends the macOS leases (their VMs are its own; it asks first) and keeps
+   the others, taken up again when it starts. A Mac still running
    `oss serve` from the launch agent (`./install.sh --service`, before
-   0.6) shows "Another oss server answers": **Run It Here Instead**
-   unloads the agent (its plist kept as `.disabled`) and starts the app's.
-   Without the app, `./install.sh` puts the command line in `~/.local/bin`
-   (`--service` runs `oss serve` under launchd, log
-   `~/Library/Logs/oss.log`); on a client, `./install.sh` alone.
-2. **UTM** (VMs): `brew install --cask utm` (5.0.8 or later), and its CLI
+   0.6) shows "Another server answers": **Run It Here Instead** unloads
+   the agent (its plist kept as `.disabled`) and starts the app's. The
+   first time, macOS asks whether OS Server may find devices on the local
+   network (its VMs) and control UTM: **Allow** both.
+   Without the app, `./install.sh` puts the command line in `~/.local/bin`;
+   on a client, `./install.sh` alone.
+2. **UTM** (Linux and Windows VMs): `brew install --cask utm` (5.0.8 or later), and its CLI
    on PATH: `ln -sf /Applications/UTM.app/Contents/MacOS/utmctl /opt/homebrew/bin/utmctl`.
-   The first time oss drives UTM, macOS asks whether oss may control it:
+   The first time OS Server drives UTM, macOS asks whether it may control it:
    **Allow** (System Settings → Privacy & Security → Automation, if a
    "Don't Allow" needs undoing; while a prompt waits, UTM answers no one).
 3. **Xcode** (simulators): any Xcode with the iOS runtime you want.
 4. **Android**: `oss setup android [--api=35] [--tag=google_apis]` puts
-   the emulator, platform-tools and a system image in
-   `~/.local/share/oss/android-sdk`, from Google's repository (no Java).
+   the emulator, platform-tools and a system image in OS Server's folder
+   (`android-sdk`; `~/.local/share/oss/android-sdk` before 0.7), from
+   Google's repository (no Java).
 5. **The bases**, below. `oss doctor` says what's ready.
 
-Settings (`~/.config/oss/server.json`, every field optional):
+OS Server's files are `~/Library/Application Support/OS Server` (on Linux
+`~/.config/oss`, `~/.local/state/oss` and `~/.local/share/oss`): its
+settings, its token, the leases (`State/`), the macOS bases (`Machines/`).
+0.7's first start moves them there from where an earlier oss kept them.
+Settings (`server.json` there, every field optional):
 
 ```json
 {"port": 7480, "capacity": {"macos": 2, "windows": 2, "linux": 2, "ios": 4, "android": 2},
@@ -226,9 +236,16 @@ Settings (`~/.config/oss/server.json`, every field optional):
 A Bazel cache (off without `"cache"`; `{}` for these defaults):
 
 ```json
-{"cache": {"port": 7490, "directory": "~/.local/state/oss/bazel-cache", "maxGigabytes": 20,
+{"cache": {"port": 7490, "directory": "<OS Server's folder>/State/bazel-cache", "maxGigabytes": 20,
            "minFreeGigabytes": 30, "lanReads": false}}
 ```
+
+`"lends": ["macos"]` lends only those platforms, and leaves every other
+platform's machines alone, however they're named (a server deletes the
+clones it doesn't hold of each platform it lends); `"useUTM": false`
+leaves UTM out. With `OSS_HOME` (a folder of its own, a port and a port
+range of its own), that is a second server to try a change beside a
+running one.
 
 `"headlessVMs": true` runs Linux and Windows leases without UTM's windows:
 a clone has its displays taken away before it starts (UTM opens a window
@@ -239,7 +256,7 @@ has no screen for Screen Sharing to show.
 
 The VM bases' `runner` passwords, if you want leases to carry them (for
 logging in at a VM's screen, or unlocking it):
-`~/.config/oss/guest-passwords.json`, mode 600, `{"macos": "…", "linux":
+`guest-passwords.json` in OS Server's folder, mode 600, `{"macos": "…", "linux":
 "…", "windows": "…"}` (or `"macos/xcode-27.0"` for one config).
 
 Keep the installers (`*.ipsw`, `*.iso`) in this folder if you like: they
@@ -263,14 +280,20 @@ window (UTM reads only installers a person picks there), then
 the `runner` account (logged in at boot, sudo without a password), SSH by
 the server's key only, no sleep or screen lock (`provision/<platform>/vanilla`).
 
-- **macOS** (Virtualize → macOS 12+, the IPSW, 16 GB, 6 cores, 192 GB,
-  named `oss-macos-base`): **Save, don't start it.** Then
-  `OSS_GUEST_PASSWORD=<password> oss image provision-macos --vm=oss-macos-base --install`
-  installs macOS and sets it up with no clicks (UTM's provisioning, macOS
-  27 on host and guest): `runner` logged in at boot, SSH with the server's
-  key, a fixed-resolution display. Once, in its window: System Settings →
-  General → Sharing → **Screen Sharing** on (only that switch lets Screen
-  Sharing capture the screen). Then `oss image build macos vanilla --from=base`.
+- **macOS** is OS Server's own, with no UTM:
+  `OSS_GUEST_PASSWORD=<password> oss image install macos base --ipsw=<IPSW>`
+  (or without `--ipsw`, the newest this Mac supports, downloaded) makes
+  `Machines/macos/base.vm`, installs macOS and, on its first boot, makes
+  `runner` (logged in at boot, Remote Login on) with no one at its screen
+  (macOS 27's guest provisioning, macOS 27 on host and guest): about four
+  minutes. Once, at its live view (OS Server's Screen while a layer
+  builds, or a lease of it): System Settings → General → Sharing →
+  **Screen Sharing** on (only that switch lets Screen Sharing capture the
+  screen; a script can't turn it on). Then
+  `oss image build macos vanilla --from=base`. A macOS VM UTM already has
+  becomes OS Server's own with `oss image import-utm <name> [--as=<config>]`
+  (an APFS clone: no space, a moment); 0.7's first start takes in every
+  `oss-macos-` VM UTM has when OS Server has none of its own.
 - **Windows 11** (Virtualize → Windows, the ISO, "Install drivers and
   SPICE tools", 16 GB, 6 cores, 128 GB; display card `virtio-ramfb`, not
   `-gl`): a local account `runner`; UTM's guest tools from its CD; then
@@ -328,6 +351,14 @@ snapshot.
 
 ## How it works, and what bit
 
+- **macOS VMs run in OS Server's process** (Virtualization's
+  `VZVirtualMachine`, headless; the window's Screen is
+  `VZVirtualMachineView` on the same machine). A base's folder holds the
+  hardware model and machine identifier it was installed with; a lease
+  clones the folder (clonefile: the disk's blocks are shared until
+  written) and gives the clone a network card of its own, so the NAT's
+  DHCP server gives it an address of its own. A Mac runs at most two macOS
+  VMs at once (Apple's limit), UTM's and OS Server's together.
 - **macOS's local network privacy** refuses connections to UTM's network
   and the LAN from binaries that aren't Apple's unless the user allows
   them. So oss reaches guests and other computers only through Apple's own

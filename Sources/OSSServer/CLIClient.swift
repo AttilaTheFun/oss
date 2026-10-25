@@ -41,7 +41,7 @@ extension OSSClient {
     /// servers (or OSS_SERVERS) that answers, with `~/.config/oss/token` (or OSS_TOKEN).
     static func connect() async throws -> OSSClient {
         guard let token = Token.read() else {
-            throw OSSError(status: 0, message: "no token: put the server's in \(Paths.token) (or OSS_TOKEN)")
+            throw OSSError(status: 0, message: "no token: put the server's in \(Paths.clientToken) (or OSS_TOKEN)")
         }
         let servers = ClientConfig.load().servers.compactMap(URL.init(string:))
         // OSS_TRANSPORT=urlsession: the library's own transport (where macOS lets this binary reach the server).
@@ -82,8 +82,8 @@ extension OSSClient {
 
     /// Where a lease's SSH host keys are kept (each guest's are new).
     static func knownHosts(_ id: String) -> String {
-        Paths.ensure(Paths.state)
-        return "\(Paths.state)/known_hosts-\(id)"
+        Paths.ensure(Paths.clientState)
+        return "\(Paths.clientState)/known_hosts-\(id)"
     }
 
     func sshArguments(_ lease: Lease, identity: String?) -> [String] {
