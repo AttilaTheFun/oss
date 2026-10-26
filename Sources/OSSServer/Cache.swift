@@ -262,8 +262,7 @@ final class CacheServer: @unchecked Sendable {
     private let writeToken: String
 
     init(config: CacheConfig, store: CacheStore, readToken: String, writeToken: String) throws {
-        let parameters = NWParameters.tcp
-        parameters.allowLocalEndpointReuse = true
+        let parameters = NWParameters.listening
         listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: UInt16(config.port))!)
         self.store = store
         self.config = config
