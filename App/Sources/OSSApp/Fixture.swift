@@ -74,32 +74,41 @@ enum Fixture {
             lease("a90c3e17", .linux, "dev", "ci@runner", minutesAgo: 12, minutesLeft: 48, cpus: 6, memory: 16 * gb),
             lease("c44d8a20", .ios, "iphone", "visor:session-b", minutesAgo: 8, minutesLeft: 52, cpus: nil, memory: nil),
             lease("e5f61b39", .android, "phone", "visor:session-b", minutesAgo: 6, minutesLeft: 54, cpus: 4, memory: 4 * gb),
+            {
+                // An agent's container, held until it is released.
+                var held = lease("0d9c27f4", .container, "linux", "visor:session-c", minutesAgo: 95, minutesLeft: 0, cpus: 6, memory: 16 * gb)
+                held.expires = .distantFuture
+                return held
+            }(),
         ]
         let usage = Usage(
             sampledAt: now,
             host: HostUsage(name: "Mac Studio", cpus: 32, cpuPercent: 1184, memoryBytes: 512 * gb, memoryUsedBytes: 171 * gb),
             machines: [
                 MachineUsage(id: "3f2a91c0", platform: .macos, config: "xcode-27.0", holder: "visor:session-a", cpus: 6,
-                             memoryLimitBytes: 16 * gb, cpuPercent: 412, memoryBytes: 17 * gb),
+                             memoryLimitBytes: 16 * gb, cpuPercent: 412, memoryBytes: 17 * gb, diskBytes: 38 * gb),
                 MachineUsage(id: "7b1e04d2", platform: .windows, config: "swift-6.3.2", holder: "visor:session-a", cpus: 6,
-                             memoryLimitBytes: 16 * gb, cpuPercent: 538, memoryBytes: 19 * gb),
+                             memoryLimitBytes: 16 * gb, cpuPercent: 538, memoryBytes: 19 * gb, diskBytes: 46 * gb),
                 MachineUsage(id: "a90c3e17", platform: .linux, config: "dev", holder: "ci@runner", cpus: 6,
-                             memoryLimitBytes: 16 * gb, cpuPercent: 96, memoryBytes: 7 * gb),
+                             memoryLimitBytes: 16 * gb, cpuPercent: 96, memoryBytes: 7 * gb, diskBytes: 12 * gb),
                 MachineUsage(id: "c44d8a20", platform: .ios, config: "iphone", holder: "visor:session-b",
-                             cpuPercent: 64, memoryBytes: 3 * gb),
+                             cpuPercent: 64, memoryBytes: 3 * gb, diskBytes: 4 * gb),
                 MachineUsage(id: "e5f61b39", platform: .android, config: "phone", holder: "visor:session-b", cpus: 4,
-                             memoryLimitBytes: 4 * gb, cpuPercent: 38, memoryBytes: 5 * gb),
+                             memoryLimitBytes: 4 * gb, cpuPercent: 38, memoryBytes: 5 * gb, diskBytes: 9 * gb),
+                MachineUsage(id: "0d9c27f4", platform: .container, config: "linux", holder: "visor:session-c", cpus: 6,
+                             memoryLimitBytes: 16 * gb, cpuPercent: 214, memoryBytes: 9 * gb, diskBytes: 7 * gb),
             ])
         let bases = [
             Base(platform: .macos, config: "vanilla"), Base(platform: .macos, config: "dev"), Base(platform: .macos, config: "xcode-27.0"),
             Base(platform: .ios, config: "iphone"), Base(platform: .android, config: "phone"),
             Base(platform: .linux, config: "vanilla"), Base(platform: .linux, config: "dev"),
             Base(platform: .windows, config: "vanilla"), Base(platform: .windows, config: "dev"), Base(platform: .windows, config: "swift-6.3.2"),
+            Base(platform: .container, config: "linux"),
         ]
         let capacity = [
             Capacity(platform: .macos, limit: 2, leased: 1), Capacity(platform: .ios, limit: 10, leased: 1),
             Capacity(platform: .android, limit: 8, leased: 1), Capacity(platform: .linux, limit: 2, leased: 1),
-            Capacity(platform: .windows, limit: 2, leased: 1),
+            Capacity(platform: .windows, limit: 2, leased: 1), Capacity(platform: .container, limit: 4, leased: 1),
         ]
         let history = (0..<150).map { i -> Monitor.Sample in
             let t = Double(i)

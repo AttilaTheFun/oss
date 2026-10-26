@@ -67,10 +67,15 @@ struct ComponentRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            if let choosing, component.state == .absent, !component.needsFile {
-                Toggle("", isOn: Binding(get: { choosing.wrappedValue.contains(component.id) },
-                                         set: { on in if on { choosing.wrappedValue.insert(component.id) } else { choosing.wrappedValue.remove(component.id) } }))
-                    .labelsHidden().toggleStyle(.checkbox)
+            if let choosing {
+                // A checkbox for what can be chosen; the same room on the others, so the rows line up.
+                if component.state == .absent, !component.needsFile {
+                    Toggle("", isOn: Binding(get: { choosing.wrappedValue.contains(component.id) },
+                                             set: { on in if on { choosing.wrappedValue.insert(component.id) } else { choosing.wrappedValue.remove(component.id) } }))
+                        .labelsHidden().toggleStyle(.checkbox).frame(width: 18)
+                } else {
+                    Color.clear.frame(width: 18, height: 1)
+                }
             }
             Image(systemName: component.symbol).font(.title3).frame(width: 26).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 3) {
