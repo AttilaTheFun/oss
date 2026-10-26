@@ -57,7 +57,10 @@ final class ServerRunner {
             Task { @MainActor in self?.append(line) }
         }
         do {
-            host = try ServerHost.start()
+            // Containers where this Mac can run them (Containerization's network needs macOS 26).
+            var containers: ContainerBackend?
+            if #available(macOS 26, *) { containers = ContainerEngine() }
+            host = try ServerHost.start(containers: containers)
             state = .running(since: Date())
         } catch {
             state = .failed("The server couldn't start: \(error.localizedDescription)")

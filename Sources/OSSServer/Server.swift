@@ -28,6 +28,9 @@ func log(_ message: String) {
 /// app shows them and keeps them in a file.
 public enum ServerLog {
     nonisolated(unsafe) public static var sink: (@Sendable (String) -> Void)?
+
+    /// A line in the server's log, from what runs beside it (the app's containers).
+    public static func write(_ message: String) { log(message) }
 }
 
 #if canImport(Network)
@@ -45,10 +48,13 @@ actor MachineManager {
     private let utm = UTMQueue()
     /// The server's Bazel cache, which every VM lease reads.
     private let bazelCache: (port: Int, readToken: String)?
+    /// What runs containers, where this process can (OS Server's app).
+    let containers: ContainerBackend?
 
-    init(config: ServerConfig, bazelCache: (port: Int, readToken: String)? = nil) {
+    init(config: ServerConfig, bazelCache: (port: Int, readToken: String)? = nil, containers: ContainerBackend? = nil) {
         self.config = config
         self.bazelCache = bazelCache
+        self.containers = containers
     }
 
     // MARK: Status
@@ -93,15 +99,22 @@ actor MachineManager {
         let utm = !config.useUTM ? [] : knownVMBases.filter { base in !own.contains { $0.platform == base.platform && $0.config == base.config } }
         let simulators = config.lends(.ios) ? await Simulators.bases() : []
         let emulators = config.lends(.android) ? Emulators.bases(config) : []
-        let all = own + utm + simulators + emulators
+        let all = own + utm + simulators + emulators + containerBases
         knownBases = all.filter { $0.config != "base" && config.lends($0.platform) }
             .sorted { ($0.platform.rawValue, $0.config) < ($1.platform.rawValue, $1.config) }
+    }
+
+    /// Containers have one base, Linux on this Mac's CPU: what they run is
+    /// the image each lease names.
+    private var containerBases: [Base] {
+        containers != nil && config.lends(.container) ? [Base(platform: .container, config: "linux")] : []
     }
 
     private func findBase(_ platform: Platform, _ config: String) async -> Base? {
         switch platform {
         case .ios: return await Simulators.bases().first { $0.config == config }
         case .android: return Emulators.bases(self.config).first { $0.config == config }
+        case .container: return containerBases.first { $0.config == config }
         default:
             if let base = knownBases.first(where: { $0.platform == platform && $0.config == config }) { return base }
             try? await refreshBases()
@@ -121,8 +134,27 @@ actor MachineManager {
 
     // MARK: Leasing
 
-    func lease(_ request: LeaseRequest) async throws -> Lease {
+    /// `local`: whether the client is on this Mac (a container is lent to
+    /// no other: it shares this Mac's folders).
+    func lease(_ request: LeaseRequest, local: Bool) async throws -> Lease {
         guard self.config.lends(request.platform) else { throw APIError(error: "this server lends no \(request.platform.rawValue) machines") }
+        if request.platform == .container {
+            guard containers != nil else { throw APIError(error: "this server runs no containers (OS Server's app does)", code: "noContainers") }
+            guard local else { throw APIError(error: "a container is lent only to a client on its server's Mac", code: "notLocal") }
+            guard let spec = request.container, !spec.image.isEmpty else { throw APIError(error: "a container lease names its image") }
+            for mount in spec.mounts where !mount.source.hasPrefix("/") || !FileManager.default.fileExists(atPath: mount.source) {
+                throw APIError(error: "no folder \(mount.source) to share")
+            }
+            for volume in spec.volumes {
+                guard !volume.name.isEmpty, volume.name.allSatisfy({ $0.isLetter || $0.isNumber || "-_.".contains($0) }),
+                      !volume.name.hasPrefix(".") else { throw APIError(error: "a volume's name is letters, digits, - _ and .") }
+                if let user = leases.values.first(where: { $0.state != .failed && $0.container?.volumes.contains { $0.name == volume.name } == true }) {
+                    throw APIError(error: "volume \(volume.name) is in use by lease \(user.id)", code: "volumeInUse")
+                }
+            }
+        } else if request.minutes == 0 {
+            throw APIError(error: "only a container is held until it is released (minutes: 0)")
+        }
         let config = request.config ?? self.config.defaultConfig(request.platform)
         guard let base = await findBase(request.platform, config) else {
             let offered = knownBases.filter { $0.platform == request.platform }.map(\.config)
@@ -130,17 +162,20 @@ actor MachineManager {
         }
         let held = leases.values.filter { $0.platform == request.platform && $0.state != .failed }.count
         guard held < self.config.limit(request.platform) else {
-            throw APIError(error: "busy: \(held) of \(self.config.limit(request.platform)) \(request.platform.rawValue) machines are leased")
+            throw APIError(error: "busy: \(held) of \(self.config.limit(request.platform)) \(request.platform.rawValue) machines are leased", code: "busy")
         }
         let id = Random.hex(4)
+        // A container may be held until it is released (an agent's, for days).
+        let untilReleased = request.platform == .container && request.minutes == 0
         let minutes = min(max(request.minutes ?? self.config.defaultMinutes, 1), self.config.maxMinutes)
         var lease = Lease(id: id, platform: request.platform, config: config, name: "oss-lease-\(request.platform.rawValue)-\(id)",
                           holder: request.holder ?? "unknown", state: .creating, created: Date(),
-                          expires: Date().addingTimeInterval(TimeInterval(minutes * 60)))
+                          expires: untilReleased ? .distantFuture : Date().addingTimeInterval(TimeInterval(minutes * 60)))
         if request.platform.isVM { lease.sshUser = self.config.guestUser }
+        lease.container = request.container
         leases[id] = lease
         save()
-        log("lease \(id): \(base.name) for \(lease.holder), \(minutes) min")
+        log("lease \(id): \(base.name) for \(lease.holder), \(untilReleased ? "until released" : "\(minutes) min")")
         Task { await self.create(id, from: base, holderKey: request.sshPublicKey) }
         return lease
     }
@@ -152,6 +187,7 @@ actor MachineManager {
             case .macos, .linux, .windows: try await createVM(id, lease: lease, base: base, holderKey: holderKey)
             case .ios: try await createSimulator(id, lease: lease, base: base)
             case .android: try await createEmulator(id, lease: lease, base: base)
+            case .container: try await createContainer(id, lease: lease)
             }
         } catch {
             log("lease \(id): failed: \(error)")
@@ -168,6 +204,51 @@ actor MachineManager {
         leases[id]?.state = .ready
         save()
         log("lease \(id): simulator \(udid) booted")
+    }
+
+    private func createContainer(_ id: String, lease: Lease) async throws {
+        guard let containers, let spec = lease.container else { throw APIError(error: "no container backend") }
+        let socket = try await containers.start(name: lease.name, spec: spec)
+        guard leases[id]?.state == .creating else { await containers.stop(name: lease.name, spec: spec); return }
+        leases[id]?.cpus = spec.cpus ?? ContainerDefaults.cpus
+        leases[id]?.memoryLimitBytes = spec.memoryBytes ?? ContainerDefaults.memoryBytes
+        leases[id]?.execSocket = socket
+        leases[id]?.state = .ready
+        save()
+        log("lease \(id): container \(lease.name) running \(spec.image)")
+    }
+
+    /// Containers whose helper has stopped (it crashed, or its command
+    /// ended) are started again from their disks.
+    func reviveContainers() async {
+        guard let containers else { return }
+        for lease in leases.values where lease.platform == .container && lease.state == .ready {
+            guard let spec = lease.container, !(await containers.isRunning(name: lease.name)) else { continue }
+            log("lease \(lease.id): \(lease.name) stopped; starting it again")
+            if let socket = await containers.reattach(name: lease.name, spec: spec) {
+                leases[lease.id]?.execSocket = socket
+            } else {
+                leases[lease.id]?.error = "its container stopped and couldn't be started again"
+                await release(lease.id, reason: "its container is gone")
+            }
+        }
+    }
+
+    func volumes() async -> [VolumeInfo] {
+        guard let containers else { return [] }
+        return await containers.volumes().map { volume in
+            var volume = volume
+            volume.lease = leases.values.first { $0.state != .failed && $0.container?.volumes.contains { $0.name == volume.name } == true }?.id
+            return volume
+        }
+    }
+
+    func deleteVolume(_ name: String) async throws {
+        guard let containers else { throw APIError(error: "this server runs no containers") }
+        if let user = leases.values.first(where: { $0.state != .failed && $0.container?.volumes.contains { $0.name == name } == true }) {
+            throw APIError(error: "volume \(name) is in use by lease \(user.id)", code: "volumeInUse")
+        }
+        try await containers.deleteVolume(name: name)
     }
 
     private func createEmulator(_ id: String, lease: Lease, base: Base) async throws {
@@ -319,8 +400,13 @@ actor MachineManager {
 
     func renew(_ id: String, minutes: Int?) throws -> Lease {
         guard var lease = leases[id], lease.state != .returning, lease.state != .failed else { throw APIError(error: "no lease \(id)") }
-        let minutes = min(max(minutes ?? config.defaultMinutes, 1), config.maxMinutes)
-        lease.expires = Date().addingTimeInterval(TimeInterval(minutes * 60))
+        // A container held until it is released stays so; one asked for 0 is from now on.
+        if lease.platform == .container && (minutes == 0 || (minutes == nil && lease.expires == .distantFuture)) {
+            lease.expires = .distantFuture
+        } else {
+            let minutes = min(max(minutes ?? config.defaultMinutes, 1), config.maxMinutes)
+            lease.expires = Date().addingTimeInterval(TimeInterval(minutes * 60))
+        }
         leases[id] = lease
         save()
         return lease
@@ -359,6 +445,8 @@ actor MachineManager {
             await Emulators.release(name: lease.name, port: lease.consolePort, pid: lease.emulatorPID)
             // The last emulator gone: oss's adb server too (the next lease starts it again).
             if !leases.values.contains(where: { $0.platform == .android && $0.id != id }) { await Emulators.stopADB() }
+        case .container:
+            await containers?.stop(name: lease.name, spec: lease.container)
         }
         try? FileManager.default.removeItem(atPath: "\(Paths.uploads)/\(id)")
         if leases[id]?.error != nil {
@@ -411,18 +499,53 @@ actor MachineManager {
             #else
             throw APIError(error: "VM input needs a Mac server")
             #endif
+        case .container: throw APIError(error: "a container has no screen: run commands in it with exec")
         }
     }
 
     private var lastUsage: Usage?
+    private lazy var history: [UsageSample] = FileManager.default.contents(atPath: Paths.usageHistory)
+        .flatMap { try? JSONDecoder.oss.decode([UsageSample].self, from: $0) } ?? []
+
+    /// A sample of the Mac for the day's history (every minute), kept
+    /// across restarts.
+    func recordHistory() async {
+        let sample = UsageSample(await usage())
+        history.append(sample)
+        history.removeAll { sample.date.timeIntervalSince($0.date) > 86400 }
+        if let data = try? JSONEncoder.oss.encode(history) {
+            Paths.ensure(Paths.state)
+            FileManager.default.createFile(atPath: Paths.usageHistory, contents: data)
+        }
+    }
+
+    func usageHistory() -> [UsageSample] { history }
 
     /// What the server's Mac and the leases use: sampled at most every
     /// three seconds (`ps` and `lsof` cost a moment).
     func usage() async -> Usage {
         if let lastUsage, Date().timeIntervalSince(lastUsage.sampledAt) < 3 { return lastUsage }
-        let sampled = await UsageProbe.usage(of: leases.values.filter { $0.state == .ready }.sorted { $0.created < $1.created })
+        let ready = leases.values.filter { $0.state == .ready }.sorted { $0.created < $1.created }
+        let sampled = await UsageProbe.usage(of: ready, folders: Dictionary(uniqueKeysWithValues: ready.map { ($0.id, folder(of: $0)) }))
         lastUsage = sampled
         return sampled
+    }
+
+    /// Where a lease's disk goes: its clone, its simulator's or emulator's
+    /// data, its container's root filesystem.
+    private func folder(of lease: Lease) -> String? {
+        switch lease.platform {
+        case .macos, .linux, .windows:
+            #if canImport(Virtualization)
+            if lease.platform == .macos, FileManager.default.fileExists(atPath: MacVMStore.leasePath(lease.name)) {
+                return MacVMStore.leasePath(lease.name)
+            }
+            #endif
+            return "\(NSHomeDirectory())/Library/Containers/com.utmapp.UTM/Data/Documents/\(lease.name).utm"
+        case .ios: return lease.udid.map { "\(NSHomeDirectory())/Library/Developer/CoreSimulator/Devices/\($0)" }
+        case .android: return "\(config.androidAVDHome)/\(lease.name).avd"
+        case .container: return containers?.directory(name: lease.name)
+        }
     }
 
     /// `simctl` for a simulator, `adb` for an emulator, with `@name`
@@ -437,7 +560,7 @@ actor MachineManager {
         switch lease.platform {
         case .ios: result = try await Simulators.run(resolved, udid: lease.udid ?? "")
         case .android: result = try await Emulators.run(resolved, port: lease.consolePort ?? 0)
-        default: throw APIError(error: "\(lease.platform.rawValue) leases take SSH, not device commands")
+        default: throw APIError(error: "\(lease.platform.rawValue) leases take \(lease.platform == .container ? "exec" : "SSH"), not device commands")
         }
         return DeviceCommandResult(status: result.status, output: result.output, error: result.error)
     }
@@ -473,6 +596,7 @@ actor MachineManager {
             try await Task.detached { try RFBScreenshot(host: host, port: port, password: password).capture(to: path) }.value
             guard let data = FileManager.default.contents(atPath: path) else { throw APIError(error: "no screenshot") }
             return data
+        case .container: throw APIError(error: "a container has no screen")
         }
     }
 
@@ -522,6 +646,11 @@ actor MachineManager {
                       let forwarder = try? Forwarder(port: adb, target: "127.0.0.1", targetPort: console + 1) else { continue }
                 forwarder.start()
                 forwarders[lease.id] = [forwarder]
+            case .container:
+                // Each in a process of its own: still running, or started again from its disk.
+                guard let containers, config.lends(.container), let spec = lease.container,
+                      let socket = await containers.reattach(name: lease.name, spec: spec) else { continue }
+                lease.execSocket = socket
             }
             leases[lease.id] = lease
             log("lease \(lease.id): recovered")
@@ -548,6 +677,9 @@ actor MachineManager {
         for lease in saved where lease.platform == .android && leases[lease.id] == nil && config.lends(.android) {
             await Emulators.release(name: lease.name, port: lease.consolePort, pid: lease.emulatorPID)
         }
+        if let containers, config.lends(.container) {
+            await containers.prune(keeping: Set(leases.values.filter { $0.platform == .container }.map(\.name)))
+        }
         save()
     }
 }
@@ -562,13 +694,14 @@ public final class ServerHost: Sendable {
     private let cache: CacheServer?
 
     /// Starts it: listening once this returns; recovery (leases a restart
-    /// left), base listings and expiry go on in the background.
-    public static func start() throws -> ServerHost {
+    /// left), base listings and expiry go on in the background. With
+    /// `containers` it lends containers too.
+    public static func start(containers: ContainerBackend? = nil) throws -> ServerHost {
         Paths.migrate()
         let config = ServerConfig.load()
         let token = Token.ensure()
         let cache = config.cache.flatMap(Server.startCache)
-        let machines = MachineManager(config: config, bazelCache: cache.map { ($0.config.port, $0.readToken) })
+        let machines = MachineManager(config: config, bazelCache: cache.map { ($0.config.port, $0.readToken) }, containers: containers)
         let http = try HTTPServer(port: config.port) { request in
             await Server.route(request, machines: machines, token: token, cache: cache)
         }
@@ -590,6 +723,13 @@ public final class ServerHost: Sendable {
             while true {
                 try? await Task.sleep(for: .seconds(15))
                 await machines.expire()
+                await machines.reviveContainers()
+            }
+        }
+        Task {
+            while true {
+                await machines.recordHistory()
+                try? await Task.sleep(for: .seconds(60))
             }
         }
         log("oss serving on :\(config.port); capacity \(config.capacity)")
@@ -615,6 +755,9 @@ public final class ServerHost: Sendable {
         }
         log("removed everything OS Server kept")
     }
+
+    /// Where containers keep their kernel, images and root filesystems.
+    public static var containersDirectory: String { Paths.containers }
 
     private init(port: Int, machines: MachineManager, http: HTTPServer, cache: CacheServer?) {
         self.port = port
@@ -656,10 +799,14 @@ enum Server {
 
     static func route(_ request: HTTPRequest, machines: MachineManager, token: String, cache: CacheServer?) async -> HTTPResponse {
         let parts = request.path.split(separator: "?")[0].split(separator: "/").map(String.init)
+        // A client below API 6 (an OSSClient before 0.9 sends no OSS-API)
+        // can't read a container's platform: it is shown none.
+        let seesContainers = (Int(request.header("oss-api") ?? "") ?? 0) >= 6
+        func visible(_ platform: Platform) -> Bool { seesContainers || platform != .container }
         if parts == ["v1", "capabilities"] {
             let platforms = ((try? await machines.bases()) ?? []).map(\.platform)
             return .json(Capabilities(version: OSS.version, api: OSS.apiLevel, features: OSS.features + (cache == nil ? [] : ["cache"]),
-                                      platforms: Platform.allCases.filter { platforms.contains($0) }))
+                                      platforms: Platform.allCases.filter { platforms.contains($0) && visible($0) }))
         }
         if parts == ["v1", "hello"] {
             return .json(["server": "oss", "host": localHostName])
@@ -675,10 +822,15 @@ enum Server {
             let method = request.method
             switch (method, parts.count) {
             case ("GET", 2) where parts[1] == "status":
-                return .json(Status(server: localHostName, bases: try await machines.bases(),
-                                    capacity: await machines.capacity(), leases: await machines.all()))
+                return .json(Status(server: localHostName, bases: try await machines.bases().filter { visible($0.platform) },
+                                    capacity: await machines.capacity().filter { visible($0.platform) },
+                                    leases: await machines.all().filter { visible($0.platform) }))
             case ("GET", 2) where parts[1] == "usage":
-                return .json(await machines.usage())
+                var usage = await machines.usage()
+                usage.machines = usage.machines.filter { visible($0.platform) }
+                return .json(usage)
+            case ("GET", 3) where parts[1] == "usage" && parts[2] == "history":
+                return .json(await machines.usageHistory())
             case ("POST", 4) where parts[1] == "machines" && parts[3] == "input":
                 try await machines.input(parts[2], try JSONDecoder.oss.decode(InputRequest.self, from: request.body))
                 return .json(["done": "input"])
@@ -696,12 +848,21 @@ enum Server {
                               "simctl": simctl ? "ok" : "no Xcode (iOS simulators off)",
                               "emulator": emulator ? "ok" : "no Android SDK: oss setup android"])
             case ("POST", 2) where parts[1] == "machines":
-                return .json(try await machines.lease(try JSONDecoder.oss.decode(LeaseRequest.self, from: request.body)), status: 201)
+                return .json(try await machines.lease(try JSONDecoder.oss.decode(LeaseRequest.self, from: request.body),
+                                                      local: LocalNetworks.isThisMac(request.remoteAddress)), status: 201)
             case ("GET", 2) where parts[1] == "machines":
-                return .json(await machines.all())
+                return .json(await machines.all().filter { visible($0.platform) })
             case ("GET", 3) where parts[1] == "machines":
-                guard let lease = await machines.lease(parts[2]) else { return .error("no lease \(parts[2])", status: 404) }
+                guard let lease = await machines.lease(parts[2]), visible(lease.platform) else { return .error("no lease \(parts[2])", status: 404) }
                 return .json(lease)
+            case ("GET", 2) where parts[1] == "volumes":
+                return .json(await machines.volumes())
+            case ("DELETE", 3) where parts[1] == "volumes":
+                guard LocalNetworks.isThisMac(request.remoteAddress) else {
+                    return .json(APIError(error: "a volume is deleted only from its server's Mac", code: "notLocal"), status: 403)
+                }
+                try await machines.deleteVolume(parts[2].removingPercentEncoding ?? parts[2])
+                return .json(["deleted": parts[2]])
             case ("DELETE", 3) where parts[1] == "machines":
                 guard await machines.lease(parts[2]) != nil else { return .error("no lease \(parts[2])", status: 404) }
                 let id = parts[2]
@@ -722,7 +883,8 @@ enum Server {
             }
             return .error("no such endpoint: \(method) \(request.path)", status: 404)
         } catch let error as APIError {
-            return .error(error.error, status: error.error.hasPrefix("busy") ? 409 : 400)
+            let status = error.code == "busy" || error.error.hasPrefix("busy") ? 409 : error.code == "notLocal" ? 403 : 400
+            return HTTPResponse(status: status, body: (try? JSONEncoder.oss.encode(error)) ?? Data())
         } catch {
             return .error("\(error)", status: 500)
         }

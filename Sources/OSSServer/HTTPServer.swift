@@ -8,6 +8,8 @@ struct HTTPRequest: Sendable {
     var path: String
     var headers: [String: String]
     var body: Data
+    /// The client's address, as the connection came from it.
+    var remoteAddress: String? = nil
 
     func header(_ name: String) -> String? { headers[name.lowercased()] }
 
@@ -69,6 +71,8 @@ final class HTTPServer: @unchecked Sendable {
             var buffer = buffer
             if let data { buffer.append(data) }
             if let request = parse(buffer) {
+                var request = request
+                if case .hostPort(let host, _) = connection.endpoint { request.remoteAddress = "\(host)".components(separatedBy: "%")[0] }
                 Task {
                     let response = await handler(request)
                     send(response, on: connection)

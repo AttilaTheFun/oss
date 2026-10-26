@@ -40,9 +40,14 @@ enum Paths {
     /// UTM's VM bases as last listed.
     static let vmBases = "\(state)/vm-bases.json"
     static let uploads = "\(state)/uploads"
+    /// The last day of usage, a sample a minute.
+    static let usageHistory = "\(state)/usage-history.json"
     /// The macOS VMs' bases (OS Server's own, run by Apple's
     /// Virtualization framework) and their leases' clones.
     static let machines = "\(share)/Machines"
+    /// The containers' kernel, images and root filesystems
+    /// (Containerization's store).
+    static let containers = "\(share)/Containers"
 
     static func ensure(_ directory: String) {
         try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true,
@@ -100,7 +105,7 @@ struct ServerConfig: Codable, Sendable {
     /// The API's port, on every interface.
     var port: Int = 7480
     /// How many leases of each platform may exist at once.
-    var capacity: [String: Int] = ["macos": 2, "windows": 2, "linux": 2, "ios": 4, "android": 2]
+    var capacity: [String: Int] = ["macos": 2, "windows": 2, "linux": 2, "ios": 4, "android": 2, "container": 4]
     var defaultMinutes: Int = 60
     var maxMinutes: Int = 8 * 60
     /// The range forwarded ports are taken from.
@@ -117,7 +122,8 @@ struct ServerConfig: Codable, Sendable {
     var managementKey: String = "\(Paths.home)/.ssh/id_ed25519"
     var guestUser: String = "runner"
     /// The config a lease gets when it names none, by platform.
-    var defaultConfig: [String: String] = ["macos": "vanilla", "windows": "vanilla", "linux": "vanilla", "ios": "iphone", "android": "phone"]
+    var defaultConfig: [String: String] = ["macos": "vanilla", "windows": "vanilla", "linux": "vanilla", "ios": "iphone", "android": "phone",
+                                           "container": "linux"]
     /// The Android SDK oss sets up (`oss setup android`), and its AVDs.
     var androidSDK: String = "\(Paths.share)/android-sdk"
     var androidAVDHome: String = "\(Paths.share)/avd"

@@ -28,7 +28,9 @@ public enum MonitorAccess {
 
     /// What a Monitor may ask with the monitor token.
     static func allows(_ method: String, _ parts: [String]) -> Bool {
-        method == "GET" && parts.count == 2 && parts[0] == "v1" && ["status", "usage", "cache"].contains(parts[1])
+        guard method == "GET", parts.first == "v1" else { return false }
+        return (parts.count == 2 && ["capabilities", "status", "usage", "cache", "volumes"].contains(parts[1]))
+            || parts == ["v1", "usage", "history"]
     }
 
     /// The code that connects OS Monitor to this server: its name, the

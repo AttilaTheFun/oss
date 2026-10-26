@@ -64,11 +64,15 @@ public struct URLSessionTransport: OSSTransport {
 public struct OSSError: Error, Sendable, CustomStringConvertible {
     public var status: Int
     public var message: String
+    /// The server's kind of refusal (`APIError.code`): `busy`, `notLocal`,
+    /// `noContainers`, `volumeInUse`.
+    public var code: String?
     public var description: String { message }
 
-    public init(status: Int, message: String) {
+    public init(status: Int, message: String, code: String? = nil) {
         self.status = status
         self.message = message
+        self.code = code
     }
 }
 
@@ -122,13 +126,15 @@ public struct OSSClient: Sendable {
         components.percentEncodedPath = (components.percentEncodedPath.hasSuffix("/") ? String(components.percentEncodedPath.dropLast()) : components.percentEncodedPath)
             + path
         if !query.isEmpty { components.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) } }
-        var headers = ["Authorization": "Bearer \(try await token())"]
+        // The API level this client speaks: a server shows an older one only
+        // what it knows (no containers below 6).
+        var headers = ["Authorization": "Bearer \(try await token())", "OSS-API": "\(OSS.apiLevel)"]
         if body != nil { headers["Content-Type"] = contentType }
         let answer = try await transport.send(OSSHTTPRequest(method: method, url: components.url!, headers: headers, body: body,
                                                              timeout: timeout ?? self.timeout))
         guard (200..<300).contains(answer.status) else {
-            let message = (try? JSONDecoder.oss.decode(APIError.self, from: answer.body))?.error ?? String(decoding: answer.body, as: UTF8.self)
-            throw OSSError(status: answer.status, message: message)
+            let refusal = try? JSONDecoder.oss.decode(APIError.self, from: answer.body)
+            throw OSSError(status: answer.status, message: refusal?.error ?? String(decoding: answer.body, as: UTF8.self), code: refusal?.code)
         }
         return answer
     }
@@ -220,4 +226,17 @@ public struct OSSClient: Sendable {
 
     /// What the server's Mac and each lease use now.
     public func usage() async throws -> Usage { try await json("GET", "/v1/usage") }
+
+    /// The last day of the server's Mac, a sample a minute.
+    public func usageHistory() async throws -> [UsageSample] { try await json("GET", "/v1/usage/history") }
+
+    // MARK: Containers' volumes
+
+    /// The volumes containers made on the server's Mac, kept ones too.
+    public func volumes() async throws -> [VolumeInfo] { try await json("GET", "/v1/volumes") }
+
+    /// A kept volume deleted (one no lease is using).
+    public func deleteVolume(_ name: String) async throws {
+        _ = try await send("DELETE", "/v1/volumes/\(Self.encode(name))")
+    }
 }

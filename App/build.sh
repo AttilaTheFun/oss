@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds OS Server: App/build/OS Server.app, the server (in the app's own
-# process) with its window and menu bar, and the command line (`oss`) in
-# Contents/Helpers; both signed with your Apple Development identity (ad hoc
+# process) with its window and menu bar, the command line (`oss`) and the
+# containers' helper (`oss-container`) in Contents/Helpers; all signed with your Apple Development identity (ad hoc
 # without one; OSS_SIGN_IDENTITY for another, a Developer ID's for
 # notarizing), with App/entitlements.plist (Apple events for UTM,
 # Virtualization for its macOS VMs). The version is OSS.version
@@ -18,11 +18,13 @@ BUILD="${OSS_APP_BUILD:-1}"
 
 (cd .. && swift build -c release --product oss)
 swift build -c release --product OSSApp
+swift build -c release --product OSSContainer
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp .build/release/OSSApp "$APP/Contents/MacOS/OS Server"
 cp ../.build/release/oss "$APP/Contents/Helpers/oss"
+cp .build/release/OSSContainer "$APP/Contents/Helpers/oss-container"
 # The icon: Icon/OSServer.icon (Icon Composer), rendered at each size an
 # .icns holds by Xcode's ictool.
 ICTOOL="${ICTOOL:-$(xcode-select -p)/../Applications/Icon Composer.app/Contents/Executables/ictool}"
@@ -48,6 +50,7 @@ sign() {
   else codesign --force --sign - "$@"; fi
 }
 sign --identifier oss --entitlements entitlements.plist "$APP/Contents/Helpers/oss"
+sign --identifier oss-container --entitlements entitlements.plist "$APP/Contents/Helpers/oss-container"
 sign --entitlements entitlements.plist "$APP"
 codesign --verify --strict "$APP"
 echo "built $APP ($VERSION, build $BUILD)"

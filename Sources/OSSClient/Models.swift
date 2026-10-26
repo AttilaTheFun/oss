@@ -4,8 +4,204 @@ import Foundation
 /// Windows), an iOS simulator or an Android emulator on the server's Mac.
 public enum Platform: String, Codable, CaseIterable, Sendable {
     case macos, ios, android, linux, windows
+    /// A Linux container on the server's own Mac (API 6), lent only to a
+    /// client on that Mac: it shares the Mac's folders.
+    case container
 
     public var isVM: Bool { self == .macos || self == .linux || self == .windows }
+}
+
+/// What a container lease runs: an image from a registry, what it's given,
+/// the server Mac's folders shared into it, volumes of its own, and its main
+/// process (by default one that waits, so commands are run in it with
+/// `exec`). It runs in a process of its own on the server's Mac, so it and
+/// its execs outlive the server's restarts; after the Mac's, it is started
+/// again from its own disk.
+public struct ContainerSpec: Codable, Sendable, Hashable {
+    /// An image reference: `ghcr.io/owner/name:tag`, `alpine:3.20` (Docker
+    /// Hub's). Pulled once, kept by digest.
+    public var image: String
+    public var cpus: Int?
+    public var memoryBytes: Int64?
+    /// Its root filesystem's size.
+    public var diskBytes: Int64?
+    public var mounts: [ContainerMount]
+    public var volumes: [ContainerVolume]
+    /// x86_64 Linux programs run under Rosetta (where the Mac has it).
+    public var rosetta: Bool
+    public var environment: [String: String]
+    public var workingDirectory: String?
+    /// Its main process; nil: one that waits until the lease ends.
+    public var command: [String]?
+
+    public init(image: String, cpus: Int? = nil, memoryBytes: Int64? = nil, diskBytes: Int64? = nil, mounts: [ContainerMount] = [],
+                volumes: [ContainerVolume] = [], rosetta: Bool = false, environment: [String: String] = [:],
+                workingDirectory: String? = nil, command: [String]? = nil) {
+        self.image = image
+        self.cpus = cpus
+        self.memoryBytes = memoryBytes
+        self.diskBytes = diskBytes
+        self.mounts = mounts
+        self.volumes = volumes
+        self.rosetta = rosetta
+        self.environment = environment
+        self.workingDirectory = workingDirectory
+        self.command = command
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        image = try c.decode(String.self, forKey: .image)
+        cpus = try c.decodeIfPresent(Int.self, forKey: .cpus)
+        memoryBytes = try c.decodeIfPresent(Int64.self, forKey: .memoryBytes)
+        diskBytes = try c.decodeIfPresent(Int64.self, forKey: .diskBytes)
+        mounts = try c.decodeIfPresent([ContainerMount].self, forKey: .mounts) ?? []
+        volumes = try c.decodeIfPresent([ContainerVolume].self, forKey: .volumes) ?? []
+        rosetta = try c.decodeIfPresent(Bool.self, forKey: .rosetta) ?? false
+        environment = try c.decodeIfPresent([String: String].self, forKey: .environment) ?? [:]
+        workingDirectory = try c.decodeIfPresent(String.self, forKey: .workingDirectory)
+        command = try c.decodeIfPresent([String].self, forKey: .command)
+    }
+}
+
+/// A disk of its own for a container, by name (an ext4 filesystem of
+/// `sizeBytes`, allocated as it fills): one already there at that size is
+/// used again, at another size it is made anew. Deleted with the lease
+/// unless `keep`; a kept one is listed (`GET /v1/volumes`) until deleted.
+public struct ContainerVolume: Codable, Sendable, Hashable {
+    public var name: String
+    public var destination: String
+    public var sizeBytes: Int64
+    public var keep: Bool
+
+    public init(name: String, destination: String, sizeBytes: Int64, keep: Bool = false) {
+        self.name = name
+        self.destination = destination
+        self.sizeBytes = sizeBytes
+        self.keep = keep
+    }
+}
+
+/// A container volume on the server's Mac: its size, the disk it takes
+/// now, and the lease using it.
+public struct VolumeInfo: Codable, Sendable, Identifiable {
+    public var name: String
+    public var sizeBytes: Int64
+    public var allocatedBytes: Int64
+    public var lease: String?
+    public var id: String { name }
+
+    public init(name: String, sizeBytes: Int64, allocatedBytes: Int64, lease: String? = nil) {
+        self.name = name
+        self.sizeBytes = sizeBytes
+        self.allocatedBytes = allocatedBytes
+        self.lease = lease
+    }
+}
+
+/// A folder of the server's Mac shared into a container.
+public struct ContainerMount: Codable, Sendable, Hashable {
+    public var source: String
+    public var destination: String
+    public var readOnly: Bool
+
+    public init(source: String, destination: String, readOnly: Bool = false) {
+        self.source = source
+        self.destination = destination
+        self.readOnly = readOnly
+    }
+}
+
+/// A command run in a container lease: the first frame on its exec socket
+/// (`Lease.execSocket`), then a stream of `ExecFrame`s both ways.
+public struct ExecRequest: Codable, Sendable, Hashable {
+    public var arguments: [String]
+    /// A terminal of `columns` × `rows`, its output on stdout alone.
+    public var tty: Bool
+    public var columns: Int?
+    public var rows: Int?
+    public var environment: [String: String]
+    public var workingDirectory: String?
+
+    public init(arguments: [String], tty: Bool = false, columns: Int? = nil, rows: Int? = nil,
+                environment: [String: String] = [:], workingDirectory: String? = nil) {
+        self.arguments = arguments
+        self.tty = tty
+        self.columns = columns
+        self.rows = rows
+        self.environment = environment
+        self.workingDirectory = workingDirectory
+    }
+}
+
+/// One frame of an exec's stream: a byte saying what it is, its length as
+/// four bytes (big-endian), then that many bytes. The client's first is
+/// `start`; the container's last is `exit`. A connection that closes before
+/// that ends the command (TERM, then KILL ten seconds on).
+public enum ExecFrame: Sendable, Equatable {
+    /// Client to container.
+    case start(ExecRequest)
+    case stdin(Data)
+    case closeStdin
+    case resize(columns: Int, rows: Int)
+    /// A signal for the command, by its Linux number (TERM 15, INT 2, HUP 1,
+    /// QUIT 3, USR1 10, USR2 12).
+    case signal(Int32)
+    /// Container to client.
+    case stdout(Data)
+    case stderr(Data)
+    case exit(Int32)
+
+    public var encoded: Data {
+        func frame(_ kind: UInt8, _ payload: Data) -> Data {
+            var data = Data([kind])
+            let count = UInt32(payload.count).bigEndian
+            withUnsafeBytes(of: count) { data.append(contentsOf: $0) }
+            return data + payload
+        }
+        func int32(_ value: Int32) -> Data { withUnsafeBytes(of: value.bigEndian) { Data($0) } }
+        switch self {
+        case .stdin(let data): return frame(0, data)
+        case .closeStdin: return frame(1, Data())
+        case .resize(let columns, let rows): return frame(2, int32(Int32(columns)) + int32(Int32(rows)))
+        case .stdout(let data): return frame(3, data)
+        case .stderr(let data): return frame(4, data)
+        case .exit(let code): return frame(5, int32(code))
+        case .signal(let number): return frame(6, int32(number))
+        case .start(let request): return frame(7, (try? JSONEncoder().encode(request)) ?? Data())
+        }
+    }
+
+    /// The frames at the start of `buffer`, which keeps what's left of an
+    /// unfinished one.
+    public static func decode(_ buffer: inout Data) -> [ExecFrame] {
+        var frames: [ExecFrame] = []
+        while buffer.count >= 5 {
+            let start = buffer.startIndex
+            let kind = buffer[start]
+            let count = Int(buffer[start + 1]) << 24 | Int(buffer[start + 2]) << 16 | Int(buffer[start + 3]) << 8 | Int(buffer[start + 4])
+            guard buffer.count >= 5 + count else { break }
+            let payload = Data(buffer[(start + 5)..<(start + 5 + count)])
+            buffer = Data(buffer[(start + 5 + count)...])
+            func int32(_ data: Data, at offset: Int) -> Int32 {
+                let b = [UInt8](data)
+                guard b.count >= offset + 4 else { return 0 }
+                return Int32(bitPattern: UInt32(b[offset]) << 24 | UInt32(b[offset + 1]) << 16 | UInt32(b[offset + 2]) << 8 | UInt32(b[offset + 3]))
+            }
+            switch kind {
+            case 0: frames.append(.stdin(payload))
+            case 1: frames.append(.closeStdin)
+            case 2: frames.append(.resize(columns: Int(int32(payload, at: 0)), rows: Int(int32(payload, at: 4))))
+            case 3: frames.append(.stdout(payload))
+            case 4: frames.append(.stderr(payload))
+            case 5: frames.append(.exit(int32(payload, at: 0)))
+            case 6: frames.append(.signal(int32(payload, at: 0)))
+            case 7: if let request = try? JSONDecoder().decode(ExecRequest.self, from: payload) { frames.append(.start(request)) }
+            default: break
+            }
+        }
+        return frames
+    }
 }
 
 /// A base a lease is cloned from, named `oss-<platform>-<config>`: a stopped
@@ -77,6 +273,10 @@ public struct Lease: Codable, Sendable {
     /// The guest's `runner` password, where the server knows it (VMs): to
     /// log in at its screen, or unlock it.
     public var guestPassword: String?
+    /// A container lease's spec, and the Unix socket its commands are run
+    /// through on the server's Mac (`ExecFrame`s; API 6).
+    public var container: ContainerSpec?
+    public var execSocket: String?
 
     public init(id: String, platform: Platform, config: String, name: String, holder: String, state: LeaseState,
                 created: Date, expires: Date, error: String? = nil) {
@@ -99,13 +299,18 @@ public struct LeaseRequest: Codable, Sendable {
     public var holder: String?
     /// The holder's public key, let into a VM for the lease.
     public var sshPublicKey: String?
+    /// A container lease's image and what it's given (API 6). A container
+    /// may ask for `minutes: 0`: held until it is released.
+    public var container: ContainerSpec?
 
-    public init(platform: Platform, config: String? = nil, minutes: Int? = nil, holder: String? = nil, sshPublicKey: String? = nil) {
+    public init(platform: Platform, config: String? = nil, minutes: Int? = nil, holder: String? = nil, sshPublicKey: String? = nil,
+                container: ContainerSpec? = nil) {
         self.platform = platform
         self.config = config
         self.minutes = minutes
         self.holder = holder
         self.sshPublicKey = sshPublicKey
+        self.container = container
     }
 }
 
@@ -244,6 +449,46 @@ public struct Usage: Codable, Sendable {
     }
 }
 
+/// One minute of the server's Mac, as the server keeps it for a day
+/// (`GET /v1/usage/history`, API 6): CPU (100 a core) and memory, OS
+/// Server's and everyone else's, and the disk.
+public struct UsageSample: Codable, Sendable {
+    public var date: Date
+    public var cpus: Int
+    public var ourCPU: Double
+    public var otherCPU: Double
+    public var memoryBytes: Int64
+    public var ourMemory: Int64
+    public var otherMemory: Int64
+    public var diskBytes: Int64?
+    public var diskFreeBytes: Int64?
+    /// OS Server's own files, as last measured.
+    public var ourDiskBytes: Int64?
+
+    public init(date: Date, cpus: Int, ourCPU: Double, otherCPU: Double, memoryBytes: Int64, ourMemory: Int64, otherMemory: Int64,
+                diskBytes: Int64? = nil, diskFreeBytes: Int64? = nil, ourDiskBytes: Int64? = nil) {
+        self.date = date
+        self.cpus = cpus
+        self.ourCPU = ourCPU
+        self.otherCPU = otherCPU
+        self.memoryBytes = memoryBytes
+        self.ourMemory = ourMemory
+        self.otherMemory = otherMemory
+        self.diskBytes = diskBytes
+        self.diskFreeBytes = diskFreeBytes
+        self.ourDiskBytes = ourDiskBytes
+    }
+
+    public init(_ usage: Usage) {
+        let host = usage.host
+        self.init(date: usage.sampledAt, cpus: host.cpus, ourCPU: usage.ours?.cpuPercent ?? 0,
+                  otherCPU: usage.others?.cpuPercent ?? host.cpuPercent, memoryBytes: host.memoryBytes,
+                  ourMemory: usage.ours?.memoryBytes ?? 0, otherMemory: usage.others?.memoryBytes ?? host.memoryUsedBytes,
+                  diskBytes: usage.disk?.totalBytes, diskFreeBytes: usage.disk?.freeBytes,
+                  ourDiskBytes: usage.disk.flatMap { $0.parts.isEmpty ? nil : $0.parts.reduce(0) { $0 + $1.bytes } })
+    }
+}
+
 /// A share of the Mac's CPU (100 a core) and memory (physical footprint).
 public struct ResourceShare: Codable, Sendable {
     public var cpuPercent: Double
@@ -332,9 +577,14 @@ public struct MachineUsage: Codable, Sendable {
     public var cpuPercent: Double?
     /// Resident memory.
     public var memoryBytes: Int64?
+    /// The disk it takes on the server's Mac (a VM's clone, a container's
+    /// root filesystem, a simulator's or an emulator's data), as allocated
+    /// (API 6).
+    public var diskBytes: Int64?
 
     public init(id: String, platform: Platform, config: String, holder: String, cpus: Int? = nil, memoryLimitBytes: Int64? = nil,
-                cpuPercent: Double? = nil, memoryBytes: Int64? = nil) {
+                cpuPercent: Double? = nil, memoryBytes: Int64? = nil, diskBytes: Int64? = nil) {
+        self.diskBytes = diskBytes
         self.id = id
         self.platform = platform
         self.config = config
@@ -380,13 +630,27 @@ public struct CacheInfo: Codable, Sendable {
 /// An error the server answers with (any status but 2xx).
 public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
     public var error: String
+    /// What kind of refusal, for a program to tell them apart (API 6):
+    /// `busy` (no room: 409), `notLocal` (a container for a client on
+    /// another computer: 403), `noContainers` (this server runs none),
+    /// `volumeInUse`.
+    public var code: String?
     public var description: String { error }
-    public init(error: String) { self.error = error }
+    public init(error: String, code: String? = nil) {
+        self.error = error
+        self.code = code
+    }
 }
 
 public enum OSS {
     /// This build's version, and the API level it speaks.
-    public static let version = "0.8.0"
+    public static let version = "0.9.0"
+    /// 6 from 0.9.0: container leases (`platform: container`, a
+    /// `ContainerSpec`, commands over `Lease.execSocket`), their volumes
+    /// (`/v1/volumes`), a lease's disk (`MachineUsage.diskBytes`), a day of
+    /// usage a minute at a time (`/v1/usage/history`). A client
+    /// says its level in an `OSS-API` header: one below 6 is shown no
+    /// containers.
     /// 5 from 0.8.0: usage says what is OS Server's, what is other
     /// processes', the disk, and the biggest other processes; a read-only
     /// token for OS Monitor (`MonitorConnection`).
@@ -396,7 +660,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 5
+    public static let apiLevel = 6
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage"]
 }

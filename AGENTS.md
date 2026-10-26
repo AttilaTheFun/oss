@@ -60,6 +60,14 @@ PowerShell 5.1, already elevated. A desktop session is logged in on all
 three. On macOS, run GUI work in it with `sudo launchctl asuser $(id -u
 runner) …`.
 
+Containers (on the server's own Mac only, OS Server's app on macOS 26):
+`oss machine lease container --image=REF [--mount=…] [--volume=…]`, then
+`oss machine exec <id> -- <command>`. They need no SSH or screen: a
+command's streams, exit status and signals go straight through. Prefer one
+to a Linux VM for headless Linux work; release it when done, as any lease
+(`--minutes=0`, held until released, is for an agent's own session
+container, which its program releases).
+
 For scripts and CI: `oss machine lease linux --exports` prints `export
 OSS_ID=… OSS_SSH=… OSS_HOST=… …`; `oss machine run linux -- ./script.sh`
 gives a script those in its environment.

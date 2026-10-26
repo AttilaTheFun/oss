@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.9.0
+
+- **Containers** (API 6, OS Server's app on macOS 26 or later): a lease
+  platform, `container`, a Linux container on Apple's Containerization
+  from an image in a registry, lent only to a client on the server's Mac.
+  - Its `ContainerSpec`: the image, CPUs, memory, its disk, the Mac's
+    folders to share (read-only or not), named volumes (kept or deleted
+    with the lease), Rosetta, environment, working directory and command.
+    `minutes: 0` holds a container until it is released.
+  - Each runs in a helper of its own (`oss-container`, a launchd job), so
+    containers and their commands outlive OS Server's restarts and
+    updates; after the Mac's, OS Server starts them again from their disks.
+  - Commands: `oss machine exec` and `OSSClient.exec`, straight to the
+    container over its Unix socket: stdin with its end, stdout and stderr,
+    the exit status, signals passed on, a terminal with `--tty`.
+  - Images pulled once and kept by digest, unpacked once and cloned.
+  - The kernel (Kata Containers' arm64 build, as Apple's `container` uses)
+    is fetched once into OS Server's folder.
+  - `oss volume list | delete`, `GET /v1/volumes`, `DELETE /v1/volumes/<name>`.
+  - A client below API 6 (an OSSClient before 0.9, which can't read the
+    new platform) is shown no containers: clients send `OSS-API`.
+- **OSSPool**: several servers leased from as one, the nearest with room
+  first (this computer, the LAN, the tailnet), a container only from this
+  computer's.
+- **Disk**: each lease's (`MachineUsage.diskBytes`: a VM's clone, a
+  simulator's or emulator's data, a container's root filesystem), the
+  containers' files among OS Server's, and a day of the Mac's CPU, memory
+  and disk kept by the server (`GET /v1/usage/history`).
+- **OS Monitor** shows them: each lease's disk, the disk over the last day,
+  the volumes, containers ("until released").
+- `OS Server --headless`: the server alone, no window (to try a change
+  beside the running app, with an `OSS_HOME` of its own).
+
 ## 0.8.0
 
 - **A simulator's screenshots have their corners and Dynamic Island masked

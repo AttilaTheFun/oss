@@ -7,12 +7,32 @@ import PackageDescription
 let package = Package(
     name: "OSSApp",
     platforms: [.macOS(.v15)],
-    dependencies: [.package(path: "..")],
+    dependencies: [
+        .package(path: ".."),
+        // Linux containers, each in a helper process of its own (Virtualization).
+        .package(url: "https://github.com/apple/containerization.git", exact: "0.33.3"),
+    ],
     targets: [
+        // A container's helper and what OS Server shares with it: the spec it
+        // runs, the container's VM and its commands (Containerization).
+        .target(
+            name: "ContainerRuntime",
+            dependencies: [.product(name: "OSSClient", package: "oss"),
+                           .product(name: "Containerization", package: "containerization"),
+                           .product(name: "ContainerizationOCI", package: "containerization"),
+                           .product(name: "ContainerizationOS", package: "containerization")]
+        ),
+        // `oss-container`: one container, a launchd job of OS Server's (Contents/Helpers).
+        .executableTarget(name: "OSSContainer", dependencies: ["ContainerRuntime"]),
         .executableTarget(
             name: "OSSApp",
-            dependencies: [.product(name: "OSSClient", package: "oss"), .product(name: "OSSServer", package: "oss"),
-                           .product(name: "OSSMonitorKit", package: "oss")]
+            dependencies: ["ContainerRuntime",
+                           .product(name: "OSSClient", package: "oss"), .product(name: "OSSServer", package: "oss"),
+                           .product(name: "OSSMonitorKit", package: "oss"),
+                           .product(name: "Containerization", package: "containerization"),
+                           .product(name: "ContainerizationOCI", package: "containerization"),
+                           .product(name: "ContainerizationEXT4", package: "containerization"),
+                           .product(name: "ContainerizationArchive", package: "containerization")]
         ),
     ]
 )
