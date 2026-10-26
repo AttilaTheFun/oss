@@ -8,14 +8,13 @@ import OSSClient
 /// the layers oss makes itself), shuts it down and names it
 /// `oss-<platform>-<layer>` (the previous one deleted).
 enum Images {
-    static func build(platform: Platform, layer: String, from base: String, script: String?, copies: [(String, String)],
-                      repo: String) async throws {
+    static func build(platform: Platform, layer: String, from base: String, script: String?, copies: [(String, String)]) async throws {
         let config = ServerConfig.load()
         let source = "oss-\(platform.rawValue)-\(base)"
         let target = "oss-\(platform.rawValue)-\(layer)"
         let work = "build-\(platform.rawValue)-\(layer)-\(Random.hex(3))"
         let ext = platform == .windows ? "ps1" : "sh"
-        let scriptPath = script ?? "\(repo)/provision/\(platform.rawValue)/\(layer).\(ext)"
+        let scriptPath = script ?? "\(Paths.provisioning)/\(platform.rawValue)/\(layer).\(ext)"
         guard FileManager.default.fileExists(atPath: scriptPath) else {
             throw ShellError(description: "no script \(scriptPath): give the layer's with --script")
         }

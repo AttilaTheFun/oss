@@ -698,6 +698,7 @@ public final class ServerHost: Sendable {
     /// `containers` it lends containers too.
     public static func start(containers: ContainerBackend? = nil) throws -> ServerHost {
         Paths.migrate()
+        ManagementKey.settle()
         let config = ServerConfig.load()
         let token = Token.ensure()
         let cache = config.cache.flatMap(Server.startCache)

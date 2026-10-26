@@ -488,7 +488,7 @@ public enum OSSCommand {
                 }
 
             case "image":
-                let repo = ProcessInfo.processInfo.environment["OSS_REPO"] ?? "\(Paths.home)/Developer/oss"
+                ManagementKey.settle()
                 #if canImport(Virtualization)
             if sub == "install" {
                 // oss image install macos [config] [--ipsw=PATH] [--cpus=N] [--memory=GB] [--disk=GB]
@@ -536,7 +536,7 @@ public enum OSSCommand {
                         return halves.count == 2 ? (halves[0], halves[1]) : nil
                     }
                     try await Images.build(platform: platform, layer: config, from: base, script: arguments.options["script"],
-                                           copies: copies, repo: repo)
+                                           copies: copies)
                 }
 
             default:
