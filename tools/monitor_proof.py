@@ -125,6 +125,11 @@ def main():
     parser.add_argument("--pull-request", type=int, default=None, metavar="N")
     args = parser.parse_args()
     version = args.version or open(os.path.join(ROOT, "Sources/OSSClient/Models.swift")).read().split('public static let version = "')[1].split('"')[0]
+    # The apps say OS Server's version (their Info.plists are written by hand).
+    for plist in ["Info.ios.plist", "Info.mac.plist"]:
+        text = open(os.path.join(ROOT, "Monitor", plist)).read()
+        if f"<key>CFBundleShortVersionString</key><string>{version}</string>" not in text:
+            sys.exit(f"Monitor/{plist} doesn't say {version}: set its CFBundleShortVersionString")
     folder = f"pr-{args.pull_request}-{args.commit[:8]}" if args.pull_request else version
     devices = {"ios": ("iPhone 17 (simulator, an oss lease)", "portrait"), "macos": ("macOS VM (an oss lease)", "landscape")}
     for target in args.targets.split(","):
