@@ -46,6 +46,7 @@ struct RootView: View {
                 }
             }
             .navigationTitle("OS Monitor")
+            .navigationSplitViewColumnWidth(min: 230, ideal: 270)
             .toolbar {
                 ToolbarItem {
                     Button { adding = true } label: { Label("Add Server", systemImage: "plus") }
@@ -60,6 +61,10 @@ struct RootView: View {
             }
         }
         .sheet(isPresented: $adding) { AddServerView() }
+        #if os(macOS)
+        // A Mac's window opens on a server rather than an empty pane.
+        .onAppear { if store.selection == nil { store.selection = store.monitors.first?.id } }
+        #endif
         // Every server watched while the app is in front (the list's rows
         // show each one's CPU and memory), and again when one is added.
         .task(id: "\(phase) \(store.monitors.map(\.id))") {
