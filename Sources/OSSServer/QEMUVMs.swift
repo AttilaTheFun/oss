@@ -398,7 +398,8 @@ extension QEMUVMs {
 /// its own, which Setup looks for): an NVMe disk, the ramfb display, USB
 /// keyboard and tablet (Windows' own drivers) and a virtio network card,
 /// whose driver (Fedora's virtio-win, on a third drive) runner's first
-/// sign-in installs. The answer file passes over Windows 11's TPM
+/// sign-in installs with the rest of virtio-win's; the base then shows its
+/// screen on the virtio GPU, at 1920 × 1080. The answer file passes over Windows 11's TPM
 /// and Secure Boot checks, the online account, and makes `runner` (logged
 /// in at boot); its first sign-in adds OpenSSH Server with OS Server's
 /// key. Then it is shut down; the vanilla layer is built on it. The ISO's
@@ -460,6 +461,13 @@ enum WindowsInstaller {
         }
         try? FileManager.default.removeItem(atPath: answers)
         for leftover in ["qemu.pid", "qemu.log"] { try? FileManager.default.removeItem(atPath: "\(work)/\(leftover)") }
+        // From now on the virtio GPU, whose driver runner's first sign-in
+        // installed (ramfb, which needs none, is 800 × 600).
+        var spec = try QEMUMachineSpec.load(work)
+        spec.display = "virtio-gpu-pci"
+        spec.displayWidth = 1920
+        spec.displayHeight = 1080
+        try spec.save(work)
         MacVMStore.remove(path)
         try FileManager.default.moveItem(atPath: work, toPath: path)
         log("Windows base \(config) is ready: \(edition), \(server.guestUser) made, SSH with the server's key")
