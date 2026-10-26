@@ -24,7 +24,7 @@ public struct ServerDashboard: View {
             if let usage = monitor.usage {
                 ResourcesCard(usage: usage, history: monitor.history)
                 MachinesCard(monitor: monitor)
-                if let disk = usage.disk { DiskCard(disk: disk, day: monitor.day, volumes: monitor.volumes) }
+                if let disk = usage.disk { DiskCard(disk: disk, day: monitor.day, volumes: monitor.volumes).id("disk") }
                 if let top = usage.topProcesses, !top.isEmpty { OthersCard(processes: top) }
                 if let status = monitor.status { CapacityCard(status: status) }
                 if let cache = monitor.cache { CacheCard(cache: cache) }
@@ -244,8 +244,16 @@ struct DiskCard: View {
                 if !volumes.isEmpty {
                     Text("Volumes").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 2)
                     ForEach(volumes) { volume in
-                        Row(volume.name, "\(Format.bytes(volume.allocatedBytes)) of \(Format.bytes(volume.sizeBytes))"
-                                + (volume.lease == nil ? " · kept" : ""))
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(volume.name).lineLimit(1).truncationMode(.middle)
+                                Text(volume.lease.map { "lease \($0)" } ?? "kept, no lease using it")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text("\(Format.bytes(volume.allocatedBytes)) of \(Format.bytes(volume.sizeBytes))")
+                                .monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                        }
                     }
                 }
                 if !disk.parts.isEmpty {
@@ -258,37 +266,50 @@ struct DiskCard: View {
 }
 
 /// The disk over the server's last day: all of it used, and OS Server's
-/// files, as fractions of the volume.
+/// files. Drawn between the day's least and most, so a day's change shows
+/// on a disk of terabytes; the scale's ends are written beside it.
 @available(macOS 15, iOS 18, *)
 struct DiskHistoryChart: View {
     let samples: [UsageSample]
 
+    private static func used(_ sample: UsageSample) -> Int64? {
+        guard let total = sample.diskBytes, let free = sample.diskFreeBytes else { return nil }
+        return total - free
+    }
+
     var body: some View {
-        Canvas { context, size in
-            guard let first = samples.first?.date, let last = samples.last?.date else { return }
-            let span = max(1, last.timeIntervalSince(first))
-            func line(_ value: (UsageSample) -> Double?) -> Path {
-                var path = Path()
-                var started = false
-                for sample in samples {
-                    guard let value = value(sample) else { continue }
-                    let point = CGPoint(x: size.width * sample.date.timeIntervalSince(first) / span,
-                                        y: size.height * (1 - min(1, max(0, value))))
-                    if started { path.addLine(to: point) } else { path.move(to: point); started = true }
+        let values = samples.flatMap { [Self.used($0), $0.ourDiskBytes].compactMap { $0 } }
+        let low = values.min() ?? 0, high = values.max() ?? 1
+        // A little room above and below, and never a zero range.
+        let margin = max((high - low) / 10, 1 << 30)
+        let bottom = max(0, low - margin), top = high + margin
+        HStack(alignment: .top, spacing: 6) {
+            Canvas { context, size in
+                guard let first = samples.first?.date, let last = samples.last?.date else { return }
+                let span = max(1, last.timeIntervalSince(first))
+                func line(_ value: (UsageSample) -> Int64?) -> Path {
+                    var path = Path()
+                    var started = false
+                    for sample in samples {
+                        guard let value = value(sample) else { continue }
+                        let fraction = Double(value - bottom) / Double(max(1, top - bottom))
+                        let point = CGPoint(x: size.width * sample.date.timeIntervalSince(first) / span,
+                                            y: size.height * (1 - min(1, max(0, fraction))))
+                        if started { path.addLine(to: point) } else { path.move(to: point); started = true }
+                    }
+                    return path
                 }
-                return path
+                context.stroke(line(Self.used), with: .color(.orange), lineWidth: 1.8)
+                context.stroke(line(\.ourDiskBytes), with: .color(.accentColor), lineWidth: 1.8)
             }
-            func fraction(_ bytes: Int64?, of sample: UsageSample) -> Double? {
-                guard let bytes, let total = sample.diskBytes, total > 0 else { return nil }
-                return Double(bytes) / Double(total)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.08)))
+            VStack(alignment: .trailing) {
+                Text(Format.bytes(top))
+                Spacer()
+                Text(Format.bytes(bottom))
             }
-            context.stroke(line { sample in
-                guard let total = sample.diskBytes, let free = sample.diskFreeBytes else { return nil }
-                return fraction(total - free, of: sample)
-            }, with: .color(.orange), lineWidth: 1.8)
-            context.stroke(line { fraction($0.ourDiskBytes, of: $0) }, with: .color(.accentColor), lineWidth: 1.8)
+            .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
         }
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.08)))
     }
 }
 
@@ -436,7 +457,7 @@ public enum Format {
     public static func span(_ samples: [UsageSample]) -> String {
         guard let first = samples.first?.date, let last = samples.last?.date else { return "" }
         let minutes = Int((last.timeIntervalSince(first) / 60).rounded())
-        return minutes >= 120 ? "\(minutes / 60) h" : "\(minutes) min"
+        return minutes >= 120 ? "\(Int((Double(minutes) / 60).rounded())) h" : "\(minutes) min"
     }
 
     public static func minutes(_ seconds: TimeInterval) -> String {

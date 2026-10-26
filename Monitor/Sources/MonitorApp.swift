@@ -113,16 +113,24 @@ struct ServerScreen: View {
     let monitor: ServerMonitor
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                if let capabilities = monitor.capabilities {
-                    Text(subtitle(capabilities)).font(.footnote).foregroundStyle(.secondary)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let capabilities = monitor.capabilities {
+                        Text(subtitle(capabilities)).font(.footnote).foregroundStyle(.secondary)
+                    }
+                    ServerDashboard(monitor: monitor)
                 }
-                ServerDashboard(monitor: monitor)
+                .padding()
+                .frame(maxWidth: 900)
+                .frame(maxWidth: .infinity)
             }
-            .padding()
-            .frame(maxWidth: 900)
-            .frame(maxWidth: .infinity)
+            .task {
+                // The proof's shot of one card (`-fixture.scroll disk`): the same every run, as a swipe's isn't.
+                guard monitor.isFixture, let card = UserDefaults.standard.string(forKey: "fixture.scroll") else { return }
+                try? await Task.sleep(for: .milliseconds(500))
+                proxy.scrollTo(card, anchor: .top)
+            }
         }
         .navigationTitle(monitor.connection.name)
         .refreshable { await monitor.refresh() }
