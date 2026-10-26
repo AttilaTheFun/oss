@@ -20,6 +20,10 @@
 - **A live Screen window for Linux and Windows VMs**: OS Server's own VNC
   viewer (`RFBSession`) on the VM's QEMU, scaled to the window, with the
   pointer, the wheel and the keyboard.
+- **Windows VMs keep the right time**: QEMU's clock is UTC, which Windows
+  took for local time (its clock ran the zone's hours off). Their vanilla
+  layer also holds the screen still: no taskbar widgets (live weather), no
+  Spotlight (a new wallpaper each day).
 - OSSClient's API is unchanged (API 6).
 
 ## 0.9.0
