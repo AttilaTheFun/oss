@@ -30,7 +30,15 @@ func log(_ message: String) {
 public enum ServerLog {
     nonisolated(unsafe) public static var sink: (@Sendable (String) -> Void)?
     /// The last line logged (a component's install shows it as it goes).
-    nonisolated(unsafe) public static var lastLine: String?
+    /// Lines come from any thread at once (a server's start logs from
+    /// several), so it's kept under a lock: written bare, two writes could
+    /// free one string twice.
+    public static var lastLine: String? {
+        get { lock.withLock { last } }
+        set { lock.withLock { last = newValue } }
+    }
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var last: String?
 
     /// A line in the server's log, from what runs beside it (the app's containers).
     public static func write(_ message: String) { log(message) }
