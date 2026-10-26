@@ -49,5 +49,14 @@ if (Test-Path $wallpaper) {
     New-Item -Path $wallpapers -Force | Out-Null
     Set-ItemProperty -Path $wallpapers -Name BackgroundType -Value 0 -Type DWord
 }
+# No OneDrive (its "Turn On Windows Backup" toast comes a while after
+# logon) and no apps' toasts at all.
+$onedrive = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OneDrive'
+New-Item -Path $onedrive -Force | Out-Null
+Set-ItemProperty -Path $onedrive -Name DisableFileSyncNGSC -Value 1 -Type DWord
+Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name OneDrive -ErrorAction SilentlyContinue
+$toasts = 'HKCU:\Software\Policies\Microsoft\Windows\CurrentVersion\PushNotifications'
+New-Item -Path $toasts -Force | Out-Null
+Set-ItemProperty -Path $toasts -Name NoToastApplicationNotification -Value 1 -Type DWord
 # The screen is QEMU's VNC (the server sets it up per lease): nothing to install for it.
 "vanilla: " + (Get-CimInstance Win32_OperatingSystem).Caption
