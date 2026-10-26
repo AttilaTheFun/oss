@@ -644,7 +644,7 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
 
 public enum OSS {
     /// This build's version, and the API level it speaks.
-    public static let version = "0.10.0"
+    public static let version = "0.10.1"
     /// 6 from 0.9.0: container leases (`platform: container`, a
     /// `ContainerSpec`, commands over `Lease.execSocket`), their volumes
     /// (`/v1/volumes`), a lease's disk (`MachineUsage.diskBytes`), a day of

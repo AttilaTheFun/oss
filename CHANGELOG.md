@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1
+
+- OS Server could crash as it started: its log's last line (which a
+  component's install shows) was written from several threads at once
+  with no lock (since 0.9).
+
 ## 0.10.0
 
 - **macOS VMs in helpers of their own**, as containers are: each lease's VM
