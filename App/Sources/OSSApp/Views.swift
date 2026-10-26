@@ -167,7 +167,7 @@ struct MachinesSection: View {
                             // run here; a Linux or Windows VM's QEMU in the app's).
                             if MacVMs.names.contains(row.lease.name) {
                                 Button("Screen") { openWindow(id: "screen", value: row.lease.name) }
-                            } else if MachineScreens.isOwn(row.lease) {
+                            } else if MachineScreens.isOwn(row.lease) || (Fixture.isOn && row.lease.platform == .macos) {
                                 Button("Screen") { Task { await MachineScreens.showInHelper(row.lease.name) } }
                             } else if let port = row.lease.qemuVNCPort {
                                 Button("Screen") { openWindow(id: "guest-screen", value: GuestScreenTarget(name: row.lease.name, port: port)) }

@@ -12,13 +12,18 @@ repository's `.github/icon.png` is the same document at 512 px.
 
 - **The server** is `ServerHost`, started at launch in this process
   (`ServerRunner`): its log lines appended to `~/Library/Logs/OS Server.log`
-  and the last kept for the window. Its macOS VMs run here too, so
-  quitting asks first while any is leased. If another server answers on
+  and the last kept for the window. Leases' machines run in processes of
+  their own (macOS VMs and containers in `oss-machine` helpers, launchd
+  jobs), so quitting keeps them; installs and layer builds run here. If
+  another server answers on
   the port (the launch agent's, before 0.7), the app leaves it be until
   asked to take over.
-- **A macOS VM's screen** (`MachineScreen`): Virtualization's own
-  `VZVirtualMachineView` on the machine, in a window of its own, opened by
-  Screen beside the lease.
+- **A VM's screen**, live, by Screen beside its lease: a macOS VM's is
+  Virtualization's own `VZVirtualMachineView`, in a window of its helper's
+  (`MachineScreens.showInHelper`; a base being built, in the app's:
+  `MachineScreen`); a Linux or Windows VM's is OS Server's own VNC viewer
+  on its QEMU (`GuestScreen`, over `RFBSession`): the pointer, wheel and
+  keys go to the guest, Command as its Super key.
 - **Remove Everything** (Settings): every lease ended and everything OS
   Server keeps on the Mac deleted (`ServerHost.removeEverything`, then the
   log, the launch agent's plist, the command line's link and the login

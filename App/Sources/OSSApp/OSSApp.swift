@@ -43,7 +43,7 @@ struct OSSApp: App {
         }
         // Taller with the canned server, so its screen holds everything.
         .defaultSize(width: 860, height: Fixture.isOn ? 1110 : 760)
-        .defaultLaunchBehavior(Fixture.showsPanel || Fixture.showsSetUp ? .suppressed : .presented)
+        .defaultLaunchBehavior(Fixture.showsPanel || Fixture.showsSetUp || Fixture.guestScreen != nil ? .suppressed : .presented)
 
         // A macOS VM's screen, live (by the machine's name).
         WindowGroup("Screen", id: "screen", for: String.self) { $name in
@@ -54,6 +54,16 @@ struct OSSApp: App {
         }
         .defaultSize(width: 1280, height: 820)
 
+        // The proof's guest screen (`-guestScreen YES`): a real guest's, at a
+        // fixed size.
+        Window("Screen", id: "fixture-guest-screen") {
+            if let target = Fixture.guestScreen {
+                GuestScreen(target: target, password: Fixture.guestScreenPassword)
+            }
+        }
+        .defaultSize(width: 1280, height: 720)
+        .defaultLaunchBehavior(Fixture.guestScreen != nil ? .presented : .suppressed)
+
         // A Linux or Windows VM's screen, live (its QEMU's VNC).
         WindowGroup("Screen", id: "guest-screen", for: GuestScreenTarget.self) { $target in
             if let target {
@@ -61,7 +71,7 @@ struct OSSApp: App {
                     .onAppear { AppActivation.windowShown() }
             }
         }
-        .defaultSize(width: 1280, height: 760)
+        .defaultSize(width: 1280, height: 720)
 
         // The menu bar's panel in a window of its own, for the proof's
         // screen of it (`-fixture -panel`): the same view, no clicking.

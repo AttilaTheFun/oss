@@ -15,6 +15,8 @@ struct GuestScreenTarget: Codable, Hashable {
 /// go to the guest while the window has focus.
 struct GuestScreen: View {
     let target: GuestScreenTarget
+    /// A VNC server's password (the proof's guest, through its lease's relay).
+    var password = ""
     @State private var ended: String?
 
     var body: some View {
@@ -24,7 +26,7 @@ struct GuestScreen: View {
                 ContentUnavailableView("\(target.name) isn't showing", systemImage: "display.trianglebadge.exclamationmark",
                                        description: Text(ended))
             } else {
-                GuestScreenView(target: target, ended: { ended = $0 })
+                GuestScreenView(target: target, password: password, ended: { ended = $0 })
             }
         }
         .navigationTitle(target.name)
@@ -34,11 +36,12 @@ struct GuestScreen: View {
 
 struct GuestScreenView: NSViewRepresentable {
     let target: GuestScreenTarget
+    let password: String
     let ended: @MainActor (String) -> Void
 
     func makeNSView(context: Context) -> RFBView {
         let view = RFBView()
-        view.connect(to: target, ended: ended)
+        view.connect(to: target, password: password, ended: ended)
         return view
     }
 
@@ -67,11 +70,11 @@ final class RFBView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not from a nib") }
 
-    func connect(to target: GuestScreenTarget, ended: @escaping @MainActor (String) -> Void) {
+    func connect(to target: GuestScreenTarget, password: String, ended: @escaping @MainActor (String) -> Void) {
         // Connecting waits on the guest's VNC: off the main thread.
         Task.detached { [weak self] in
             do {
-                let session = try RFBSession(host: target.host, port: target.port, frame: { image in
+                let session = try RFBSession(host: target.host, port: target.port, password: password, frame: { image in
                     DispatchQueue.main.async { self?.layer?.contents = image }
                 }, ended: { why in
                     DispatchQueue.main.async { ended(why) }

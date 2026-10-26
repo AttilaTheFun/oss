@@ -2,6 +2,7 @@
 """OS Server's proof: the app's screens, for review before a release.
 
   tools/proof.py --review <dir> [--version 0.6.0] [--commit <sha>] [--held <exports file>]
+                 [--guest linux=<exports file>] [--guest windows=<exports file>]
                  [--no-build] [--publish <ssh host>] [--pull-request <N>]
 
 Builds the app (App/build.sh --zip, build/OS-Server.zip), leases a macOS VM from this Mac's oss
@@ -9,7 +10,12 @@ Builds the app (App/build.sh --zip, build/OS-Server.zip), leases a macOS VM from
 the app there and opens it with its canned server (`-fixture YES`: the same
 leases, usage and log every time), light and dark: its window, its menu
 bar's panel (`-panel YES`), its first launch's Set Up window (`-setup YES`)
-and the menu bar with its icon. Each screen is cut
+and the menu bar with its icon; with --guest, a Linux or Windows VM's
+Screen window (`-guestScreen YES`): a real guest's screen, through the VNC
+relay of a lease held for it on an OS Server on this Mac (`oss machine lease
+linux --exports > file`, kept mode 600: it holds the VNC password, which goes
+to the VM on standard input), its clock held at 09:41 first (no time
+service). Each screen is cut
 from the VM's screenshot by the frames the app writes
 (~/oss-fixture-windows.json). The run is <dir>/review-macos/manifest.json
 (the review store's schema 1, app "oss"); --publish copies it to the
@@ -44,6 +50,8 @@ def main():
     parser.add_argument("--version", default=None)
     parser.add_argument("--commit", default=sh(["git", "rev-parse", "HEAD"], cwd=ROOT).stdout.strip())
     parser.add_argument("--held", default=None, help="a held macOS lease's `oss machine lease macos --exports` output")
+    parser.add_argument("--guest", action="append", default=[], metavar="PLATFORM=EXPORTS",
+                        help="a held Linux or Windows lease's `--exports` output, for its Screen window")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--publish", default=None, metavar="HOST", help="the review store's host (ssh)")
     parser.add_argument("--pull-request", type=int, default=None, metavar="N",
@@ -54,9 +62,17 @@ def main():
         sh([os.path.join(APP, "build.sh"), "--zip"])
     zip_path = os.path.join(APP, "build", "OS-Server.zip")
 
+    def exports(path):
+        values = {}
+        for line in open(path).read().splitlines():
+            if line.startswith("export ") and "=" in line:
+                key, value = line[len("export "):].split("=", 1)
+                values[key] = shlex.split(value)[0] if value else ""
+        return values
+
+    guests = [(platform, exports(path)) for platform, path in (g.split("=", 1) for g in args.guest)]
     if args.held:
-        env = dict(line.split("=", 1) for line in open(args.held).read().replace("export ", "").split() if "=" in line)
-        env = {k: v.strip("'\"") for k, v in env.items()}
+        env = exports(args.held)
     else:
         lease = json.loads(sh(["oss", "machine", "lease", "macos", "--json"]).stdout)
         env = {"OSS_ID": lease["id"]}
@@ -71,8 +87,21 @@ def main():
 
         sh(["oss", "machine", "upload", lease_id, zip_path, "/Users/runner/OS-Server.zip"])
         ssh("rm -rf ~/Applications/'OS Server.app' && mkdir -p ~/Applications && ditto -x -k ~/OS-Server.zip ~/Applications")
+        # This Mac, as the VM reaches it (its NAT's gateway): the guests' relays.
+        gateway = ssh("route -n get default | awk '/gateway/ {print $2}'").stdout.strip()
+        screens = list(SCREENS) + [
+            (f"screen-{platform}", ["-fixture", "YES", "-guestScreen", "YES", "-guestScreenHost", gateway,
+                                    "-guestScreenPort", guest["OSS_VNC_PORT"],
+                                    # The canned lease's name, the same every run.
+                                    "-guestScreenName", f"oss-lease-{platform}-{CANNED[platform]}"])
+            for platform, guest in guests]
         for appearance in APPEARANCES:
-            for item, arguments in SCREENS:
+            for item, arguments in screens:
+                guest = next((g for p, g in guests if item == f"screen-{p}"), None)
+                if guest:
+                    hold_clock(guest)
+                    sh(["oss", "machine", "ssh", lease_id, "--", "umask 077; cat > ~/oss-fixture-vnc-password"],
+                       input=guest["OSS_VNC_PASSWORD"] + "\n")
                 # Without the window sizes the last launch kept.
                 ssh("pkill -x 'OS Server'; defaults delete com.LoganShire.OSS; rm -f ~/oss-fixture-windows.json", check=False)
                 time.sleep(1)
@@ -108,7 +137,7 @@ def main():
                         crop(screen, os.path.join(out, bar), max(0, item_frame["x"] - margin), 0,
                              item_frame["width"] + 2 * margin, frames["menuBarHeight"])
                         items.append({"name": f"menu bar ({appearance})", "status": "new", "capture": bar})
-        ssh("pkill -x 'OS Server'", check=False)
+        ssh("pkill -x 'OS Server'; rm -f ~/oss-fixture-vnc-password", check=False)
     finally:
         if not args.held:
             sh(["oss", "machine", "release", lease_id], check=False)
@@ -119,7 +148,7 @@ def main():
                "kind": "snapshots", "target": "macos", "device": "macOS VM (an oss lease)", "orientation": "landscape",
                "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "items": items},
               open(os.path.join(out, "manifest.json"), "w"), indent=1)
-    expected = len(APPEARANCES) * (len(SCREENS) + 1)
+    expected = len(APPEARANCES) * (len(SCREENS) + 1 + len(guests))
     print(f"review-macos: {len(items)} of {expected} screens")
     if args.publish:
         store = f"ReleaseReview/runs/oss/{folder}/macos"
@@ -131,6 +160,20 @@ def main():
         print(f"published to {args.publish}:{store}")
     if len(items) < expected:
         sys.exit("missing screens")
+
+
+# The fixture's Linux and Windows leases (App/Sources/OSSApp/Fixture.swift).
+CANNED = {"linux": "a90c3e17", "windows": "7b1e04d2"}
+
+
+def hold_clock(guest):
+    """The guest's clock at the fixture's 09:41, its time service off, so
+    its desktop's clock reads the same every run."""
+    if guest["OSS_PLATFORM"] == "windows":
+        command = "powershell -NoProfile -Command \"Stop-Service w32time; Set-Date -Date '2026-11-01 09:41:00' | Out-Null\""
+    else:
+        command = "sudo timedatectl set-ntp false && sudo timedatectl set-time '2026-11-01 09:41:00'"
+    sh(shlex.split(guest["OSS_SSH"]) + ["-o", "BatchMode=yes", command])
 
 
 def crop(source, destination, x, y, width, height):
