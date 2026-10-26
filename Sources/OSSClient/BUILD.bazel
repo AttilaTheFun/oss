@@ -1,0 +1,9 @@
+load("@rules_swift//swift:swift.bzl", "swift_library")
+
+# OSSClient for OS Monitor's apps (the Swift package builds it too).
+swift_library(
+    name = "OSSClient",
+    srcs = glob(["*.swift"]),
+    module_name = "OSSClient",
+    visibility = ["//visibility:public"],
+)

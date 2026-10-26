@@ -1,0 +1,20 @@
+"""OS Monitor's apps (Monitor/): OS Server's client for iPhone, iPad and
+Mac, built with Bazel as the project's other Apple apps are. The server and
+its command line are the Swift package's (Package.swift); OSSClient and
+OSSMonitorKit are compiled here too, from the same sources."""
+
+module(
+    name = "oss",
+    version = "0.8.0",
+)
+
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "apple_support", version = "2.8.4")
+# rules_swift from the project's registry (AttilaTheFun/bazel_registry,
+# before the BCR in .bazelrc), as Reviews and Visor take it.
+bazel_dep(name = "rules_swift", version = "4.1.0.isomer.2")
+bazel_dep(name = "rules_apple", version = "5.1.0")
+
+# The builder's own signing values (the Apple team), from .bazelrc.user.
+signing = use_extension("//tools/signing:extension.bzl", "signing")
+use_repo(signing, "oss_signing")

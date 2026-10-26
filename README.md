@@ -49,6 +49,19 @@ oss is for machines with a screen. It ran Linux containers too until
 0.3.0; containers for agents now belong to the program that runs the
 agents (Visor runs its own), and oss stays with what needs a GUI.
 
+## OS Monitor
+
+OS Server's client for iPhone, iPad and Mac (`Monitor/`, its README).
+- **What it shows:** each server's CPU, memory and disk, split into OS
+  Server's share (its own process and every machine it lends), every other
+  process's, and what's free; what's running; the other apps using the
+  most; OS Server's files.
+- **Adding a server:** with the code in OS Server's Settings › OS Monitor (a
+  QR code, or Copy Code), or from `oss monitor code` on a server run
+  without the app.
+- **What the code allows:** it carries a monitor token that reads and does
+  nothing else.
+
 ## Using it
 
 ### Machines
@@ -168,7 +181,10 @@ more). Errors are `OSSError`, with the server's own message.
 ## The API
 
 Every request but `/v1/hello` and `/v1/capabilities` carries
-`Authorization: Bearer <token>`: the server's.
+`Authorization: Bearer <token>`: the server's. The monitor token (OS
+Monitor's, from its connection code) is accepted for `GET /v1/status`,
+`/v1/usage` and `/v1/cache` (without the cache's read token) and refused
+for everything else.
 Bodies are JSON; errors are `{"error": "…"}`.
 
 | Method and path | Does |
@@ -185,7 +201,7 @@ Bodies are JSON; errors are `{"error": "…"}`.
 | `POST /v1/machines/<id>/simctl` or `/adb` `{"arguments": [...]}` | `simctl` against the simulator / `adb` against the emulator: `{"status", "output", "error"}` |
 | `GET /v1/machines/<id>/screenshot` | a PNG of its screen |
 | `POST /v1/machines/<id>/input` `{"action": "tap"\|"swipe"\|"type"\|"key", "x"?, "y"?, "toX"?, "toY"?, "milliseconds"?, "text"?, "key"?}` | a tap, swipe, text or key on its screen, in its screenshot's pixels |
-| `GET /v1/usage` | the server's CPU and memory, and each lease's (its processes on the Mac; 100% CPU is one core), against what it was given |
+| `GET /v1/usage` | the server's CPU and memory, and each lease's (its processes on the Mac; 100% CPU is one core), against what it was given; from API 5 also OS Server's share (`ours`), everyone else's (`others`), the disk and OS Server's files on it (`disk`), and the other apps using the most (`topProcesses`) |
 | `GET /v1/cache` | the Bazel cache's port and read token, its size and how many lookups it answered (404 without one) |
 
 The Bazel cache is on a port of its own (7490): `GET`, `HEAD` and `PUT` of

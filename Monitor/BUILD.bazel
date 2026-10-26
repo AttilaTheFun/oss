@@ -1,0 +1,70 @@
+load("@oss_signing//:signing.bzl", "TEAM_ID")
+load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
+load("@rules_apple//apple:ios.bzl", "ios_application")
+load("@rules_apple//apple:macos.bzl", "macos_application")
+load("@rules_swift//swift:swift.bzl", "swift_library")
+
+# OS Monitor: OS Server's client, for iPhone, iPad and Mac. One SwiftUI app
+# (Sources/), on OSSMonitorKit's model and views, which OS Server's own
+# window shows too. Its icon is Icon/OSMonitor.icon (Icon Composer).
+IOS_BUNDLE_ID = "com.LoganShire.OSMonitor"
+
+MAC_BUNDLE_ID = "com.LoganShire.OSMonitor.Mac"
+
+swift_library(
+    name = "monitor_lib",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "OSMonitor",
+    deps = [
+        "//Sources/OSSClient",
+        "//Sources/OSSMonitorKit",
+    ],
+)
+
+filegroup(
+    name = "app_icon",
+    srcs = glob(["Icon/OSMonitor.icon/**"]),
+)
+
+# The team's Xcode-managed wildcard profile, for an iPhone build (the team
+# from .bazelrc.user: tools/signing). Simulator builds take none.
+local_provisioning_profile(
+    name = "profile",
+    profile_name = "iOS Team Provisioning Profile: *",
+    tags = ["manual"],
+    team_id = TEAM_ID,
+)
+
+ios_application(
+    name = "os_monitor_ios",
+    app_icons = [":app_icon"],
+    bundle_id = IOS_BUNDLE_ID,
+    bundle_name = "OS Monitor",
+    # The Keychain (the servers' tokens) needs an access group, on the
+    # simulator too.
+    entitlements = select({
+        "@apple_support//constraints:device": "app.entitlements",
+        "//conditions:default": "app.simulator.entitlements",
+    }),
+    families = [
+        "iphone",
+        "ipad",
+    ],
+    infoplists = ["Info.ios.plist"],
+    minimum_os_version = "18.0",
+    provisioning_profile = select({
+        "@apple_support//constraints:device": ":profile",
+        "//conditions:default": None,
+    }),
+    deps = [":monitor_lib"],
+)
+
+macos_application(
+    name = "os_monitor_macos",
+    app_icons = [":app_icon"],
+    bundle_id = MAC_BUNDLE_ID,
+    bundle_name = "OS Monitor",
+    infoplists = ["Info.mac.plist"],
+    minimum_os_version = "15.0",
+    deps = [":monitor_lib"],
+)

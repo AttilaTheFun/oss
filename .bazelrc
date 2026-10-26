@@ -1,0 +1,10 @@
+common --enable_bzlmod
+# rules_swift from the project's registry, before the BCR.
+common --registry=https://raw.githubusercontent.com/AttilaTheFun/bazel_registry/main
+common --registry=https://bcr.bazel.build
+build --apple_platform_type=macos
+build --macos_minimum_os=15.0
+build --ios_minimum_os=18.0
+build --host_macos_minimum_os=15.0
+# Your own settings, such as the signing team (tools/signing).
+try-import %workspace%/.bazelrc.user

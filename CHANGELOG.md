@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.8.0
+
+- **OS Monitor** (Monitor/), OS Server's client for iPhone, iPad and Mac, as
+  Visor is Visor Server's.
+  - For each server it shows:
+    - what its Mac's CPU, memory and disk go to: OS Server with its
+      machines, every other process, and what's free, with the last
+      minutes of CPU and memory;
+    - what's running;
+    - the other apps using the most;
+    - OS Server's files;
+    - capacity and the Bazel cache.
+  - It reads, and does nothing else.
+  - Built with Bazel (`//Monitor:os_monitor_ios`, `//Monitor:os_monitor_macos`).
+  - Its proof is `tools/monitor_proof.py`.
+- **A monitor token** (API 5): kept beside the server's token, it's
+  accepted for `GET /v1/status`, `/v1/usage` and `/v1/cache` (without the
+  cache's read token), and refused for everything else.
+  - OS Server's Settings › OS Monitor show it in a connection code
+    (`MonitorConnection`: the server's name, its LAN, tailnet and .local
+    addresses, the token), as a QR code and to copy. **New Code** makes a
+    new token.
+  - `oss monitor code [--new]` gives the code where there is no app (piped).
+- **Usage says whose it is** (API 5; every field new and optional, so older
+  clients and servers are unaffected):
+  - `ours`: OS Server's own process and every machine it lends;
+  - `others`: every other process;
+  - `disk`: the volume's size and free space, and OS Server's files by kind
+    (macOS bases, their leases' clones, the Bazel cache, the Android SDK and
+    emulators), measured every ten minutes;
+  - `topProcesses`: the other apps using the most memory, an app's helpers
+    counted with it (another app's VMs as "Virtual machines", Bazel's JVMs
+    as "Bazel").
+- **OS Server's window** shows the same CPU, memory and disk split as OS
+  Monitor (OSSMonitorKit's `UsageOverview`, on its own server).
+- The repository builds OS Monitor with Bazel beside the Swift package
+  (MODULE.bazel; the package is unchanged for the server and its command
+  line).
+
 ## 0.7.1
 
 - **An emulator's status bar is the same on every lease**: 09:41, Wi-Fi,

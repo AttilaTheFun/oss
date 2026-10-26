@@ -1,0 +1,30 @@
+{
+  "fill": {
+    "automatic-gradient": "extended-srgb:0.16078,0.36078,0.94902,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        { "image-name": "Light.svg", "name": "Light" },
+        { "image-name": "Ours.svg", "name": "Ours" },
+        { "image-name": "Others.svg", "name": "Others" },
+        { "image-name": "Tracks.svg", "name": "Tracks" }
+      ],
+      "shadow": { "kind": "neutral", "opacity": 0.2 },
+      "translucency": { "enabled": false, "value": 0 },
+      "name": "Bars"
+    },
+    {
+      "layers": [
+        { "image-name": "Panel.svg", "name": "Panel" }
+      ],
+      "shadow": { "kind": "neutral", "opacity": 0.3 },
+      "translucency": { "enabled": true, "value": 0.3 },
+      "name": "Panel"
+    }
+  ],
+  "supported-platforms": {
+    "circles": ["watchOS"],
+    "squares": "shared"
+  }
+}

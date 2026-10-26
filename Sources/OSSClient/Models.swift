@@ -221,11 +221,85 @@ public struct Usage: Codable, Sendable {
     public var sampledAt: Date
     public var host: HostUsage
     public var machines: [MachineUsage]
+    /// What OS Server uses, its own process and every machine it lends
+    /// together, and what every other process on its Mac does (API 5; nil
+    /// from an older server). With `host`, the rest is free.
+    public var ours: ResourceShare?
+    public var others: ResourceShare?
+    /// The disk OS Server keeps its files on (API 5).
+    public var disk: DiskUsage?
+    /// The other processes using the most memory, an app's helpers counted
+    /// with it (API 5).
+    public var topProcesses: [ProcessUsage]?
 
-    public init(sampledAt: Date, host: HostUsage, machines: [MachineUsage]) {
+    public init(sampledAt: Date, host: HostUsage, machines: [MachineUsage], ours: ResourceShare? = nil, others: ResourceShare? = nil,
+                disk: DiskUsage? = nil, topProcesses: [ProcessUsage]? = nil) {
         self.sampledAt = sampledAt
         self.host = host
         self.machines = machines
+        self.ours = ours
+        self.others = others
+        self.disk = disk
+        self.topProcesses = topProcesses
+    }
+}
+
+/// A share of the Mac's CPU (100 a core) and memory (physical footprint).
+public struct ResourceShare: Codable, Sendable {
+    public var cpuPercent: Double
+    public var memoryBytes: Int64
+
+    public init(cpuPercent: Double, memoryBytes: Int64) {
+        self.cpuPercent = cpuPercent
+        self.memoryBytes = memoryBytes
+    }
+}
+
+/// The volume OS Server's folder is on: its size, what's free (as `df`
+/// counts it), and OS Server's own files by kind. A
+/// part's size is as allocated, with an APFS clone counted whole, though it
+/// shares its blocks with what it was cloned from: the parts can add up to
+/// more than they take.
+public struct DiskUsage: Codable, Sendable {
+    public var totalBytes: Int64
+    public var freeBytes: Int64
+    public var parts: [DiskPart]
+    /// When the parts were last measured (they're measured every few
+    /// minutes, not with every sample).
+    public var measuredAt: Date?
+
+    public init(totalBytes: Int64, freeBytes: Int64, parts: [DiskPart], measuredAt: Date? = nil) {
+        self.totalBytes = totalBytes
+        self.freeBytes = freeBytes
+        self.parts = parts
+        self.measuredAt = measuredAt
+    }
+}
+
+public struct DiskPart: Codable, Sendable, Identifiable {
+    public var name: String
+    public var bytes: Int64
+    public var id: String { name }
+
+    public init(name: String, bytes: Int64) {
+        self.name = name
+        self.bytes = bytes
+    }
+}
+
+/// A process (or an app with its helpers) that isn't OS Server's.
+public struct ProcessUsage: Codable, Sendable, Identifiable {
+    public var name: String
+    public var processes: Int
+    public var cpuPercent: Double
+    public var memoryBytes: Int64
+    public var id: String { name }
+
+    public init(name: String, processes: Int, cpuPercent: Double, memoryBytes: Int64) {
+        self.name = name
+        self.processes = processes
+        self.cpuPercent = cpuPercent
+        self.memoryBytes = memoryBytes
     }
 }
 
@@ -312,14 +386,17 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
 
 public enum OSS {
     /// This build's version, and the API level it speaks.
-    public static let version = "0.7.1"
+    public static let version = "0.8.0"
+    /// 5 from 0.8.0: usage says what is OS Server's, what is other
+    /// processes', the disk, and the biggest other processes; a read-only
+    /// token for OS Monitor (`MonitorConnection`).
     /// 4 from 0.5.0: input (`POST /v1/machines/<id>/input`), usage
     /// (`GET /v1/usage`), and a lease's `cpus`, `memoryLimitBytes` and
     /// `guestPassword`.
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 4
+    public static let apiLevel = 5
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage"]
 }

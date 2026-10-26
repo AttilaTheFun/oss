@@ -1,4 +1,6 @@
 import AppKit
+import OSSClient
+import OSSMonitorKit
 import OSSServer
 import ServiceManagement
 import SwiftUI
@@ -65,6 +67,9 @@ final class AppModel {
 
     let monitor = Monitor()
     let server = ServerRunner()
+    /// This server as OS Monitor sees it (its usage split three ways),
+    /// asked through its own monitor token once it serves.
+    var watcher: ServerMonitor?
     /// Set while removing everything: the quit that ends it asks nothing.
     var quitting = false
 }
@@ -76,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if Fixture.isOn {
             if let appearance = Fixture.appearance { NSApp.appearance = NSAppearance(named: appearance) }
             Fixture.apply(to: model.monitor, server: model.server)
+            model.watcher = MonitorFixture.monitor(name: "Mac Studio")
             // Written again as the windows settle (the proof reads the last).
             Task {
                 for _ in 0..<4 {
@@ -85,7 +91,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
-        Task { await model.server.start() }
+        Task {
+            await model.server.start()
+            guard case .running = model.server.state else { return }
+            var connection = MonitorAccess.connection()
+            connection.servers = [URL(string: "http://127.0.0.1:\(ServerSettings.load().port)")!]
+            let watcher = ServerMonitor(connection: connection)
+            model.watcher = watcher
+            await watcher.watch()
+        }
         Task { await model.monitor.run() }
     }
 
@@ -164,6 +178,7 @@ struct SettingsView: View {
             }
             LabeledContent("Its files", value: "~/Library/Application Support/OS Server")
             LabeledContent("Log", value: "~/Library/Logs/OS Server.log")
+            MonitorSection()
             Section {
                 Toggle("UTM's oss machines too (its Linux and Windows bases)", isOn: $removeUTMMachines)
                 Button("Remove Everything…", role: .destructive) { confirmingRemoval = true }
@@ -176,7 +191,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480)
+        .frame(width: 520)
         .confirmationDialog("Remove everything OS Server keeps on this Mac?", isPresented: $confirmingRemoval) {
             Button("Remove Everything", role: .destructive) {
                 AppModel.shared.quitting = true

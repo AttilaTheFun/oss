@@ -6,3 +6,7 @@
 .build/
 .swiftpm/
 /bin/
+# Bazel (OS Monitor's apps, Monitor/): its output links, and a builder's own
+# settings (the signing team: tools/signing).
+/bazel-*
+.bazelrc.user
