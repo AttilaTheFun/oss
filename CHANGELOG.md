@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.1
+
+- **An emulator's status bar is the same on every lease**: 09:41, Wi-Fi,
+  a full battery, no cellular network, no notifications. 0.7.0 showed the
+  cellular network, which the emulator drew differently from one lease to
+  the next (white, or beside a second Wi-Fi icon, with "3G"); it's hidden
+  now, and the demo commands are sent twice, a few seconds apart, as a lease
+  is handed over while SystemUI may still be settling after boot.
+
 ## 0.7.0
 
 - **OS Server, the app, is the server.** The server runs in the app's own
@@ -41,8 +50,9 @@
 - **A simulator's and an emulator's status bar is held still** from the
   moment the lease is ready, so screenshots of the same screen match from
   run to run:
-  - the time 9:41, full Wi-Fi and signal, a full battery;
-  - no carrier on iOS, no notifications on Android;
+  - the time 9:41, full Wi-Fi, a full battery;
+  - full signal and no carrier on iOS; no cellular network and no
+    notifications on Android;
   - simctl's status bar override on iOS, SystemUI's demo mode on Android;
   - `status_bar clear` or the demo's `exit` command gives the live one back.
 - **`"lends"` and `"useUTM"`** in server.json: a server lends only the

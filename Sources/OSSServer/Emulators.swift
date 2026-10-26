@@ -268,22 +268,27 @@ enum Emulators {
     /// What a holder may run against its own emulator (the server's adb, its serial).
     static let allowed: Set<String> = ["install", "install-multiple", "uninstall", "shell", "logcat", "exec-out", "push", "reverse", "forward"]
 
-    /// The status bar held still (SystemUI's demo mode): 09:41, full Wi-Fi
-    /// and signal, a full battery, no notifications. Every lease starts so,
-    /// so screenshots of the same screen match from one run to the next
-    /// (`oss machine adb <id> shell am broadcast -a com.android.systemui.demo
-    /// -e command exit` gives the live one back).
+    /// The status bar held still (SystemUI's demo mode): 09:41, full Wi-Fi,
+    /// a full battery, no cellular network, no notifications. Every lease
+    /// starts so, so screenshots of the same screen match from one run to
+    /// the next (`oss machine adb <id> shell am broadcast -a
+    /// com.android.systemui.demo -e command exit` gives the live one back).
+    /// The cellular network is hidden: shown, the emulator drew it white or
+    /// beside a second Wi-Fi icon, with "3G", differently from one lease to
+    /// the next. Sent twice, a few seconds apart: a lease is handed over
+    /// while SystemUI may still be settling after boot.
     static func holdStatusBarStill(port: Int) async {
         let c = ServerConfig.load()
         let serial = ["-s", "emulator-\(port)"]
         _ = try? await adb(c, serial + ["shell", "settings", "put", "global", "sysui_demo_allowed", "1"], timeout: 60)
-        // Wi-Fi and the cellular network in broadcasts of their own: an
-        // intent keeps one value a key, and both take `level`.
-        for command in [["enter"], ["clock", "-e", "hhmm", "0941"], ["battery", "-e", "level", "100", "-e", "plugged", "false"],
-                        ["network", "-e", "wifi", "show", "-e", "level", "4", "-e", "fully", "true"],
-                        ["network", "-e", "mobile", "show", "-e", "level", "4", "-e", "datatype", "none", "-e", "fully", "true"],
-                        ["notifications", "-e", "visible", "false"]] {
-            _ = try? await adb(c, serial + ["shell", "am", "broadcast", "-a", "com.android.systemui.demo", "-e", "command"] + command, timeout: 60)
+        for pass in 0..<2 {
+            if pass > 0 { try? await Task.sleep(for: .seconds(4)) }
+            for command in [["exit"], ["enter"], ["clock", "-e", "hhmm", "0941"], ["battery", "-e", "level", "100", "-e", "plugged", "false"],
+                            ["network", "-e", "wifi", "show", "-e", "level", "4", "-e", "fully", "true"],
+                            ["network", "-e", "mobile", "hide"], ["network", "-e", "nosim", "hide"],
+                            ["notifications", "-e", "visible", "false"]] {
+                _ = try? await adb(c, serial + ["shell", "am", "broadcast", "-a", "com.android.systemui.demo", "-e", "command"] + command, timeout: 60)
+            }
         }
     }
 
