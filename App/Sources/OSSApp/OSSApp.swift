@@ -61,7 +61,7 @@ struct OSSApp: App {
                 GuestScreen(target: target, password: Fixture.guestScreenPassword)
             }
         }
-        .defaultSize(width: 1280, height: 720)
+        .defaultSize(width: 1280, height: 748)
         .defaultLaunchBehavior(Fixture.guestScreen != nil ? .presented : .suppressed)
 
         // A Linux or Windows VM's screen, live (its QEMU's VNC).
@@ -71,7 +71,7 @@ struct OSSApp: App {
                     .onAppear { AppActivation.windowShown() }
             }
         }
-        .defaultSize(width: 1280, height: 720)
+        .defaultSize(width: 1280, height: 748)
 
         // The menu bar's panel in a window of its own, for the proof's
         // screen of it (`-fixture -panel`): the same view, no clicking.

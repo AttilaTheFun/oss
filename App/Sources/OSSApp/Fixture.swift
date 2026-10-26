@@ -60,7 +60,7 @@ enum Fixture {
                       symbol: "server.rack", state: .installing("build-linux-base: first boot, cloud-init installing the desktop (a while)"),
                       accepts: ["img"]),
         ComponentInfo(id: "windows", name: "Windows VMs",
-                      detail: "Windows 11 on Arm from Microsoft's ISO (downloaded from Microsoft, about 6 GB), installed by an answer file on OS Server's QEMU, with Fedora's virtio drivers.",
+                      detail: "Windows 11 on Arm from Microsoft's ISO (downloaded from Microsoft, about 9 GB), installed by an answer file on OS Server's QEMU, with Fedora's virtio drivers.",
                       symbol: "pc", state: .absent, accepts: ["iso"]),
         ComponentInfo(id: "android", name: "Android emulators",
                       detail: "Google's emulator and an Android 15 phone image, from Google's repository.",

@@ -8,7 +8,7 @@ import OSSClient
 /// is opened with the page's fraud check (ov-df's script, then the frame it
 /// loads); the connector API gives the edition's languages and then a link,
 /// good for a day. The ISO is kept in `Machines/images` and checked against
-/// the page's hash. Microsoft refuses some requests ("Sentinel"): a fresh
+/// the page's hash; one kept there that matches it is used without a link. Microsoft refuses some requests ("Sentinel"): a fresh
 /// session is tried twice more, then the component says to install from a
 /// file instead.
 enum WindowsISO {
@@ -32,6 +32,14 @@ enum WindowsISO {
         guard let expected = first(#"(?:^| )\#(language) 64-bit ([0-9A-Fa-f]{64})"#, in: table)?.lowercased() else {
             throw ShellError(description: "Microsoft's page lists no SHA-256 for \(language)")
         }
+        // One downloaded before (or put there) that is the page's: no link asked for.
+        let directory = "\(Paths.machines)/images"
+        Paths.ensure(directory)
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
+        where name.hasPrefix("Windows11_") && name.hasSuffix(".iso") {
+            let kept = URL(fileURLWithPath: directory).appendingPathComponent(name)
+            if try await LinuxInstaller.sha256(kept) == expected { return kept }
+        }
         var refusal = ""
         for attempt in 1...3 {
             if attempt > 1 { try await Task.sleep(for: .seconds(10 * attempt)) }
@@ -43,12 +51,7 @@ enum WindowsISO {
                 log("Microsoft refused the download (try \(attempt) of 3): \(refusal)")
                 continue
             }
-            let directory = "\(Paths.machines)/images"
-            Paths.ensure(directory)
             let destination = URL(fileURLWithPath: directory).appendingPathComponent(link.uri.lastPathComponent)
-            if FileManager.default.fileExists(atPath: destination.path), try await LinuxInstaller.sha256(destination) == expected {
-                return destination
-            }
             log("downloading \(link.name) from Microsoft")
             try await Downloads.fetch(link.uri, to: destination, what: link.name)
             guard try await LinuxInstaller.sha256(destination) == expected else {

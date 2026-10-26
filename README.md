@@ -329,7 +329,7 @@ Protocol](https://modelcontextprotocol.io) tools on stdio (`oss_status`,
      cloud-init, then the vanilla layer; about five minutes.
    - **Windows VMs**: Windows 11 on Arm from Microsoft's ISO, downloaded
      as Microsoft's page downloads it and checked against the SHA-256 the
-     page lists (about 6 GB, kept; or an ISO you give it, should Microsoft
+     page lists (about 9 GB, kept; or an ISO you give it, should Microsoft
      refuse), installed by an answer file in about fifty minutes: Windows' own drivers for its disk (NVMe),
      screen and input, Fedora's virtio-win (signed Arm64 drivers,
      downloaded and checked) for its network card and GPU (1920 × 1080),
