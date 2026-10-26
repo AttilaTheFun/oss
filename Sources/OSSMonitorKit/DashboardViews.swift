@@ -219,7 +219,7 @@ struct DiskCard: View {
                          ours: Double(min(ours, used)) / total, others: Double(max(0, used - ours)) / total,
                          labels: (Format.bytes(ours), Format.bytes(max(0, used - ours)), Format.bytes(disk.freeBytes)))
                 ForEach(disk.parts) { part in
-                    LabeledContent(part.name) { Text(Format.bytes(part.bytes)).monospacedDigit() }
+                    Row(part.name, Format.bytes(part.bytes))
                 }
                 if !disk.parts.isEmpty {
                     Text("OS Server's files as allocated: a clone counts whole, though it shares its blocks.")
@@ -304,16 +304,36 @@ struct CacheCard: View {
                          labels: (Format.bytes(cache.bytes), "", Format.bytes(max(0, cache.maxBytes - cache.bytes))),
                          oursName: "Used", othersName: nil)
                 let lookups = cache.hits + cache.misses
-                LabeledContent("Hits", value: lookups > 0
-                               ? "\(cache.hits.formatted()) of \(lookups.formatted()) (\(Int((Double(cache.hits) / Double(lookups) * 100).rounded()))%)"
-                               : "none yet")
-                LabeledContent("Written", value: cache.writes.formatted())
+                Row("Hits", lookups > 0
+                    ? "\(cache.hits.formatted()) of \(lookups.formatted()) (\(Int((Double(cache.hits) / Double(lookups) * 100).rounded()))%)"
+                    : "none yet")
+                Row("Written", cache.writes.formatted())
             }
         }
     }
 }
 
 // MARK: - Pieces
+
+/// A label and its value at the row's end, the same on every platform
+/// (outside a Form, a Mac sets LabeledContent's value beside its label).
+struct Row: View {
+    let label: String
+    let value: String
+
+    init(_ label: String, _ value: String) {
+        self.label = label
+        self.value = value
+    }
+
+    var body: some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text(value).monospacedDigit().foregroundStyle(.secondary)
+        }
+    }
+}
 
 /// A titled panel.
 struct Card<Content: View>: View {
