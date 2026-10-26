@@ -20,14 +20,35 @@ extension OSSClient {
     /// The same, given the container's socket alone (`Lease.execSocket`,
     /// kept by whoever leased it): no server, no token. What a process that
     /// runs a long command in a container (an agent's host) uses.
-    public static func exec(socket: String, _ request: ExecRequest, input: AsyncStream<ExecFrame>,
+    ///
+    /// A container that isn't running (the Mac restarted, its helper
+    /// ended) is started again by its server within seconds: until
+    /// `waiting` passes, the socket is tried again every two seconds. Any
+    /// number of commands may run in one container at once. Its output
+    /// comes as fast as `output` takes it: while `output` hasn't returned,
+    /// the command's writes wait (nothing is dropped).
+    public static func exec(socket: String, _ request: ExecRequest, input: AsyncStream<ExecFrame>, waiting: Duration = .seconds(180),
                             output: @escaping @Sendable (ExecFrame) -> Void) async throws -> Int32 {
-        let connection = ExecConnection(NWConnection(to: .unix(path: socket), using: .tcp))
-        try await connection.open()
-        defer { connection.close() }
-        try await connection.send(ExecFrame.start(request).encoded)
+        let deadline = ContinuousClock.now + waiting
+        var connection = ExecConnection(NWConnection(to: .unix(path: socket), using: .tcp))
+        while true {
+            do {
+                try await connection.open()
+                break
+            } catch {
+                connection.close()
+                guard ContinuousClock.now < deadline else {
+                    throw OSSError(status: 0, message: "the container isn't running (its server starts it again): \(error)", code: "notRunning")
+                }
+                try await Task.sleep(for: .seconds(2))
+                connection = ExecConnection(NWConnection(to: .unix(path: socket), using: .tcp))
+            }
+        }
+        let opened = connection
+        defer { opened.close() }
+        try await opened.send(ExecFrame.start(request).encoded)
         let pump = Task {
-            for await frame in input { try? await connection.send(frame.encoded) }
+            for await frame in input { try? await opened.send(frame.encoded) }
         }
         defer { pump.cancel() }
         var buffer = Data()
@@ -36,7 +57,7 @@ extension OSSClient {
                 if case .exit(let code) = frame { return code }
                 output(frame)
             }
-            guard let more = try await connection.receive() else {
+            guard let more = try await opened.receive() else {
                 throw OSSError(status: 0, message: "the container closed the connection before the command ended")
             }
             buffer.append(more)

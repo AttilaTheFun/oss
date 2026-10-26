@@ -139,8 +139,8 @@ actor MachineManager {
     func lease(_ request: LeaseRequest, local: Bool) async throws -> Lease {
         guard self.config.lends(request.platform) else { throw APIError(error: "this server lends no \(request.platform.rawValue) machines") }
         if request.platform == .container {
-            guard containers != nil else { throw APIError(error: "this server runs no containers (OS Server's app does)") }
-            guard local else { throw APIError(error: "a container is lent only to a client on its server's Mac") }
+            guard containers != nil else { throw APIError(error: "this server runs no containers (OS Server's app does)", code: "noContainers") }
+            guard local else { throw APIError(error: "a container is lent only to a client on its server's Mac", code: "notLocal") }
             guard let spec = request.container, !spec.image.isEmpty else { throw APIError(error: "a container lease names its image") }
             for mount in spec.mounts where !mount.source.hasPrefix("/") || !FileManager.default.fileExists(atPath: mount.source) {
                 throw APIError(error: "no folder \(mount.source) to share")
@@ -149,7 +149,7 @@ actor MachineManager {
                 guard !volume.name.isEmpty, volume.name.allSatisfy({ $0.isLetter || $0.isNumber || "-_.".contains($0) }),
                       !volume.name.hasPrefix(".") else { throw APIError(error: "a volume's name is letters, digits, - _ and .") }
                 if let user = leases.values.first(where: { $0.state != .failed && $0.container?.volumes.contains { $0.name == volume.name } == true }) {
-                    throw APIError(error: "volume \(volume.name) is in use by lease \(user.id)")
+                    throw APIError(error: "volume \(volume.name) is in use by lease \(user.id)", code: "volumeInUse")
                 }
             }
         } else if request.minutes == 0 {
@@ -162,7 +162,7 @@ actor MachineManager {
         }
         let held = leases.values.filter { $0.platform == request.platform && $0.state != .failed }.count
         guard held < self.config.limit(request.platform) else {
-            throw APIError(error: "busy: \(held) of \(self.config.limit(request.platform)) \(request.platform.rawValue) machines are leased")
+            throw APIError(error: "busy: \(held) of \(self.config.limit(request.platform)) \(request.platform.rawValue) machines are leased", code: "busy")
         }
         let id = Random.hex(4)
         // A container may be held until it is released (an agent's, for days).
@@ -246,7 +246,7 @@ actor MachineManager {
     func deleteVolume(_ name: String) async throws {
         guard let containers else { throw APIError(error: "this server runs no containers") }
         if let user = leases.values.first(where: { $0.state != .failed && $0.container?.volumes.contains { $0.name == name } == true }) {
-            throw APIError(error: "volume \(name) is in use by lease \(user.id)")
+            throw APIError(error: "volume \(name) is in use by lease \(user.id)", code: "volumeInUse")
         }
         try await containers.deleteVolume(name: name)
     }
@@ -859,7 +859,7 @@ enum Server {
                 return .json(await machines.volumes())
             case ("DELETE", 3) where parts[1] == "volumes":
                 guard LocalNetworks.isThisMac(request.remoteAddress) else {
-                    return .error("a volume is deleted only from its server's Mac", status: 403)
+                    return .json(APIError(error: "a volume is deleted only from its server's Mac", code: "notLocal"), status: 403)
                 }
                 try await machines.deleteVolume(parts[2].removingPercentEncoding ?? parts[2])
                 return .json(["deleted": parts[2]])
@@ -883,7 +883,8 @@ enum Server {
             }
             return .error("no such endpoint: \(method) \(request.path)", status: 404)
         } catch let error as APIError {
-            return .error(error.error, status: error.error.hasPrefix("busy") ? 409 : 400)
+            let status = error.code == "busy" || error.error.hasPrefix("busy") ? 409 : error.code == "notLocal" ? 403 : 400
+            return HTTPResponse(status: status, body: (try? JSONEncoder.oss.encode(error)) ?? Data())
         } catch {
             return .error("\(error)", status: 500)
         }

@@ -630,8 +630,16 @@ public struct CacheInfo: Codable, Sendable {
 /// An error the server answers with (any status but 2xx).
 public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
     public var error: String
+    /// What kind of refusal, for a program to tell them apart (API 6):
+    /// `busy` (no room: 409), `notLocal` (a container for a client on
+    /// another computer: 403), `noContainers` (this server runs none),
+    /// `volumeInUse`.
+    public var code: String?
     public var description: String { error }
-    public init(error: String) { self.error = error }
+    public init(error: String, code: String? = nil) {
+        self.error = error
+        self.code = code
+    }
 }
 
 public enum OSS {

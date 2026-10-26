@@ -147,9 +147,11 @@ final class ExecServer: Sendable {
         config.terminal = request.tty
         let stdin = StdinStream()
         config.stdin = stdin
-        config.stdout = FrameWriter { connection.send(.stdout($0)) }
+        // Each write waits until the client has taken it: a slow reader holds
+        // the command's writes back (its pipe fills), nothing is dropped.
+        config.stdout = FrameWriter { connection.sendWaiting(.stdout($0)) }
         // A terminal's output is one stream.
-        config.stderr = request.tty ? nil : FrameWriter { connection.send(.stderr($0)) }
+        config.stderr = request.tty ? nil : FrameWriter { connection.sendWaiting(.stderr($0)) }
         let process: LinuxProcess
         do {
             process = try await running.container.exec("exec-\(UUID().uuidString.prefix(8).lowercased())", configuration: config)
@@ -219,6 +221,14 @@ final class FrameConnection: @unchecked Sendable {
 
     func send(_ frame: ExecFrame) {
         connection.send(content: frame.encoded, completion: .idempotent)
+    }
+
+    /// Sent, and returns once the connection has taken it (or gone): on
+    /// the output relay's own queue, where waiting holds the command back.
+    func sendWaiting(_ frame: ExecFrame) {
+        let sent = DispatchSemaphore(value: 0)
+        connection.send(content: frame.encoded, completion: .contentProcessed { _ in sent.signal() })
+        sent.wait()
     }
 
     func sendAndWait(_ frame: ExecFrame) async {

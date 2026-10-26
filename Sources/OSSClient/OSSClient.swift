@@ -64,11 +64,15 @@ public struct URLSessionTransport: OSSTransport {
 public struct OSSError: Error, Sendable, CustomStringConvertible {
     public var status: Int
     public var message: String
+    /// The server's kind of refusal (`APIError.code`): `busy`, `notLocal`,
+    /// `noContainers`, `volumeInUse`.
+    public var code: String?
     public var description: String { message }
 
-    public init(status: Int, message: String) {
+    public init(status: Int, message: String, code: String? = nil) {
         self.status = status
         self.message = message
+        self.code = code
     }
 }
 
@@ -129,8 +133,8 @@ public struct OSSClient: Sendable {
         let answer = try await transport.send(OSSHTTPRequest(method: method, url: components.url!, headers: headers, body: body,
                                                              timeout: timeout ?? self.timeout))
         guard (200..<300).contains(answer.status) else {
-            let message = (try? JSONDecoder.oss.decode(APIError.self, from: answer.body))?.error ?? String(decoding: answer.body, as: UTF8.self)
-            throw OSSError(status: answer.status, message: message)
+            let refusal = try? JSONDecoder.oss.decode(APIError.self, from: answer.body)
+            throw OSSError(status: answer.status, message: refusal?.error ?? String(decoding: answer.body, as: UTF8.self), code: refusal?.code)
         }
         return answer
     }

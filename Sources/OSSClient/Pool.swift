@@ -119,20 +119,21 @@ public struct OSSPool: Sendable {
             let candidates = reached.filter { request.platform != .container || $0.distance == .thisComputer }
             guard candidates.contains(where: { $0.lends(request.platform, config: request.config) }) else {
                 let names = reached.map { "\($0.name) (\($0.distance))" }.joined(separator: ", ")
-                throw OSSError(status: 0, message: request.platform == .container
-                    ? "no server on this computer lends containers (reached: \(names.isEmpty ? "none" : names))"
-                    : "no server lends \(request.platform.rawValue)\(request.config.map { " \($0)" } ?? "") (reached: \(names.isEmpty ? "none" : names))")
+                throw request.platform == .container
+                    ? OSSError(status: 0, message: "no server on this computer lends containers (reached: \(names.isEmpty ? "none" : names))",
+                               code: reached.contains { $0.lends(.container, config: nil) } ? "notLocal" : "noContainers")
+                    : OSSError(status: 0, message: "no server lends \(request.platform.rawValue)\(request.config.map { " \($0)" } ?? "") (reached: \(names.isEmpty ? "none" : names))")
             }
             for server in candidates where server.hasRoom(request.platform, config: request.config) {
                 do {
                     progress("\(server.name) (\(server.distance))")
                     return (server.client, try await server.client.lease(request, progress: progress))
-                } catch let error as OSSError where error.message.hasPrefix("busy") {
+                } catch let error as OSSError where error.code == "busy" || error.message.hasPrefix("busy") {
                     continue   // taken meanwhile: the next one
                 }
             }
             guard waitForCapacity else {
-                throw OSSError(status: 409, message: "busy: no server has room for \(request.platform.rawValue)")
+                throw OSSError(status: 409, message: "busy: no server has room for \(request.platform.rawValue)", code: "busy")
             }
             progress("no server has room for \(request.platform.rawValue); waiting")
             try await Task.sleep(for: .seconds(15))
