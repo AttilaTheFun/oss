@@ -1,7 +1,7 @@
 // swift-tools-version: 6.0
-// The oss app: the server, run and watched from a Mac app that collapses to
-// the menu bar (App/README.md). A package of its own beside oss's, so
-// OSSClient keeps its older floor; build.sh makes the .app.
+// OS Server, the app: the server in its own process, watched from a window
+// that collapses to the menu bar (App/README.md). A package of its own
+// beside oss's, so OSSClient keeps its older floor; build.sh makes the .app.
 import PackageDescription
 
 let package = Package(
@@ -11,7 +11,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "OSSApp",
-            dependencies: [.product(name: "OSSClient", package: "oss")]
+            dependencies: [.product(name: "OSSClient", package: "oss"), .product(name: "OSSServer", package: "oss")]
         ),
     ]
 )

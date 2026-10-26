@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.7.0
+
+- **OS Server, the app, is the server.** The server runs in the app's own
+  process (`OSSServer`, a library; `ServerHost`), with no helper; the app
+  is `OS Server.app` (it was `oss.app`), and `Contents/Helpers/oss` is the
+  command line alone (Settings links `~/.local/bin/oss` to it). It opens at
+  login as macOS keeps it for the app (no launch agent), and takes over
+  from a launch agent's `oss serve` as before.
+- **macOS VMs are OS Server's own**, on Apple's Virtualization framework,
+  in the app's process: no UTM for macOS. A base is a folder in
+  `Machines/macos/<config>.vm` (its disk, auxiliary storage and
+  `machine.json`); a lease is an APFS clone of it with a network card of
+  its own, ready in about fifteen seconds, deleted with the lease. They run
+  headless; **Screen** beside a macOS lease in the window shows it live.
+  Quitting OS Server ends the macOS leases (it asks first).
+- **`oss image install macos [config] [--ipsw=PATH]`** installs macOS into
+  a new base and makes `runner` on its first boot with no one at its
+  screen (macOS 27's guest provisioning; about four minutes from an IPSW).
+  `oss image build macos <layer> --from=<base>` builds layers on these
+  bases as on UTM's. Screen Sharing still needs its switch turned on once
+  in a new base's System Settings (at its live view).
+- **`oss image import-utm <name>…`** takes UTM's macOS VMs in as OS
+  Server's own bases (UTM exports an APFS clone: no space, a moment). Each
+  start does it for every `oss-macos-` VM in UTM whose config OS Server
+  hasn't got of its own (the first start of 0.7: all of them), so the
+  configs stay what they were.
+- **Its files are in `~/Library/Application Support/OS Server`**: settings
+  (server.json), the token, the guest passwords, the cache's tokens, the
+  leases (`State/`), the macOS bases (`Machines/`). The first start moves
+  them from `~/.config/oss` and `~/.local/state/oss` (the token is copied:
+  a client on the same Mac still reads `~/.config/oss/token`), writing into
+  server.json where the Android SDK and the Bazel cache already were, so
+  neither moves. Linux keeps `~/.config/oss` and `~/.local/{state,share}/oss`.
+- **Remove Everything** (Settings) ends every lease and deletes all OS
+  Server keeps on the Mac (its folder, what an earlier oss kept in
+  `~/.config`, `~/.local/state` and `~/.local/share`, its log, the launch
+  agent's plist, the command line's link, the login item; UTM's `oss-` VMs
+  if asked), then quits: removing the app leaves the Mac as it was.
+- **A simulator's and an emulator's status bar is held still** from the
+  moment the lease is ready, so screenshots of the same screen match from
+  run to run:
+  - the time 9:41, full Wi-Fi and signal, a full battery;
+  - no carrier on iOS, no notifications on Android;
+  - simctl's status bar override on iOS, SystemUI's demo mode on Android;
+  - `status_bar clear` or the demo's `exit` command gives the live one back.
+- **`"lends"` and `"useUTM"`** in server.json: a server lends only the
+  platforms named (and leaves every other platform's machines alone,
+  however they're named), and can leave UTM out. A second server, to try a
+  change beside a running one, is `OSS_HOME` with both set.
+- No change to the API (level 4).
+
 ## 0.6.0
 
 - **The oss app** (App/, `App/build.sh`): a Mac app that runs the server

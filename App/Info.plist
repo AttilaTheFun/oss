@@ -2,10 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>oss</string>
-  <key>CFBundleDisplayName</key><string>oss</string>
+  <key>CFBundleName</key><string>OS Server</string>
+  <key>CFBundleDisplayName</key><string>OS Server</string>
   <key>CFBundleIdentifier</key><string>com.LoganShire.OSS</string>
-  <key>CFBundleExecutable</key><string>oss</string>
+  <key>CFBundleExecutable</key><string>OS Server</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>@VERSION@</string>
@@ -14,7 +14,7 @@
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSAppleEventsUsageDescription</key><string>oss makes, starts and deletes its virtual machines through UTM's scripting.</string>
-  <key>NSLocalNetworkUsageDescription</key><string>oss reaches its virtual machines, simulators and emulators on this Mac's networks.</string>
+  <key>NSAppleEventsUsageDescription</key><string>OS Server makes, starts and deletes its Linux and Windows virtual machines through UTM's scripting.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>OS Server reaches its virtual machines, simulators and emulators on this Mac's networks.</string>
 </dict>
 </plist>

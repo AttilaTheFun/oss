@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""The oss app's proof: its screens, for review before a release.
+"""OS Server's proof: the app's screens, for review before a release.
 
   tools/proof.py --review <dir> [--version 0.6.0] [--commit <sha>] [--held <exports file>]
                  [--no-build] [--publish <ssh host>] [--pull-request <N>]
 
-Builds the app (App/build.sh --zip), leases a macOS VM from this Mac's oss
+Builds the app (App/build.sh --zip, build/OS-Server.zip), leases a macOS VM from this Mac's oss
 (or uses a held lease: `oss machine lease macos --exports > file`), installs
 the app there and opens it with its canned server (`-fixture YES`: the same
 leases, usage and log every time), light and dark: its window, its menu
@@ -50,7 +50,7 @@ def main():
     version = args.version or open(os.path.join(ROOT, "Sources/OSSClient/Models.swift")).read().split('public static let version = "')[1].split('"')[0]
     if not args.no_build:
         sh([os.path.join(APP, "build.sh"), "--zip"])
-    zip_path = os.path.join(APP, "build", "oss.zip")
+    zip_path = os.path.join(APP, "build", "OS-Server.zip")
 
     if args.held:
         env = dict(line.split("=", 1) for line in open(args.held).read().replace("export ", "").split() if "=" in line)
@@ -67,15 +67,15 @@ def main():
         def ssh(command, check=True):
             return sh(["oss", "machine", "ssh", lease_id, "--", command], check=check)
 
-        sh(["oss", "machine", "upload", lease_id, zip_path, "/Users/runner/oss.zip"])
-        ssh("rm -rf ~/Applications/oss.app && mkdir -p ~/Applications && ditto -x -k ~/oss.zip ~/Applications")
+        sh(["oss", "machine", "upload", lease_id, zip_path, "/Users/runner/OS-Server.zip"])
+        ssh("rm -rf ~/Applications/'OS Server.app' && mkdir -p ~/Applications && ditto -x -k ~/OS-Server.zip ~/Applications")
         for appearance in APPEARANCES:
             for item, arguments in SCREENS:
                 # Without the window sizes the last launch kept.
-                ssh("pkill -x oss; defaults delete com.LoganShire.OSS; rm -f ~/oss-fixture-windows.json", check=False)
+                ssh("pkill -x 'OS Server'; defaults delete com.LoganShire.OSS; rm -f ~/oss-fixture-windows.json", check=False)
                 time.sleep(1)
                 launch = arguments + ["-appearance", appearance]
-                ssh("sudo launchctl asuser $(id -u runner) open -n ~/Applications/oss.app --args " + " ".join(launch))
+                ssh("sudo launchctl asuser $(id -u runner) open -n ~/Applications/'OS Server.app' --args " + " ".join(launch))
                 # The app writes its windows' frames as they settle (at 2,
                 # 4, 6 and 8 s): the last is read.
                 for _ in range(30):
@@ -97,15 +97,16 @@ def main():
                 items.append({"name": f"{item} ({appearance})", "status": "new", "capture": capture})
                 if item == "window":
                     # The app's menu bar item (its icon and lease count), with
-                    # a little of the bar around it.
+                    # a few pixels of the bar around it (no neighbour, whose
+                    # state changes from run to run).
                     item_frame = frames.get("statusItem")
                     if item_frame:
                         bar = f"menubar-{appearance}.png"
-                        margin = 40
+                        margin = 6
                         crop(screen, os.path.join(out, bar), max(0, item_frame["x"] - margin), 0,
                              item_frame["width"] + 2 * margin, frames["menuBarHeight"])
                         items.append({"name": f"menu bar ({appearance})", "status": "new", "capture": bar})
-        ssh("pkill -x oss", check=False)
+        ssh("pkill -x 'OS Server'", check=False)
     finally:
         if not args.held:
             sh(["oss", "machine", "release", lease_id], check=False)
@@ -123,7 +124,7 @@ def main():
         sh(["ssh", "-o", "BatchMode=yes", args.publish, f"mkdir -p {store}"])
         sh(["rsync", "-a", "--delete", out + "/", f"{args.publish}:{store}/"])
         icon = os.path.join(work, "icon.png")
-        sh(["sips", "-s", "format", "png", "-Z", "512", os.path.join(APP, "build/oss.app/Contents/Resources/AppIcon.icns"), "--out", icon])
+        sh(["sips", "-s", "format", "png", "-Z", "512", os.path.join(APP, "build/OS Server.app/Contents/Resources/AppIcon.icns"), "--out", icon])
         sh(["rsync", "-a", icon, f"{args.publish}:ReleaseReview/runs/oss/icon.png"])
         print(f"published to {args.publish}:{store}")
     if len(items) < expected:

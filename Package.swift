@@ -10,11 +10,15 @@ let package = Package(
         // The API's types and an async client for it: what an application
         // that uses an oss server depends on.
         .library(name: "OSSClient", targets: ["OSSClient"]),
-        // The server and its command line, one binary.
+        // The server, for a Mac app to run in its own process (OS Server,
+        // App/): the machines, the API and the Bazel cache.
+        .library(name: "OSSServer", targets: ["OSSServer"]),
+        // The command line (the server too: `oss serve`), one binary.
         .executable(name: "oss", targets: ["OSSCLI"]),
     ],
     targets: [
         .target(name: "OSSClient"),
-        .executableTarget(name: "OSSCLI", dependencies: ["OSSClient"]),
+        .target(name: "OSSServer", dependencies: ["OSSClient"]),
+        .executableTarget(name: "OSSCLI", dependencies: ["OSSServer"]),
     ]
 )

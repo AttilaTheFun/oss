@@ -46,7 +46,7 @@ final class Monitor {
         guard !fixture else { return }
         let port = ServerSettings.load().port
         guard let url = URL(string: "http://127.0.0.1:\(port)"), let token = ServerSettings.token() else {
-            error = "No server yet (no token in ~/.config/oss)."
+            error = "No server yet (no token)."
             return
         }
         let client = OSSClient(server: url, token: token, timeout: 10)

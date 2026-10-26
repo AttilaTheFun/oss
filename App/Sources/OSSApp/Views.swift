@@ -1,11 +1,12 @@
 import OSSClient
+import OSSServer
 import SwiftUI
 
 // MARK: - The window
 
 struct MainView: View {
     @Environment(Monitor.self) private var monitor
-    @Environment(ServerSupervisor.self) private var server
+    @Environment(ServerRunner.self) private var server
 
     var body: some View {
         ScrollView {
@@ -31,7 +32,7 @@ struct MainView: View {
 
 struct ServerHeader: View {
     @Environment(Monitor.self) private var monitor
-    @Environment(ServerSupervisor.self) private var server
+    @Environment(ServerRunner.self) private var server
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -43,8 +44,7 @@ struct ServerHeader: View {
             Spacer()
             switch server.state {
             case .running, .starting:
-                Button("Restart") { Task { await server.restart() } }
-                Button("Stop") { server.stop() }
+                EmptyView()
             case .elsewhere:
                 Button("Run It Here Instead") { Task { await server.takeOver() } }
             case .stopped, .failed:
@@ -59,7 +59,7 @@ struct ServerHeader: View {
         switch server.state {
         case .running: "Serving on port \(port)"
         case .starting: "Starting…"
-        case .elsewhere: "Another oss server answers on port \(port)"
+        case .elsewhere: "Another server answers on port \(port)"
         case .stopped: "Stopped"
         case .failed: "The server stopped"
         }
@@ -67,13 +67,13 @@ struct ServerHeader: View {
 
     private var detail: String {
         var parts: [String] = []
-        if let capabilities = monitor.capabilities { parts.append("oss \(capabilities.version), API \(capabilities.api)") }
+        if let capabilities = monitor.capabilities { parts.append("OS Server \(capabilities.version), API \(capabilities.api)") }
         switch server.state {
-        case .running(_, let since):
+        case .running(let since):
             parts.append("up \(Format.duration(monitor.now.timeIntervalSince(since)))")
         case .elsewhere:
-            parts.append(FileManager.default.fileExists(atPath: ServerSupervisor.launchAgent.path)
-                         ? "the launch agent's (oss.server)" : "run outside this app")
+            parts.append(FileManager.default.fileExists(atPath: ServerRunner.launchAgent.path)
+                         ? "the launch agent's (oss.server), from before 0.7" : "run outside this app")
         case .failed(let message):
             parts.append(message)
         default:
@@ -85,7 +85,7 @@ struct ServerHeader: View {
 }
 
 struct StateDot: View {
-    var state: ServerSupervisor.State
+    var state: ServerRunner.State
 
     var body: some View {
         Circle().fill(color).frame(width: 12, height: 12)
@@ -127,6 +127,7 @@ struct HostSection: View {
 
 struct MachinesSection: View {
     @Environment(Monitor.self) private var monitor
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         GroupBox {
@@ -137,7 +138,7 @@ struct MachinesSection: View {
             } else {
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
                     GridRow {
-                        Text("Machine"); Text("Holder"); Text("CPU"); Text("Memory"); Text("Time left")
+                        Text("Machine"); Text("Holder"); Text("CPU"); Text("Memory"); Text("Time left"); Text("")
                     }
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     ForEach(rows) { row in
@@ -155,6 +156,12 @@ struct MachinesSection: View {
                             Text(row.lease.state == .ready ? Format.minutes(row.lease.expires.timeIntervalSince(monitor.now))
                                                            : row.lease.state.rawValue)
                                 .monospacedDigit()
+                            // A macOS VM this app runs: its screen, live.
+                            if MacVMs.names.contains(row.lease.name) {
+                                Button("Screen") { openWindow(id: "screen", value: row.lease.name) }
+                            } else {
+                                Text("")
+                            }
                         }
                     }
                 }
@@ -246,7 +253,7 @@ struct CacheSection: View {
 }
 
 struct LogSection: View {
-    @Environment(ServerSupervisor.self) private var server
+    @Environment(ServerRunner.self) private var server
 
     var body: some View {
         GroupBox {
@@ -394,7 +401,7 @@ struct MenuBarLabel: View {
 
 struct MenuBarView: View {
     @Environment(Monitor.self) private var monitor
-    @Environment(ServerSupervisor.self) private var server
+    @Environment(ServerRunner.self) private var server
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -433,7 +440,7 @@ struct MenuBarView: View {
             }
             Divider()
             HStack {
-                Button("Open oss") { AppActivation.showWindow(openWindow) }
+                Button("Open OS Server") { AppActivation.showWindow(openWindow) }
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
             }
