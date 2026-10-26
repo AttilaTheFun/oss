@@ -2,7 +2,8 @@
 import Foundation
 import OSSClient
 
-/// `oss machine exec <id> [--tty] [--env=K=V]… [--env-file=F] [--workdir=DIR] -- command…`:
+/// `oss machine exec <id> [--tty] [--env=K=V]… [--env-file=F] [--workdir=DIR] -- command…`
+/// (or `--socket=PATH` for `<id>`: the lease's exec socket, no server asked):
 /// a command in a container lease, this process's standard streams its own,
 /// its exit status this one's. It goes to the container directly (its exec
 /// socket), so it outlives the server's restarts. TERM, INT, HUP, QUIT,
@@ -10,8 +11,7 @@ import OSSClient
 /// ends first, so does the command. With `--tty` it gets a terminal of this
 /// one's size (raw, resized with it) and its output comes on stdout alone.
 enum ExecCommand {
-    static func run(_ lease: Lease, _ client: OSSClient, _ arguments: Arguments) async throws -> Int32 {
-        guard lease.platform == .container else { fail("exec is for container leases: a VM takes ssh, a simulator simctl, an emulator adb") }
+    static func run(socket: String, _ arguments: Arguments) async throws -> Int32 {
         guard !arguments.rest.isEmpty else { fail("oss machine exec <id> [--tty] -- command…") }
         let tty = arguments.flags.contains("tty")
         var environment: [String: String] = [:]
@@ -64,7 +64,7 @@ enum ExecCommand {
                 continuation.yield(.stdin(data))
             }
         }
-        let status = try await client.exec(lease, request, input: input) { frame in
+        let status = try await OSSClient.exec(socket: socket, request, input: input) { frame in
             switch frame {
             case .stdout(let data): FileHandle.standardOutput.write(data)
             case .stderr(let data): FileHandle.standardError.write(data)

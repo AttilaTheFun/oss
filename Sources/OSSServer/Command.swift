@@ -17,8 +17,9 @@ let usage = """
       oss machine list
       oss machine ssh <id> [-- command…]                    macOS, Linux, Windows
       oss machine vnc <id> [--open]                         macOS, Linux, Windows: its VNC address and password
-      oss machine exec <id> [--tty] [--env=NAME=VALUE]… [--env-file=F] [--workdir=DIR] -- command…
+      oss machine exec <id | --socket=PATH> [--tty] [--env=NAME=VALUE]… [--env-file=F] [--workdir=DIR] -- command…
                                                             a container: the command run in it, streamed, signals passed on
+                                                            (--socket: the lease's execSocket, no server or token needed)
       oss volume list | delete <name>                       containers' volumes, kept ones too
       oss machine simctl <id> <simctl arguments…>          iOS: install ./My.app, launch <bundle id>, openurl …
       oss machine adb <id> <adb arguments…>                 Android: install ./app.apk, shell …, logcat -d …
@@ -220,7 +221,7 @@ public enum OSSCommand {
         let arguments = Arguments(Array(commandLine.dropFirst()),
                                   valued: ["config", "minutes", "key", "holder", "identity", "from", "script", "vm", "device", "runtime",
                                            "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "volume", "env", "env-file", "workdir",
-                                           "command"])
+                                           "command", "socket"])
         let command = arguments.positional.first ?? "help"
         let sub = arguments.positional.count > 1 ? arguments.positional[1] : nil
         let target = arguments.positional.count > 2 ? arguments.positional[2] : nil
@@ -235,6 +236,12 @@ public enum OSSCommand {
         do {
             switch command {
             case "machine":
+                #if canImport(Network)
+                // A container's socket given: straight to it, no server (nor token) needed.
+                if sub == "exec", let socket = arguments.options["socket"] {
+                    exit(try await ExecCommand.run(socket: socket, arguments))
+                }
+                #endif
                 let client = try await OSSClient.connect()
                 switch sub {
                 case "lease":
@@ -265,7 +272,10 @@ public enum OSSCommand {
                 case "exec":
                     #if canImport(Network)
                     let lease = try await resolveLease(target, client)
-                    exit(try await ExecCommand.run(lease, client, arguments))
+                    guard lease.platform == .container, let socket = lease.execSocket else {
+                        fail("exec is for a ready container lease: a VM takes ssh, a simulator simctl, an emulator adb")
+                    }
+                    exit(try await ExecCommand.run(socket: socket, arguments))
                     #else
                     fail("exec runs on the container's Mac")
                     #endif

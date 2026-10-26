@@ -116,6 +116,7 @@ oss machine lease container --image=ghcr.io/owner/agent:1.2 --cpus=6 --memory=16
 oss machine exec <id> -- uname -a                     # streamed; its exit status is exec's
 oss machine exec <id> --workdir=/src --env-file=agent.env -- ./agent --stdio
 oss machine exec <id> --tty -- bash                    # a terminal
+oss machine exec --socket=<execSocket> -- make         # by the lease's socket: no server or token needed
 oss volume list                                         # volumes, kept ones too
 oss volume delete app-build
 ```
@@ -229,6 +230,10 @@ let status = try await client.exec(lease, ExecRequest(arguments: ["make", "test"
     if case .stdout(let data) = frame { FileHandle.standardOutput.write(data) }
 }
 ```
+
+`OSSClient.exec(socket:…)` does the same with the lease's `execSocket`
+alone: no server or token, for a process that runs a long command in a
+container (an agent's host) and should go on whatever the server does.
 
 `OSSPool` leases from several servers as one: from the nearest (this
 computer, then the LAN, then the tailnet) that has a base for the machine

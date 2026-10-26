@@ -11,10 +11,18 @@ extension OSSClient {
     /// server's restarts. Ending the task (or the process) ends the command.
     public func exec(_ lease: Lease, _ request: ExecRequest, input: AsyncStream<ExecFrame>,
                      output: @escaping @Sendable (ExecFrame) -> Void) async throws -> Int32 {
-        guard let path = lease.execSocket else {
+        guard let socket = lease.execSocket else {
             throw OSSError(status: 0, message: "lease \(lease.id) takes no commands (a container's, once it is ready)")
         }
-        let connection = ExecConnection(NWConnection(to: .unix(path: path), using: .tcp))
+        return try await Self.exec(socket: socket, request, input: input, output: output)
+    }
+
+    /// The same, given the container's socket alone (`Lease.execSocket`,
+    /// kept by whoever leased it): no server, no token. What a process that
+    /// runs a long command in a container (an agent's host) uses.
+    public static func exec(socket: String, _ request: ExecRequest, input: AsyncStream<ExecFrame>,
+                            output: @escaping @Sendable (ExecFrame) -> Void) async throws -> Int32 {
+        let connection = ExecConnection(NWConnection(to: .unix(path: socket), using: .tcp))
         try await connection.open()
         defer { connection.close() }
         try await connection.send(ExecFrame.start(request).encoded)
