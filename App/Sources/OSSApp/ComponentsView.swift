@@ -98,7 +98,12 @@ struct ComponentRow: View {
         case .installed: Label("Installed", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
         case .installing(let line):
             HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
+                // The proof's (canned) install holds still: no spinner caught mid-turn.
+                if Fixture.isOn {
+                    ProgressView(value: 0.4).progressViewStyle(.circular).controlSize(.small)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
                 Text(line).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }
         case .unavailable(let why): Text(why.prefix(1).capitalized + why.dropFirst()).font(.caption).foregroundStyle(.orange)

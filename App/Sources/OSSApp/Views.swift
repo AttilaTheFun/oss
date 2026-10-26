@@ -46,7 +46,8 @@ struct ServerHeader: View {
             StateDot(state: server.state)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.title2.weight(.semibold))
-                Text(detail).font(.callout).foregroundStyle(.secondary)
+                // Digits all one width: a new version moves nothing after it.
+                Text(detail).font(.callout).monospacedDigit().foregroundStyle(.secondary)
             }
             Spacer()
             switch server.state {
