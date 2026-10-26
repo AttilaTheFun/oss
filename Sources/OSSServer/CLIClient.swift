@@ -24,7 +24,11 @@ struct CurlTransport: OSSTransport {
         guard result.ok else {
             throw OSSError(status: 0, message: "\(request.url.host ?? ""): \(result.error.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
-        let newline = result.data.lastIndex(of: 0x0A) ?? result.data.startIndex
+        // `-w` puts a line with the status after the body; output without it
+        // (curl ended with nothing written) is no answer, not a crash.
+        guard let newline = result.data.lastIndex(of: 0x0A) else {
+            throw OSSError(status: 0, message: "\(request.url.host ?? ""): no answer")
+        }
         let status = Int(String(decoding: result.data[result.data.index(after: newline)...], as: UTF8.self)) ?? 0
         var responseHeaders: [String: String] = [:]
         let head = FileManager.default.contents(atPath: headerFile).map { String(decoding: $0, as: UTF8.self) } ?? ""

@@ -19,6 +19,8 @@
 - Windows' vanilla layer turns off OneDrive (its "Turn On Windows Backup"
   toast came some minutes after logon) and apps' toasts: a screen that
   holds still.
+- `oss` no longer crashes (SIGTRAP) when curl answers with nothing: that's
+  no answer from that server, and the next is tried.
 - OS Server's and OS Monitor's version lines use digits of one width, so a
   new version moves nothing after it (a proof's diff landed on the server's
   address for that).
