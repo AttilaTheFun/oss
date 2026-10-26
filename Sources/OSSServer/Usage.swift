@@ -98,6 +98,7 @@ enum UsageProbe {
     static func usage(of leases: [Lease]) async -> Usage {
         let all = await processes()
         let vms = await vmProcesses(leases.filter { $0.platform.isVM }, in: all)
+        var ourPIDs = Set(tree(Int(getpid()), in: all).map(\.pid))
         let machines = leases.map { lease -> MachineUsage in
             var roots: [Int] = []
             switch lease.platform {
@@ -110,12 +111,91 @@ enum UsageProbe {
                 if let pid = lease.emulatorPID { roots = [Int(pid)] }
             }
             let processes = Dictionary(roots.flatMap { tree($0, in: all) }.map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a }).values
+            ourPIDs.formUnion(processes.map(\.pid))
             return MachineUsage(id: lease.id, platform: lease.platform, config: lease.config, holder: lease.holder,
                                 cpus: lease.cpus, memoryLimitBytes: lease.memoryLimitBytes,
                                 cpuPercent: processes.isEmpty ? nil : (processes.reduce(0) { $0 + $1.cpu } * 10).rounded() / 10,
                                 memoryBytes: processes.isEmpty ? nil : processes.reduce(0) { $0 + (footprint($1.pid) ?? $1.rss) })
         }
-        return Usage(sampledAt: Date(), host: host(all), machines: machines)
+        let host = host(all)
+        let memory = Dictionary(all.map { ($0.pid, footprint($0.pid) ?? $0.rss) }, uniquingKeysWith: { a, _ in a })
+        let ours = all.filter { ourPIDs.contains($0.pid) }
+        let ourShare = ResourceShare(cpuPercent: (ours.reduce(0) { $0 + $1.cpu } * 10).rounded() / 10,
+                                     memoryBytes: ours.reduce(0) { $0 + (memory[$1.pid] ?? 0) })
+        let otherShare = ResourceShare(cpuPercent: max(0, ((host.cpuPercent - ourShare.cpuPercent) * 10).rounded() / 10),
+                                       memoryBytes: max(0, host.memoryUsedBytes - ourShare.memoryBytes))
+        // Everything else, an app's helpers counted with it.
+        var apps: [String: ProcessUsage] = [:]
+        for process in all where !ourPIDs.contains(process.pid) {
+            let name = appName(process.pid, command: process.command)
+            var entry = apps[name] ?? ProcessUsage(name: name, processes: 0, cpuPercent: 0, memoryBytes: 0)
+            entry.processes += 1
+            entry.cpuPercent += process.cpu
+            entry.memoryBytes += memory[process.pid] ?? 0
+            apps[name] = entry
+        }
+        let top = apps.values.sorted { $0.memoryBytes > $1.memoryBytes }.prefix(8).map { app -> ProcessUsage in
+            var app = app
+            app.cpuPercent = (app.cpuPercent * 10).rounded() / 10
+            return app
+        }
+        return Usage(sampledAt: Date(), host: host, machines: machines, ours: ourShare, others: otherShare,
+                     disk: await DiskSizes.shared.usage(), topProcesses: Array(top))
+    }
+
+    /// What a process is for a person: the app it belongs to (the first
+    /// `.app` in its executable's path, so Chrome's helpers are Chrome), or
+    /// its executable's name.
+    static func appName(_ pid: Int, command: String) -> String {
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        guard proc_pidpath(Int32(pid), &buffer, UInt32(buffer.count)) > 0 else { return "pid \(pid)" }
+        let path = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        let executable = (path as NSString).lastPathComponent
+        // What their executables don't say: another app's VMs (Apple's
+        // container, UTM's own), and Bazel's servers (a JVM).
+        if executable == "com.apple.Virtualization.VirtualMachine" { return "Virtual machines" }
+        if executable == "java", command.contains("bazel") { return "Bazel" }
+        if let app = path.split(separator: "/").first(where: { $0.hasSuffix(".app") }) { return String(app.dropLast(4)) }
+        return executable
+    }
+}
+
+/// The disk OS Server's folder is on, and OS Server's own files by kind:
+/// measured with `du` every ten minutes in the background (a few hundred
+/// gigabytes of bases take a while), the volume's size and free space at
+/// every sample.
+actor DiskSizes {
+    static let shared = DiskSizes()
+    private var parts: [DiskPart] = []
+    private var measuredAt: Date?
+    private var measuring = false
+
+    func usage() -> DiskUsage? {
+        if !measuring, measuredAt.map({ Date().timeIntervalSince($0) > 600 }) ?? true {
+            measuring = true
+            Task { await self.measure() }
+        }
+        // Free as `df` counts it: what macOS calls available "for important
+        // use" adds what it could purge (local snapshots), which isn't free.
+        let values = try? URL(fileURLWithPath: Paths.support).resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey])
+        guard let total = values?.volumeTotalCapacity, let free = values?.volumeAvailableCapacity else { return nil }
+        return DiskUsage(totalBytes: Int64(total), freeBytes: Int64(free), parts: parts, measuredAt: measuredAt)
+    }
+
+    private func measure() async {
+        let config = ServerConfig.load()
+        var places: [(String, String)] = [("macOS bases", "\(Paths.machines)/macos"), ("macOS leases", "\(Paths.machines)/leases"),
+                                          ("Android SDK", config.androidSDK), ("Android emulators", config.androidAVDHome)]
+        if let cache = config.cache { places.append(("Bazel cache", cache.directory)) }
+        var measured: [DiskPart] = []
+        for (name, path) in places where FileManager.default.fileExists(atPath: path) {
+            guard let result = try? await Shell.run("/usr/bin/du", ["-sk", path], timeout: 300), result.ok,
+                  let kilobytes = Int64(result.output.split(separator: "\t").first ?? "") else { continue }
+            measured.append(DiskPart(name: name, bytes: kilobytes * 1024))
+        }
+        parts = measured
+        measuredAt = Date()
+        measuring = false
     }
 }
 #endif

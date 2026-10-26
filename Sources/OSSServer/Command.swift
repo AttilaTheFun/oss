@@ -35,6 +35,8 @@ let usage = """
                                                             and runner made with no one at its screen (macOS 27)
       oss image import-utm <UTM VM name>… [--as=CONFIG]     UTM's macOS VMs as OS Server's own bases (APFS clones)
       oss image provision-macos --vm=NAME [--install]       a UTM VM's (before OS Server ran its own)
+    OS Monitor (OS Server's client: reads what the server is doing, nothing else):
+      oss monitor code [--new]                              its connection code (piped, never shown; --new: a new token)
     The Bazel cache (a server's with "cache" in its server.json; its populate job writes, everyone else reads):
       oss cache status                                      its size, and how many lookups it answered
       oss cache use [--remove]                              this computer's Bazel reads it (~/.bazelrc, the token in ~/.netrc)
@@ -355,7 +357,14 @@ public enum OSSCommand {
                     fail("oss cache status | use [--remove] | token --write|--read | serve")
                 }
 
-            case "doctor":
+            case "monitor":
+            // oss monitor code [--new]: OS Monitor's connection code for this
+            // server (its link), piped, never shown; --new makes a new token.
+            guard sub == "code" else { fail("oss monitor code [--new]") }
+            refuseTerminal("the code holds the monitor token: pipe it (oss monitor code | pbcopy)")
+            print(MonitorAccess.connection(newToken: arguments.flags.contains("new")).link.absoluteString)
+
+        case "doctor":
                 let client = try await OSSClient.connect()
                 let report = try JSONDecoder.oss.decode([String: String].self, from: try await client.send("GET", "/v1/doctor").body)
                 for (check, result) in report.sorted(by: { $0.key < $1.key }) { print("\(check): \(result)") }

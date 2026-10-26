@@ -1,0 +1,11 @@
+load("@rules_swift//swift:swift.bzl", "swift_library")
+
+# What OS Monitor shows of a server (the Swift package builds it too, for
+# OS Server's window).
+swift_library(
+    name = "OSSMonitorKit",
+    srcs = glob(["*.swift"]),
+    module_name = "OSSMonitorKit",
+    visibility = ["//visibility:public"],
+    deps = ["//Sources/OSSClient"],
+)

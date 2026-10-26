@@ -1,4 +1,5 @@
 import OSSClient
+import OSSMonitorKit
 import OSSServer
 import SwiftUI
 
@@ -15,7 +16,13 @@ struct MainView: View {
                 if let error = monitor.error, monitor.usage == nil {
                     Text(error).foregroundStyle(.secondary)
                 }
-                HostSection()
+                // The Mac's CPU, memory and disk, OS Server's share beside
+                // everyone else's: what OS Monitor shows of this server.
+                if let watcher = AppModel.shared.watcher, watcher.usage != nil {
+                    UsageOverview(monitor: watcher)
+                } else {
+                    HostSection()
+                }
                 MachinesSection()
                 HStack(alignment: .top, spacing: 18) {
                     CapacitySection()

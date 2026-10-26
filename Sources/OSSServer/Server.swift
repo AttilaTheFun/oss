@@ -665,7 +665,12 @@ enum Server {
             return .json(["server": "oss", "host": localHostName])
         }
         let given = request.header("authorization")?.replacingOccurrences(of: "Bearer ", with: "") ?? ""
-        guard constantTimeEqual(given, token) else { return .error("unauthorized", status: 401) }
+        // The monitor token (OS Monitor's) reads and does nothing else.
+        let monitor = !constantTimeEqual(given, token)
+        if monitor {
+            guard constantTimeEqual(given, MonitorAccess.token()) else { return .error("unauthorized", status: 401) }
+            guard MonitorAccess.allows(request.method, parts) else { return .error("OS Monitor's token only reads", status: 403) }
+        }
         do {
             let method = request.method
             switch (method, parts.count) {
@@ -679,7 +684,7 @@ enum Server {
                 return .json(["done": "input"])
             case ("GET", 2) where parts[1] == "cache":
                 guard let cache else { return .error("this server keeps no Bazel cache", status: 404) }
-                return .json(await cache.store.info(port: cache.config.port, readToken: cache.readToken))
+                return .json(await cache.store.info(port: cache.config.port, readToken: monitor ? "" : cache.readToken))
             case ("GET", 2) where parts[1] == "doctor":
                 // Whether this server can drive UTM (its CLI and AppleScript), simulators and emulators.
                 let list = try? await Shell.run(UTM.utmctl, ["list"], timeout: 120)

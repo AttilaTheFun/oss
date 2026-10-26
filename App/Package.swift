@@ -11,7 +11,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "OSSApp",
-            dependencies: [.product(name: "OSSClient", package: "oss"), .product(name: "OSSServer", package: "oss")]
+            dependencies: [.product(name: "OSSClient", package: "oss"), .product(name: "OSSServer", package: "oss"),
+                           .product(name: "OSSMonitorKit", package: "oss")]
         ),
     ]
 )

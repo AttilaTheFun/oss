@@ -17,8 +17,16 @@ let package = Package(
         .executable(name: "oss", targets: ["OSSCLI"]),
     ],
     targets: [
-        .target(name: "OSSClient"),
+        .target(name: "OSSClient", exclude: ["BUILD.bazel"]),
         .target(name: "OSSServer", dependencies: ["OSSClient"]),
         .executableTarget(name: "OSSCLI", dependencies: ["OSSServer"]),
     ]
 )
+
+#if os(macOS)
+// What OS Monitor shows of a server, its model and its views (SwiftUI, so
+// Apple's platforms only): OS Monitor's apps (Monitor/, built with Bazel)
+// and OS Server's own window both show it.
+package.products.append(.library(name: "OSSMonitorKit", targets: ["OSSMonitorKit"]))
+package.targets.append(.target(name: "OSSMonitorKit", dependencies: ["OSSClient"], exclude: ["BUILD.bazel"]))
+#endif
