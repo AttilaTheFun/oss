@@ -15,16 +15,17 @@ import Network
 /// before joining it to the target.
 final class Forwarder: @unchecked Sendable {
     let port: Int
-    let target: String
-    let targetPort: Int
     let vncPassword: String?
     private let listener: NWListener
     private let queue: DispatchQueue
+    /// Where new connections go: changed in place (a machine started again
+    /// at another address), its port kept.
+    private let lock = NSLock()
+    private var destination: (host: String, port: Int)
 
     init(port: Int, target: String, targetPort: Int, vncPassword: String? = nil) throws {
         self.port = port
-        self.target = target
-        self.targetPort = targetPort
+        destination = (target, targetPort)
         self.vncPassword = vncPassword
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
@@ -33,10 +34,15 @@ final class Forwarder: @unchecked Sendable {
     }
 
     func start() {
-        listener.newConnectionHandler = { [target, targetPort, vncPassword, queue] connection in
+        listener.newConnectionHandler = { [self] connection in
+            let (target, targetPort) = lock.withLock { destination }
             Relay(connection: connection, target: target, port: targetPort, vncPassword: vncPassword, queue: queue).start()
         }
         listener.start(queue: queue)
+    }
+
+    func retarget(_ target: String, _ targetPort: Int) {
+        lock.withLock { destination = (target, targetPort) }
     }
 
     func stop() {

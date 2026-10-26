@@ -27,8 +27,9 @@ enum Entry {
 /// OS Server, the app: it is the server (the API, the machines it lends,
 /// its Bazel cache, all in this process), shows what the Mac and each
 /// lease use, and stays in the menu bar with its window closed (no Dock
-/// icon then). Its macOS VMs run headless; any of them can be watched live
-/// in a window of its own.
+/// icon then). Its machines run in helpers of their own and outlive it; a
+/// macOS VM's screen is shown live in a window of its helper's (a base being
+/// built, in a window of the app's).
 struct OSSApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
@@ -130,9 +131,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
-    /// The macOS VMs run in this process: quitting ends their leases, so it
-    /// asks first while any runs. (The other machines' leases are kept, and
-    /// taken up again at the next launch.)
+    /// A build without the machines' helper runs macOS VMs in this process:
+    /// quitting would end their leases, so it asks first while any runs.
+    /// (Leases in helpers are kept, and taken up again at the next launch.)
     @MainActor
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let running = MacVMs.names.filter { $0.hasPrefix("oss-lease-") }

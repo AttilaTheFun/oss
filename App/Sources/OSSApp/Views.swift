@@ -162,9 +162,12 @@ struct MachinesSection: View {
                             UsageCell(text: memoryText(row), fraction: memoryFraction(row), tint: .purple)
                             Text(row.usage?.diskBytes.map(Format.bytes) ?? "—").monospacedDigit()
                             Text(timeText(row)).monospacedDigit()
-                            // A macOS VM this app runs: its screen, live.
+                            // A macOS VM of OS Server's: its screen, live (its
+                            // helper's window, or this app's for one run here).
                             if MacVMs.names.contains(row.lease.name) {
                                 Button("Screen") { openWindow(id: "screen", value: row.lease.name) }
+                            } else if MachineScreens.isOwn(row.lease) {
+                                Button("Screen") { Task { await MachineScreens.showInHelper(row.lease.name) } }
                             } else {
                                 Text("")
                             }

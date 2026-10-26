@@ -2,7 +2,7 @@ import ContainerizationOCI
 import Foundation
 import OSSClient
 
-/// What a container's helper (`oss-container`, a launchd job of OS
+/// What a container's helper (`oss-machine container`, a launchd job of OS
 /// Server's) runs: written beside the container's root filesystem
 /// (`helper.json`) by OS Server, read by the helper when it starts, and
 /// again when OS Server starts it after the Mac's restart.

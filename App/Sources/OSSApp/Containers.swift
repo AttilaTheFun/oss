@@ -11,7 +11,7 @@ import SystemPackage
 import Virtualization
 
 /// OS Server's containers. Each runs in a helper of its own
-/// (`Contents/Helpers/oss-container`, a launchd job: ContainerHelper), so a
+/// (`Contents/Helpers/oss-machine container`, a launchd job: ContainerHelper), so a
 /// container and its commands go on while OS Server quits, restarts or is
 /// updated; OS Server finds them again when it starts, and starts again
 /// from its disk one the Mac's restart stopped. Everything is in the
@@ -37,7 +37,7 @@ actor ContainerEngine: ContainerBackend {
     private var busy = false
     private var waiting: [CheckedContinuation<Void, Never>] = []
 
-    init(helper: String = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/oss-container").path) {
+    init(helper: String = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/oss-machine").path) {
         self.helper = helper
     }
 
@@ -67,9 +67,7 @@ actor ContainerEngine: ContainerBackend {
     private var kernelPath: URL { root.appendingPathComponent("kernel/vmlinux") }
     private func folder(_ name: String) -> URL { root.appendingPathComponent("containers").appendingPathComponent(name) }
     private nonisolated func label(_ name: String) -> String { "oss.container.\(name)" }
-    private nonisolated func socket(_ name: String) -> String {
-        FileManager.default.temporaryDirectory.appendingPathComponent("oss").appendingPathComponent("\(name).sock").path
-    }
+    private nonisolated func socket(_ name: String) -> String { HelperSocket.path(name) }
 
     // MARK: ContainerBackend
 
@@ -234,28 +232,19 @@ actor ContainerEngine: ContainerBackend {
     /// process's child: it outlives OS Server); its socket once it answers.
     private func launch(_ name: String) async throws -> String {
         let directory = folder(name)
-        let plist = directory.appendingPathComponent("launchd.plist")
-        let job: [String: Any] = [
-            "Label": label(name),
-            "ProgramArguments": [helper, directory.appendingPathComponent("helper.json").path],
-            "RunAtLoad": true,
-            // Not throttled as a background job is: it builds.
-            "ProcessType": "Interactive",
-            "ExitTimeOut": 30,
-            "StandardOutPath": directory.appendingPathComponent("helper.log").path,
-            "StandardErrorPath": directory.appendingPathComponent("helper.log").path,
-        ]
-        try PropertyListSerialization.data(fromPropertyList: job, format: .xml, options: 0).write(to: plist)
-        await bootout(name)
         try? FileManager.default.removeItem(atPath: socket(name))
-        let bootstrap = try await Self.launchctl(["bootstrap", "gui/\(getuid())", plist.path])
-        guard bootstrap.status == 0 else { throw APIError(error: "launchctl bootstrap: \(bootstrap.output)") }
+        do {
+            try await LaunchdJobs.start(label: label(name), plist: directory.appendingPathComponent("launchd.plist").path,
+                                        program: [helper, "container", directory.appendingPathComponent("helper.json").path],
+                                        log: directory.appendingPathComponent("helper.log").path)
+        } catch {
+            throw APIError(error: "\(error)")
+        }
         // Booting takes a few seconds; a helper that ends meanwhile says why in its log.
         let deadline = Date().addingTimeInterval(180)
         while Date() < deadline {
             if isAnswering(name) { return socket(name) }
-            let state = try await Self.launchctl(["print", "gui/\(getuid())/\(label(name))"])
-            if state.status != 0 || state.output.contains("state = not running") {
+            if !(await LaunchdJobs.isRunning(label: label(name))) {
                 let log = (try? String(contentsOf: directory.appendingPathComponent("helper.log"), encoding: .utf8)) ?? ""
                 await bootout(name)
                 throw APIError(error: "its container didn't start: \(log.split(separator: "\n").suffix(3).joined(separator: " / "))")
@@ -267,49 +256,10 @@ actor ContainerEngine: ContainerBackend {
     }
 
     /// Its helper's job ended (TERM: the container is stopped first) and removed.
-    private func bootout(_ name: String) async {
-        let target = "gui/\(getuid())/\(label(name))"
-        guard (try? await Self.launchctl(["print", target]))?.status == 0 else { return }
-        _ = try? await Self.launchctl(["bootout", target])
-        for _ in 0..<160 {
-            guard (try? await Self.launchctl(["print", target]))?.status == 0 else { return }
-            try? await Task.sleep(for: .milliseconds(250))
-        }
-    }
+    private func bootout(_ name: String) async { await LaunchdJobs.stop(label: label(name)) }
 
     /// Whether its helper takes connections on its socket.
-    private nonisolated func isAnswering(_ name: String) -> Bool {
-        let path = socket(name)
-        let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        guard descriptor >= 0 else { return false }
-        defer { close(descriptor) }
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let bytes = Array(path.utf8)
-        guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
-        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
-            buffer.copyBytes(from: bytes)
-            buffer[bytes.count] = 0
-        }
-        return withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
-            }
-        }
-    }
-
-    private static func launchctl(_ arguments: [String]) async throws -> (status: Int32, output: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = arguments
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        try process.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        await process.waitUntilExitAsync()
-        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
-    }
+    private nonisolated func isAnswering(_ name: String) -> Bool { HelperSocket.isAnswering(socket(name)) }
 
     /// `alpine:3.20` as `docker.io/library/alpine:3.20`, as Docker reads it.
     static func qualified(_ image: String) throws -> String {
