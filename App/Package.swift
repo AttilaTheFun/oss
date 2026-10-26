@@ -7,12 +7,20 @@ import PackageDescription
 let package = Package(
     name: "OSSApp",
     platforms: [.macOS(.v15)],
-    dependencies: [.package(path: "..")],
+    dependencies: [
+        .package(path: ".."),
+        // Linux containers, run in OS Server's process (Virtualization).
+        .package(url: "https://github.com/apple/containerization.git", exact: "0.33.3"),
+    ],
     targets: [
         .executableTarget(
             name: "OSSApp",
             dependencies: [.product(name: "OSSClient", package: "oss"), .product(name: "OSSServer", package: "oss"),
-                           .product(name: "OSSMonitorKit", package: "oss")]
+                           .product(name: "OSSMonitorKit", package: "oss"),
+                           .product(name: "Containerization", package: "containerization"),
+                           .product(name: "ContainerizationOCI", package: "containerization"),
+                           .product(name: "ContainerizationOS", package: "containerization"),
+                           .product(name: "ContainerizationArchive", package: "containerization")]
         ),
     ]
 )

@@ -381,6 +381,7 @@ public enum Format {
         case .android: "Android"
         case .linux: "Linux"
         case .windows: "Windows"
+        case .container: "Container"
         }
     }
 
@@ -391,6 +392,7 @@ public enum Format {
         case .android: "candybarphone"
         case .linux: "server.rack"
         case .windows: "pc"
+        case .container: "shippingbox"
         }
     }
 }

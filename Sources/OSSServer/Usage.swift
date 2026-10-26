@@ -88,21 +88,26 @@ enum UsageProbe {
         for line in open.output.split(separator: "\n") {
             if line.hasPrefix("p") { pid = Int(line.dropFirst()) ?? 0; continue }
             guard line.hasPrefix("n") else { continue }
-            for lease in leases where line.contains("/\(lease.name).utm/") || line.contains("/\(lease.name).vm/") {
+            // A VM's bundle (UTM's .utm, OS Server's .vm), or a container's
+            // folder (its root filesystem, in Containerization's store).
+            for lease in leases where line.contains("/\(lease.name).utm/") || line.contains("/\(lease.name).vm/")
+                || line.contains("/containers/\(lease.name)/") {
                 found[lease.id, default: []].insert(pid)
             }
         }
         return found.mapValues { Array($0) }
     }
 
-    static func usage(of leases: [Lease]) async -> Usage {
+    /// `folders`: where each lease's disk goes (Server's `folder(of:)`).
+    static func usage(of leases: [Lease], folders: [String: String?] = [:]) async -> Usage {
         let all = await processes()
-        let vms = await vmProcesses(leases.filter { $0.platform.isVM }, in: all)
+        let disks = await DiskSizes.shared.leases(folders)
+        let vms = await vmProcesses(leases.filter { $0.platform.isVM || $0.platform == .container }, in: all)
         var ourPIDs = Set(tree(Int(getpid()), in: all).map(\.pid))
         let machines = leases.map { lease -> MachineUsage in
             var roots: [Int] = []
             switch lease.platform {
-            case .macos, .linux, .windows: roots = vms[lease.id] ?? []
+            case .macos, .linux, .windows, .container: roots = vms[lease.id] ?? []
             case .ios:
                 if let udid = lease.udid {
                     roots = all.filter { $0.command.contains("launchd_sim") && $0.command.contains(udid) }.map(\.pid)
@@ -115,7 +120,8 @@ enum UsageProbe {
             return MachineUsage(id: lease.id, platform: lease.platform, config: lease.config, holder: lease.holder,
                                 cpus: lease.cpus, memoryLimitBytes: lease.memoryLimitBytes,
                                 cpuPercent: processes.isEmpty ? nil : (processes.reduce(0) { $0 + $1.cpu } * 10).rounded() / 10,
-                                memoryBytes: processes.isEmpty ? nil : processes.reduce(0) { $0 + (footprint($1.pid) ?? $1.rss) })
+                                memoryBytes: processes.isEmpty ? nil : processes.reduce(0) { $0 + (footprint($1.pid) ?? $1.rss) },
+                                diskBytes: disks[lease.id])
         }
         let host = host(all)
         let memory = Dictionary(all.map { ($0.pid, footprint($0.pid) ?? $0.rss) }, uniquingKeysWith: { a, _ in a })
@@ -163,12 +169,43 @@ enum UsageProbe {
 /// The disk OS Server's folder is on, and OS Server's own files by kind:
 /// measured with `du` every ten minutes in the background (a few hundred
 /// gigabytes of bases take a while), the volume's size and free space at
-/// every sample.
+/// every sample. Each lease's folder is measured every two minutes, and as
+/// soon as a new one is there.
 actor DiskSizes {
     static let shared = DiskSizes()
     private var parts: [DiskPart] = []
     private var measuredAt: Date?
     private var measuring = false
+    private var leaseBytes: [String: Int64] = [:]
+    private var leasesMeasuredAt: Date?
+    private var measuringLeases = false
+
+    func leases(_ folders: [String: String?]) -> [String: Int64] {
+        let unmeasured = folders.contains { id, path in
+            leaseBytes[id] == nil && path.map { FileManager.default.fileExists(atPath: $0) } == true
+        }
+        if !measuringLeases, unmeasured || leasesMeasuredAt.map({ Date().timeIntervalSince($0) > 120 }) ?? true {
+            measuringLeases = true
+            Task { await self.measureLeases(folders) }
+        }
+        return leaseBytes.filter { folders[$0.key] != nil }
+    }
+
+    private func measureLeases(_ folders: [String: String?]) async {
+        var measured: [String: Int64] = [:]
+        for case let (id, path?) in folders where FileManager.default.fileExists(atPath: path) {
+            if let bytes = await Self.du(path) { measured[id] = bytes }
+        }
+        leaseBytes = measured
+        leasesMeasuredAt = Date()
+        measuringLeases = false
+    }
+
+    private static func du(_ path: String) async -> Int64? {
+        guard let result = try? await Shell.run("/usr/bin/du", ["-sk", path], timeout: 300), result.ok,
+              let kilobytes = Int64(result.output.split(separator: "\t").first ?? "") else { return nil }
+        return kilobytes * 1024
+    }
 
     func usage() -> DiskUsage? {
         if !measuring, measuredAt.map({ Date().timeIntervalSince($0) > 600 }) ?? true {
@@ -185,13 +222,12 @@ actor DiskSizes {
     private func measure() async {
         let config = ServerConfig.load()
         var places: [(String, String)] = [("macOS bases", "\(Paths.machines)/macos"), ("macOS leases", "\(Paths.machines)/leases"),
-                                          ("Android SDK", config.androidSDK), ("Android emulators", config.androidAVDHome)]
+                                          ("Android SDK", config.androidSDK), ("Android emulators", config.androidAVDHome),
+                                          ("Containers", Paths.containers)]
         if let cache = config.cache { places.append(("Bazel cache", cache.directory)) }
         var measured: [DiskPart] = []
         for (name, path) in places where FileManager.default.fileExists(atPath: path) {
-            guard let result = try? await Shell.run("/usr/bin/du", ["-sk", path], timeout: 300), result.ok,
-                  let kilobytes = Int64(result.output.split(separator: "\t").first ?? "") else { continue }
-            measured.append(DiskPart(name: name, bytes: kilobytes * 1024))
+            if let bytes = await Self.du(path) { measured.append(DiskPart(name: name, bytes: bytes)) }
         }
         parts = measured
         measuredAt = Date()

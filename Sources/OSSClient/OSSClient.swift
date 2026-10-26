@@ -122,7 +122,9 @@ public struct OSSClient: Sendable {
         components.percentEncodedPath = (components.percentEncodedPath.hasSuffix("/") ? String(components.percentEncodedPath.dropLast()) : components.percentEncodedPath)
             + path
         if !query.isEmpty { components.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) } }
-        var headers = ["Authorization": "Bearer \(try await token())"]
+        // The API level this client speaks: a server shows an older one only
+        // what it knows (no containers below 6).
+        var headers = ["Authorization": "Bearer \(try await token())", "OSS-API": "\(OSS.apiLevel)"]
         if body != nil { headers["Content-Type"] = contentType }
         let answer = try await transport.send(OSSHTTPRequest(method: method, url: components.url!, headers: headers, body: body,
                                                              timeout: timeout ?? self.timeout))

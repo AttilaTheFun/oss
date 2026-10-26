@@ -8,6 +8,8 @@ struct HTTPRequest: Sendable {
     var path: String
     var headers: [String: String]
     var body: Data
+    /// The client's address, as the connection came from it.
+    var remoteAddress: String? = nil
 
     func header(_ name: String) -> String? { headers[name.lowercased()] }
 
@@ -25,6 +27,13 @@ struct HTTPResponse: Sendable {
     var body: Data
     var contentType = "application/json"
     var headers: [String: String] = [:]
+    /// Switching protocols (101): the connection handed over after the
+    /// head, with whatever the client sent past its request.
+    var upgrade: (@Sendable (NWConnection, Data) -> Void)? = nil
+
+    static func upgrade(_ protocolName: String, _ take: @escaping @Sendable (NWConnection, Data) -> Void) -> HTTPResponse {
+        HTTPResponse(status: 101, body: Data(), headers: ["Upgrade": protocolName], upgrade: take)
+    }
 
     static func json<T: Encodable>(_ value: T, status: Int = 200) -> HTTPResponse {
         HTTPResponse(status: status, body: (try? JSONEncoder.oss.encode(value)) ?? Data())
@@ -68,10 +77,12 @@ final class HTTPServer: @unchecked Sendable {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 4 << 20) { data, _, complete, error in
             var buffer = buffer
             if let data { buffer.append(data) }
-            if let request = parse(buffer) {
+            if let (parsed, rest) = parse(buffer) {
+                var request = parsed
+                if case .hostPort(let host, _) = connection.endpoint { request.remoteAddress = "\(host)".components(separatedBy: "%")[0] }
                 Task {
                     let response = await handler(request)
-                    send(response, on: connection)
+                    send(response, on: connection, rest: rest)
                 }
             } else if complete || error != nil || buffer.count > 1 << 30 {
                 connection.cancel()
@@ -81,8 +92,9 @@ final class HTTPServer: @unchecked Sendable {
         }
     }
 
-    /// The request, once its head and its whole body have arrived.
-    private static func parse(_ buffer: Data) -> HTTPRequest? {
+    /// The request, once its head and its whole body have arrived, and
+    /// what came after it (an upgraded connection's first bytes).
+    private static func parse(_ buffer: Data) -> (HTTPRequest, Data)? {
         guard let end = buffer.range(of: Data("\r\n\r\n".utf8)) else { return nil }
         let head = String(decoding: buffer[..<end.lowerBound], as: UTF8.self)
         var lines = head.components(separatedBy: "\r\n")
@@ -96,11 +108,19 @@ final class HTTPServer: @unchecked Sendable {
         let length = Int(headers["content-length"] ?? "0") ?? 0
         let body = buffer[end.upperBound...]
         guard body.count >= length else { return nil }
-        return HTTPRequest(method: String(first[0]), path: String(first[1]), headers: headers, body: Data(body.prefix(length)))
+        return (HTTPRequest(method: String(first[0]), path: String(first[1]), headers: headers, body: Data(body.prefix(length))),
+                Data(body.dropFirst(length)))
     }
 
-    private static func send(_ response: HTTPResponse, on connection: NWConnection) {
-        let reason = [200: "OK", 201: "Created", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+    private static func send(_ response: HTTPResponse, on connection: NWConnection, rest: Data) {
+        if let upgrade = response.upgrade {
+            var head = "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n"
+            for (name, value) in response.headers.sorted(by: { $0.key < $1.key }) { head += "\(name): \(value)\r\n" }
+            head += "\r\n"
+            connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in upgrade(connection, rest) })
+            return
+        }
+        let reason = [101: "Switching Protocols", 200: "OK", 201: "Created", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
                       409: "Conflict", 500: "Internal Server Error", 503: "Service Unavailable"][response.status] ?? "Status"
         var head = "HTTP/1.1 \(response.status) \(reason)\r\n"
         head += "Content-Type: \(response.contentType)\r\nContent-Length: \(response.body.count)\r\nConnection: close\r\n"

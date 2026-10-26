@@ -53,7 +53,7 @@ struct Guest: Sendable {
         case .macos: probe = "pgrep -x Dock >/dev/null"
         case .linux: probe = "loginctl list-sessions --no-legend | awk '{print $1}' | while read s; do loginctl show-session $s -p Type --value; done | grep -q -E 'wayland|x11'"
         case .windows: probe = "if (-not (Get-Process explorer -ErrorAction SilentlyContinue)) { exit 1 }"
-        case .ios, .android: return true
+        case .ios, .android, .container: return true
         }
         let deadline = Date().addingTimeInterval(TimeInterval(seconds))
         while Date() < deadline {
@@ -73,7 +73,7 @@ struct Guest: Sendable {
         case .macos: script = "sudo systemsetup -settimezone '\(zone)' >/dev/null 2>&1 || true"
         case .linux: script = "sudo timedatectl set-timezone '\(zone)' || true"
         case .windows: script = "Set-TimeZone -Id '\(windowsZones[zone] ?? "UTC")'"
-        case .ios, .android: return
+        case .ios, .android, .container: return
         }
         _ = try? await run(script, timeout: 60)
     }
@@ -106,7 +106,7 @@ struct Guest: Sendable {
                 Add-Content -Path "$env:USERPROFILE\\.netrc" -Value '\(netrc)'
                 [Environment]::SetEnvironmentVariable('NETRC', "$env:USERPROFILE\\.netrc", 'User')
                 """
-        case .ios, .android: return
+        case .ios, .android, .container: return
         }
         let result = try? await run(script, timeout: 60)
         if result?.ok != true { log("guest \(address): the Bazel cache not set up: \(result?.error ?? "no answer")") }
@@ -146,7 +146,7 @@ struct Guest: Sendable {
                 $key = '\(key)'
                 if ($key) { Add-Content -Path 'C:\\ProgramData\\ssh\\administrators_authorized_keys' -Value $key }
                 """
-        case .ios, .android:
+        case .ios, .android, .container:
             return
         }
         let result = try await run(script, timeout: 180)

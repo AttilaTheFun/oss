@@ -4,8 +4,135 @@ import Foundation
 /// Windows), an iOS simulator or an Android emulator on the server's Mac.
 public enum Platform: String, Codable, CaseIterable, Sendable {
     case macos, ios, android, linux, windows
+    /// A Linux container on the server's own Mac (API 6), lent only to a
+    /// client on that Mac: it shares the Mac's folders.
+    case container
 
     public var isVM: Bool { self == .macos || self == .linux || self == .windows }
+}
+
+/// What a container lease runs: an image from a registry, what it's given,
+/// the server Mac's folders shared into it, and its main process (by
+/// default one that waits, so commands are run in it with `exec`).
+public struct ContainerSpec: Codable, Sendable, Hashable {
+    /// An image reference: `ghcr.io/owner/name:tag`, `docker.io/library/alpine:3.20`.
+    public var image: String
+    public var cpus: Int?
+    public var memoryBytes: Int64?
+    /// Its root filesystem's size.
+    public var diskBytes: Int64?
+    public var mounts: [ContainerMount]
+    public var environment: [String: String]
+    public var workingDirectory: String?
+    /// Its main process; nil: one that waits until the lease ends.
+    public var command: [String]?
+
+    public init(image: String, cpus: Int? = nil, memoryBytes: Int64? = nil, diskBytes: Int64? = nil, mounts: [ContainerMount] = [],
+                environment: [String: String] = [:], workingDirectory: String? = nil, command: [String]? = nil) {
+        self.image = image
+        self.cpus = cpus
+        self.memoryBytes = memoryBytes
+        self.diskBytes = diskBytes
+        self.mounts = mounts
+        self.environment = environment
+        self.workingDirectory = workingDirectory
+        self.command = command
+    }
+}
+
+/// A folder of the server's Mac shared into a container.
+public struct ContainerMount: Codable, Sendable, Hashable {
+    public var source: String
+    public var destination: String
+    public var readOnly: Bool
+
+    public init(source: String, destination: String, readOnly: Bool = false) {
+        self.source = source
+        self.destination = destination
+        self.readOnly = readOnly
+    }
+}
+
+/// A command run in a container lease (`POST /v1/machines/<id>/exec`, then
+/// a stream of `ExecFrame`s both ways).
+public struct ExecRequest: Codable, Sendable {
+    public var arguments: [String]
+    /// A terminal of `columns` × `rows`, its output on stdout alone.
+    public var tty: Bool
+    public var columns: Int?
+    public var rows: Int?
+    public var environment: [String: String]
+    public var workingDirectory: String?
+
+    public init(arguments: [String], tty: Bool = false, columns: Int? = nil, rows: Int? = nil,
+                environment: [String: String] = [:], workingDirectory: String? = nil) {
+        self.arguments = arguments
+        self.tty = tty
+        self.columns = columns
+        self.rows = rows
+        self.environment = environment
+        self.workingDirectory = workingDirectory
+    }
+}
+
+/// One frame of an exec's stream: a byte saying what it is, its length as
+/// four bytes (big-endian), then that many bytes.
+public enum ExecFrame: Sendable, Equatable {
+    /// Client to server.
+    case stdin(Data)
+    case closeStdin
+    case resize(columns: Int, rows: Int)
+    /// Server to client.
+    case stdout(Data)
+    case stderr(Data)
+    case exit(Int32)
+
+    public var encoded: Data {
+        func frame(_ kind: UInt8, _ payload: Data) -> Data {
+            var data = Data([kind])
+            let count = UInt32(payload.count).bigEndian
+            withUnsafeBytes(of: count) { data.append(contentsOf: $0) }
+            return data + payload
+        }
+        func int32(_ value: Int32) -> Data { withUnsafeBytes(of: value.bigEndian) { Data($0) } }
+        switch self {
+        case .stdin(let data): return frame(0, data)
+        case .closeStdin: return frame(1, Data())
+        case .resize(let columns, let rows): return frame(2, int32(Int32(columns)) + int32(Int32(rows)))
+        case .stdout(let data): return frame(3, data)
+        case .stderr(let data): return frame(4, data)
+        case .exit(let code): return frame(5, int32(code))
+        }
+    }
+
+    /// The frames at the start of `buffer`, which keeps what's left of an
+    /// unfinished one.
+    public static func decode(_ buffer: inout Data) -> [ExecFrame] {
+        var frames: [ExecFrame] = []
+        while buffer.count >= 5 {
+            let start = buffer.startIndex
+            let kind = buffer[start]
+            let count = Int(buffer[start + 1]) << 24 | Int(buffer[start + 2]) << 16 | Int(buffer[start + 3]) << 8 | Int(buffer[start + 4])
+            guard buffer.count >= 5 + count else { break }
+            let payload = Data(buffer[(start + 5)..<(start + 5 + count)])
+            buffer = Data(buffer[(start + 5 + count)...])
+            func int32(_ data: Data, at offset: Int) -> Int32 {
+                let b = [UInt8](data)
+                guard b.count >= offset + 4 else { return 0 }
+                return Int32(bitPattern: UInt32(b[offset]) << 24 | UInt32(b[offset + 1]) << 16 | UInt32(b[offset + 2]) << 8 | UInt32(b[offset + 3]))
+            }
+            switch kind {
+            case 0: frames.append(.stdin(payload))
+            case 1: frames.append(.closeStdin)
+            case 2: frames.append(.resize(columns: Int(int32(payload, at: 0)), rows: Int(int32(payload, at: 4))))
+            case 3: frames.append(.stdout(payload))
+            case 4: frames.append(.stderr(payload))
+            case 5: frames.append(.exit(int32(payload, at: 0)))
+            default: break
+            }
+        }
+        return frames
+    }
 }
 
 /// A base a lease is cloned from, named `oss-<platform>-<config>`: a stopped
@@ -77,6 +204,8 @@ public struct Lease: Codable, Sendable {
     /// The guest's `runner` password, where the server knows it (VMs): to
     /// log in at its screen, or unlock it.
     public var guestPassword: String?
+    /// A container lease's spec (API 6).
+    public var container: ContainerSpec?
 
     public init(id: String, platform: Platform, config: String, name: String, holder: String, state: LeaseState,
                 created: Date, expires: Date, error: String? = nil) {
@@ -99,13 +228,17 @@ public struct LeaseRequest: Codable, Sendable {
     public var holder: String?
     /// The holder's public key, let into a VM for the lease.
     public var sshPublicKey: String?
+    /// A container lease's image and what it's given (API 6).
+    public var container: ContainerSpec?
 
-    public init(platform: Platform, config: String? = nil, minutes: Int? = nil, holder: String? = nil, sshPublicKey: String? = nil) {
+    public init(platform: Platform, config: String? = nil, minutes: Int? = nil, holder: String? = nil, sshPublicKey: String? = nil,
+                container: ContainerSpec? = nil) {
         self.platform = platform
         self.config = config
         self.minutes = minutes
         self.holder = holder
         self.sshPublicKey = sshPublicKey
+        self.container = container
     }
 }
 
@@ -332,9 +465,14 @@ public struct MachineUsage: Codable, Sendable {
     public var cpuPercent: Double?
     /// Resident memory.
     public var memoryBytes: Int64?
+    /// The disk it takes on the server's Mac (a VM's clone, a container's
+    /// root filesystem, a simulator's or an emulator's data), as allocated
+    /// (API 6).
+    public var diskBytes: Int64?
 
     public init(id: String, platform: Platform, config: String, holder: String, cpus: Int? = nil, memoryLimitBytes: Int64? = nil,
-                cpuPercent: Double? = nil, memoryBytes: Int64? = nil) {
+                cpuPercent: Double? = nil, memoryBytes: Int64? = nil, diskBytes: Int64? = nil) {
+        self.diskBytes = diskBytes
         self.id = id
         self.platform = platform
         self.config = config
@@ -386,7 +524,11 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
 
 public enum OSS {
     /// This build's version, and the API level it speaks.
-    public static let version = "0.8.0"
+    public static let version = "0.9.0"
+    /// 6 from 0.9.0: container leases (`platform: container`, a
+    /// `ContainerSpec`, `POST /v1/machines/<id>/exec` streamed), a lease's
+    /// disk (`MachineUsage.diskBytes`), disk in usage's history. A client says
+    /// its level in an `OSS-API` header: one below 6 is shown no containers.
     /// 5 from 0.8.0: usage says what is OS Server's, what is other
     /// processes', the disk, and the biggest other processes; a read-only
     /// token for OS Monitor (`MonitorConnection`).
@@ -396,7 +538,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 5
+    public static let apiLevel = 6
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage"]
 }

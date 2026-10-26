@@ -5,12 +5,30 @@ import OSSServer
 import ServiceManagement
 import SwiftUI
 
+/// The app, or with `--headless` the server alone: no window, no menu bar,
+/// its log on standard error (to try a change beside the running app, with
+/// an `OSS_HOME` of its own and another port).
+@main
+enum Entry {
+    static func main() {
+        guard CommandLine.arguments.contains("--headless") else { return OSSApp.main() }
+        var containers: ContainerBackend?
+        if #available(macOS 26, *) { containers = ContainerEngine() }
+        do {
+            _ = try ServerHost.start(containers: containers)
+        } catch {
+            FileHandle.standardError.write(Data("OS Server: \(error)\n".utf8))
+            exit(1)
+        }
+        dispatchMain()
+    }
+}
+
 /// OS Server, the app: it is the server (the API, the machines it lends,
 /// its Bazel cache, all in this process), shows what the Mac and each
 /// lease use, and stays in the menu bar with its window closed (no Dock
 /// icon then). Its macOS VMs run headless; any of them can be watched live
 /// in a window of its own.
-@main
 struct OSSApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 

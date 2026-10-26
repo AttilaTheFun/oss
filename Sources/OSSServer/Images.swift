@@ -167,7 +167,7 @@ enum Images {
         case .windows:
             script = "Remove-Item -Force $HOME\\layer.ps1 -ErrorAction SilentlyContinue; Remove-Item -Recurse -Force \"$env:TEMP\\*\" -ErrorAction SilentlyContinue; Stop-Computer -Force"
 
-        case .ios, .android:
+        case .ios, .android, .container:
             return
         }
         _ = try? await guest.run(script, timeout: 60)

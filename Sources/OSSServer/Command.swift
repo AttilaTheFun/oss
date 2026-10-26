@@ -2,15 +2,20 @@ import Foundation
 import OSSClient
 
 let usage = """
-    oss — OS Server: lend macOS, Linux and Windows VMs, iOS simulators and Android emulators.
+    oss — OS Server: lend macOS, Linux and Windows VMs, iOS simulators, Android emulators and Linux containers.
 
-    Machines (a VM, a simulator or an emulator of your own until you release it or its time runs out):
+    Machines (a VM, a simulator, an emulator or a container of your own until you release it or its time runs out):
       oss machine lease <macos|ios|android|linux|windows> [--config=NAME] [--minutes=N] [--wait] [--json | --exports]
+      oss machine lease container --image=REF [--cpus=N] [--memory=GB] [--disk=GB] [--mount=/mac/path:/path[:ro]]…
+                                  [--env=NAME=VALUE]… [--workdir=DIR] [--command="…"]
+                                                            a container on the server's Mac, for a client on that Mac
       oss machine renew <id | platform> [--minutes=N]       its time set to N minutes from now (default 60, at most 480)
       oss machine release <id | platform>                   given back: the clone is deleted
       oss machine list
       oss machine ssh <id> [-- command…]                    macOS, Linux, Windows
       oss machine vnc <id> [--open]                         macOS, Linux, Windows: its VNC address and password
+      oss machine exec <id> [--tty] [--env=NAME=VALUE]… [--workdir=DIR] -- command…
+                                                            a container: the command run in it, streamed
       oss machine simctl <id> <simctl arguments…>          iOS: install ./My.app, launch <bundle id>, openurl …
       oss machine adb <id> <adb arguments…>                 Android: install ./app.apk, shell …, logcat -d …
       oss machine screenshot <id> <file.png>                any lease
@@ -55,6 +60,8 @@ struct Arguments {
     var options: [String: String] = [:]
     var flags: Set<String> = []
     var rest: [String] = []
+    /// Every value an option was given, where it may be given more than once (`--mount`, `--env`).
+    var all: [String: [String]] = [:]
 
     init(_ arguments: [String], valued: Set<String>) {
         var i = 0
@@ -65,8 +72,10 @@ struct Arguments {
                 let body = String(a.dropFirst(2))
                 if let equals = body.firstIndex(of: "=") {
                     options[String(body[..<equals])] = String(body[body.index(after: equals)...])
+                    all[String(body[..<equals]), default: []].append(String(body[body.index(after: equals)...]))
                 } else if valued.contains(body), i + 1 < arguments.count {
                     options[body] = arguments[i + 1]; i += 1
+                    all[body, default: []].append(arguments[i])
                 } else {
                     flags.insert(body)
                 }
@@ -121,6 +130,9 @@ func describe(_ lease: Lease, _ client: OSSClient) -> String {
     case .android:
         lines.append("  adb connect \(env["OSS_ADB"]!)   (then adb -s \(env["OSS_ADB"]!) …)")
         lines.append("  or: oss machine adb \(lease.id) install ./app.apk | shell … | logcat -d")
+    case .container:
+        lines.append("  \(lease.container?.image ?? "a container") on \(client.host)")
+        lines.append("  oss machine exec \(lease.id) [--tty] -- <command>")
     }
     lines.append("  screenshot: oss machine screenshot \(lease.id) screen.png")
     lines.append("  renew: oss machine renew \(lease.id)    release: oss machine release \(lease.id)")
@@ -138,13 +150,41 @@ func shellQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", w
 
 func leaseRequest(_ args: Arguments, platformArgument: String?) -> LeaseRequest {
     guard let name = platformArgument, let platform = Platform(rawValue: name) else {
-        fail("which platform? macos, ios, android, linux or windows")
+        fail("which platform? macos, ios, android, linux, windows or container")
     }
     let keyPath = args.options["key"] ?? defaultKey()
     let key = keyPath.flatMap { FileManager.default.contents(atPath: $0) }
         .map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
     return LeaseRequest(platform: platform, config: args.options["config"], minutes: args.options["minutes"].flatMap(Int.init),
-                        holder: args.options["holder"] ?? holderName(), sshPublicKey: key)
+                        holder: args.options["holder"] ?? holderName(), sshPublicKey: platform == .container ? nil : key,
+                        container: platform == .container ? containerSpec(args) : nil)
+}
+
+/// A container lease's spec from its options; GB as 2³⁰ bytes.
+func containerSpec(_ args: Arguments) -> ContainerSpec {
+    guard let image = args.options["image"] else { fail("a container lease names its image: --image=REF") }
+    func gigabytes(_ option: String) -> Int64? {
+        args.options[option].map { value in
+            guard let number = Double(value) else { fail("--\(option)=GB") }
+            return Int64(number * Double(1 << 30))
+        }
+    }
+    let mounts = (args.all["mount"] ?? []).map { value -> ContainerMount in
+        let parts = value.split(separator: ":").map(String.init)
+        guard parts.count == 2 || (parts.count == 3 && parts[2] == "ro") else { fail("--mount=/mac/path:/path[:ro]") }
+        let source = URL(fileURLWithPath: parts[0]).standardizedFileURL.path
+        return ContainerMount(source: source, destination: parts[1], readOnly: parts.count == 3)
+    }
+    var environment: [String: String] = [:]
+    for pair in args.all["env"] ?? [] {
+        let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { fail("--env=NAME=VALUE") }
+        environment[parts[0]] = parts[1]
+    }
+    return ContainerSpec(image: image, cpus: args.options["cpus"].flatMap(Int.init), memoryBytes: gigabytes("memory"),
+                         diskBytes: gigabytes("disk"), mounts: mounts, environment: environment,
+                         workingDirectory: args.options["workdir"],
+                         command: args.options["command"].map { $0.split(separator: " ").map(String.init) })
 }
 
 /// A lease named by its id, or by its platform when the caller holds just one of it.
@@ -167,7 +207,7 @@ public enum OSSCommand {
     public static func run(_ commandLine: [String]) async -> Never {
         let arguments = Arguments(Array(commandLine.dropFirst()),
                                   valued: ["config", "minutes", "key", "holder", "identity", "from", "script", "vm", "device", "runtime",
-                                           "api", "tag", "copy"])
+                                           "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "env", "workdir", "command"])
         let command = arguments.positional.first ?? "help"
         let sub = arguments.positional.count > 1 ? arguments.positional[1] : nil
         let target = arguments.positional.count > 2 ? arguments.positional[2] : nil
@@ -209,6 +249,13 @@ public enum OSSCommand {
                 case "ssh":
                     let lease = try await resolveLease(target, client)
                     exit(try Shell.passthrough("/usr/bin/ssh", client.sshArguments(lease, identity: arguments.options["identity"]) + arguments.rest))
+                case "exec":
+                    #if canImport(Network)
+                    let lease = try await resolveLease(target, client)
+                    exit(try await ExecCommand.run(lease, client, arguments))
+                    #else
+                    fail("exec runs on the container's Mac")
+                    #endif
                 case "vnc":
                     let lease = try await resolveLease(target, client)
                     let url = "vnc://\(client.host):\(lease.vncPort ?? 0)"
@@ -435,6 +482,8 @@ public enum OSSCommand {
                 guard sub == "build", let name = target, let platform = Platform(rawValue: name), arguments.positional.count >= 4 else { print(usage); exit(1) }
                 let config = arguments.positional[3]
                 switch platform {
+                case .container:
+                    fail("a container's image comes from a registry: nothing to build here")
                 case .ios:
                     try await Simulators.build(config: config, deviceType: arguments.options["device"] ?? "iPhone 17 Pro",
                                                runtime: arguments.options["runtime"], script: arguments.options["script"])
