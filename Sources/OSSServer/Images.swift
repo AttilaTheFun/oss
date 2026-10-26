@@ -8,20 +8,22 @@ import OSSClient
 /// the layers oss makes itself), shuts it down and names it
 /// `oss-<platform>-<layer>` (the previous one deleted).
 enum Images {
-    static func build(platform: Platform, layer: String, from base: String, script: String?, copies: [(String, String)],
-                      repo: String) async throws {
+    static func build(platform: Platform, layer: String, from base: String, script: String?, copies: [(String, String)]) async throws {
         let config = ServerConfig.load()
         let source = "oss-\(platform.rawValue)-\(base)"
         let target = "oss-\(platform.rawValue)-\(layer)"
         let work = "build-\(platform.rawValue)-\(layer)-\(Random.hex(3))"
         let ext = platform == .windows ? "ps1" : "sh"
-        let scriptPath = script ?? "\(repo)/provision/\(platform.rawValue)/\(layer).\(ext)"
+        let scriptPath = script ?? "\(Paths.provisioning)/\(platform.rawValue)/\(layer).\(ext)"
         guard FileManager.default.fileExists(atPath: scriptPath) else {
             throw ShellError(description: "no script \(scriptPath): give the layer's with --script")
         }
         #if canImport(Virtualization)
         if platform == .macos, MacVMStore.hasBase(base) {
             return try await buildMac(layer: layer, from: base, scriptPath: scriptPath, copies: copies, config: config)
+        }
+        if platform != .macos, QEMUStore.hasBase(platform, base) {
+            return try await buildQEMU(platform: platform, layer: layer, from: base, scriptPath: scriptPath, copies: copies, config: config)
         }
         #endif
         guard try await UTM.vm(named: source) != nil else { throw ShellError(description: "no image \(source)") }
@@ -69,10 +71,10 @@ enum Images {
             : "bash ~/layer.sh"
         // The guest's password, when given (a base image's first sudo,
         // Windows' auto-login), goes on standard input, never a command line.
-        let password = ProcessInfo.processInfo.environment["OSS_GUEST_PASSWORD"]
+        let password = ProcessInfo.processInfo.environment["OSS_GUEST_PASSWORD"] ?? GuestPasswords.password(for: platform, config: "")
         let remote = platform == .windows ? run
             : (password == nil ? "" : "IFS= read -r pw; printf '%s\\n' \"$pw\" | sudo -S -p '' -v; ") + run
-        let result = try await Shell.run("/usr/bin/ssh", sshOptions(config) + ["\(config.guestUser)@\(guest.address)", remote],
+        let result = try await Shell.run("/usr/bin/ssh", sshOptions(config, port: guest.port) + ["\(config.guestUser)@\(guest.address)", remote],
                                          input: password.map { Data(($0 + "\n").utf8) }, timeout: 4 * 3600)
         print(result.output, terminator: "")
         FileHandle.standardError.write(Data(result.error.utf8))
@@ -109,6 +111,42 @@ enum Images {
     }
     #endif
 
+    #if canImport(Virtualization)
+    /// A layer on one of OS Server's own Linux or Windows bases: cloned,
+    /// started on its QEMU, the layer run, shut down from inside, put in the
+    /// layer's place.
+    static func buildQEMU(platform: Platform, layer: String, from base: String, scriptPath: String, copies: [(String, String)],
+                          config: ServerConfig) async throws {
+        let work = "build-\(platform.rawValue)-\(layer)-\(Random.hex(3))"
+        let path = "\(QEMUStore.bases(platform))/\(work).building"
+        guard let ports = QEMUVMs.freePorts() else { throw ShellError(description: "no free loopback ports for its QEMU") }
+        log("building \(platform.rawValue) \(layer): \(base) cloned as \(work)")
+        try QEMUVMs.clone(platform, base, to: path)
+        try await QEMUVMs.start(name: work, path: path, ports: ports)
+        do {
+            let guest = QEMUVMs.guest(platform, ports: ports, config: config)
+            guard await guest.waitUntilReachable(seconds: 600) else { throw ShellError(description: "\(work): no SSH") }
+            try await runLayer(scriptPath, copies: copies, in: guest, named: work, platform: platform, config: config)
+            _ = try? await guest.run(platform == .windows
+                ? "Remove-Item -Force $HOME\\layer.ps1 -ErrorAction SilentlyContinue; Stop-Computer -Force"
+                : "rm -f ~/layer.sh ~/.bash_history; sudo apt-get clean; sudo journalctl --vacuum-time=1s >/dev/null 2>&1; sudo poweroff",
+                timeout: 60)
+            guard await QEMUVMs.waitUntilStopped(path, seconds: 300) else { throw ShellError(description: "\(work) did not shut down") }
+        } catch {
+            await QEMUVMs.stop(path, ports: ports)
+            log("\(error)")
+            throw error
+        }
+        for leftover in ["qemu.pid", "qemu.log"] { try? FileManager.default.removeItem(atPath: "\(path)/\(leftover)") }
+        var spec = try QEMUMachineSpec.load(path)
+        spec.origin = base
+        try spec.save(path)
+        MacVMStore.remove(QEMUStore.basePath(platform, layer))
+        try FileManager.default.moveItem(atPath: path, toPath: QEMUStore.basePath(platform, layer))
+        log("\(platform.rawValue) \(layer) is ready")
+    }
+    #endif
+
     /// A file or directory of the server's Mac copied into the guest
     /// (rsync over SSH; on macOS and Linux owned by root once it's there, the
     /// way an installed application is). A layer that needs this Mac's Xcode
@@ -123,7 +161,7 @@ enum Images {
         if platform != .windows {
             _ = try await guest.run("sudo mkdir -p '\(guestPath)' && sudo chown -R \(config.guestUser) '\(guestPath)'")
         }
-        let rsync = try await Shell.run("/usr/bin/rsync", ["-a", "--delete", "-e", "/usr/bin/ssh " + sshOptions(config).joined(separator: " "),
+        let rsync = try await Shell.run("/usr/bin/rsync", ["-a", "--delete", "-e", "/usr/bin/ssh " + sshOptions(config, port: guest.port).joined(separator: " "),
                                                            source, "\(config.guestUser)@\(guest.address):\(guestPath)"],
                                         timeout: 7200)
         guard rsync.ok else { throw ShellError(description: "copying \(host): \(rsync.error)") }
@@ -131,8 +169,8 @@ enum Images {
         if platform == .linux { _ = try await guest.run("sudo chown -R root:root '\(guestPath)'") }
     }
 
-    static func sshOptions(_ config: ServerConfig) -> [String] {
-        ["-i", config.managementKey, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "LogLevel=ERROR",
+    static func sshOptions(_ config: ServerConfig, port: Int = 22) -> [String] {
+        ["-i", config.managementKey, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "LogLevel=ERROR", "-o", "Port=\(port)",
          "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
     }
 
@@ -151,7 +189,7 @@ enum Images {
     static func upload(_ path: String, to guest: Guest, platform: Platform) async throws {
         let config = ServerConfig.load()
         let destination = platform == .windows ? "layer.ps1" : "layer.sh"
-        let result = try await Shell.run("/usr/bin/scp", sshOptions(config) + [path, "\(guest.user)@\(guest.address):\(destination)"])
+        let result = try await Shell.run("/usr/bin/scp", sshOptions(config, port: guest.port) + [path, "\(guest.user)@\(guest.address):\(destination)"])
         guard result.ok else { throw ShellError(description: "copying the script: \(result.error)") }
     }
 

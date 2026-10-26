@@ -21,6 +21,10 @@ let usage = """
                                                             a container: the command run in it, streamed, signals passed on
                                                             (--socket: the lease's execSocket, no server or token needed)
       oss volume list | delete <name>                       containers' volumes, kept ones too
+    What this Mac lends (on the server's Mac; the app's Settings › Components):
+      oss component list                                    each component: installed, or not, or why not here
+      oss component install <id> [--file=PATH]              macos, linux, windows (--file= its ISO), android, ios
+      oss component remove <id>                             what it installed deleted (refused while a lease uses it)
       oss machine simctl <id> <simctl arguments…>          iOS: install ./My.app, launch <bundle id>, openurl …
       oss machine adb <id> <adb arguments…>                 Android: install ./app.apk, shell …, logcat -d …
       oss machine screenshot <id> <file.png>                any lease
@@ -43,6 +47,13 @@ let usage = """
       oss image install macos [config] [--ipsw=PATH] [--cpus=6] [--memory=16] [--disk=128]
                                                             OS Server's own macOS base (Virtualization's), installed
                                                             and runner made with no one at its screen (macOS 27)
+      oss image install linux [config] [--image=PATH] [--cpus=6] [--memory=8] [--disk=128]
+                                                            OS Server's own Ubuntu base (its QEMU's), from Ubuntu's
+                                                            cloud image (downloaded and checked), GNOME and runner
+                                                            set up by cloud-init
+      oss image install windows [config] --iso=PATH [--edition="Windows 11 Pro"] [--cpus=6] [--memory=8] [--disk=128]
+                                                            OS Server's own Windows base (its QEMU's) from Windows 11
+                                                            on Arm's ISO, installed by an answer file
       oss image import-utm <UTM VM name>… [--as=CONFIG]     UTM's macOS VMs as OS Server's own bases (APFS clones)
       oss image provision-macos --vm=NAME [--install]       a UTM VM's (before OS Server ran its own)
     OS Monitor (OS Server's client: reads what the server is doing, nothing else):
@@ -221,7 +232,7 @@ public enum OSSCommand {
         let arguments = Arguments(Array(commandLine.dropFirst()),
                                   valued: ["config", "minutes", "key", "holder", "identity", "from", "script", "vm", "device", "runtime",
                                            "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "volume", "env", "env-file", "workdir",
-                                           "command", "socket"])
+                                           "command", "socket", "iso", "edition", "file"])
         let command = arguments.positional.first ?? "help"
         let sub = arguments.positional.count > 1 ? arguments.positional[1] : nil
         let target = arguments.positional.count > 2 ? arguments.positional[2] : nil
@@ -352,6 +363,46 @@ public enum OSSCommand {
                 default:
                     print(usage)
                 }
+
+            case "component":
+                #if os(macOS)
+                // What this Mac lends, a component at a time (the app's Settings › Components).
+                func show(_ list: [ComponentInfo]) {
+                    for component in list {
+                        let state: String
+                        switch component.state {
+                        case .absent: state = component.needsFile ? "not installed (from a file: --file=)" : "not installed"
+                        case .installing(let line): state = "installing: \(line)"
+                        case .installed: state = "installed"
+                        case .unavailable(let why): state = "unavailable: \(why)"
+                        case .failed(let why): state = "failed: \(why)"
+                        }
+                        print("\(component.id)\t\(component.name): \(state)")
+                    }
+                }
+                switch sub {
+                case "list", nil:
+                    show(await Components.shared.list())
+                case "install":
+                    guard let target else { fail("oss component install <id> [--file=PATH]") }
+                    await Components.shared.install(target, file: arguments.options["file"])
+                    // Here, in this process: waited on until it's done.
+                    while case .installing = await Components.shared.list().first(where: { $0.id == target })?.state {
+                        try await Task.sleep(for: .seconds(5))
+                    }
+                    let done = await Components.shared.list().first { $0.id == target }
+                    show(done.map { [$0] } ?? [])
+                    if case .failed = done?.state { exit(1) }
+                case "remove":
+                    guard let target else { fail("oss component remove <id>") }
+                    try await Components.shared.remove(target)
+                    print("removed \(target)")
+                default:
+                    print(usage)
+                }
+                #else
+                fail("components are OS Server's on a Mac")
+                #endif
 
             case "volume":
                 let client = try await OSSClient.connect()
@@ -488,11 +539,30 @@ public enum OSSCommand {
                 }
 
             case "image":
-                let repo = ProcessInfo.processInfo.environment["OSS_REPO"] ?? "\(Paths.home)/Developer/oss"
+                ManagementKey.settle()
                 #if canImport(Virtualization)
+            if sub == "install", target == "linux" {
+                // oss image install linux [config] [--image=PATH] [--cpus=N] [--memory=GB] [--disk=GB]
+                try await LinuxInstaller.install(config: arguments.positional.count >= 4 ? arguments.positional[3] : "base",
+                                                 image: arguments.options["image"],
+                                                 cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
+                                                 memoryGB: Int(arguments.options["memory"] ?? "") ?? 8,
+                                                 diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                exit(0)
+            }
+            if sub == "install", target == "windows" {
+                // oss image install windows [config] --iso=PATH [--edition="Windows 11 Pro"] [--cpus=N] [--memory=GB] [--disk=GB]
+                guard let iso = arguments.options["iso"] else { fail("oss image install windows [config] --iso=<Windows 11 on Arm's ISO>") }
+                try await WindowsInstaller.install(config: arguments.positional.count >= 4 ? arguments.positional[3] : "base", iso: iso,
+                                                   edition: arguments.options["edition"] ?? "Windows 11 Pro",
+                                                   cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
+                                                   memoryGB: Int(arguments.options["memory"] ?? "") ?? 8,
+                                                   diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                exit(0)
+            }
             if sub == "install" {
                 // oss image install macos [config] [--ipsw=PATH] [--cpus=N] [--memory=GB] [--disk=GB]
-                guard target == "macos" else { fail("oss image install macos [config] [--ipsw=PATH] [--cpus=6] [--memory=16] [--disk=128]") }
+                guard target == "macos" else { fail("oss image install macos|linux [config] … (see oss --help)") }
                 guard #available(macOS 27, *) else { fail("installing macOS with no one at its screen needs macOS 27 here") }
                 try await MacInstaller.install(config: arguments.positional.count >= 4 ? arguments.positional[3] : "base",
                                                ipsw: arguments.options["ipsw"],
@@ -536,7 +606,7 @@ public enum OSSCommand {
                         return halves.count == 2 ? (halves[0], halves[1]) : nil
                     }
                     try await Images.build(platform: platform, layer: config, from: base, script: arguments.options["script"],
-                                           copies: copies, repo: repo)
+                                           copies: copies)
                 }
 
             default:

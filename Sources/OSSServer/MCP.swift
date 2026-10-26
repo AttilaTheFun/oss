@@ -55,7 +55,7 @@ enum MCPServer {
             made for you and deleted when you release it. Waits until it is ready (a VM takes up to a minute or so) and \
             says how to reach it. Release it as soon as you're done: places are shared.
             """,
-             ["platform": ["type": "string", "enum": Platform.allCases.map { $0.rawValue }],
+             ["platform": ["type": "string", "enum": Platform.allCases.filter { $0 != .container }.map { $0.rawValue }],
               "config": ["type": "string", "description": "its base: VMs vanilla, dev (the default), xcode-<version> (macOS); oss_status lists them"],
               "minutes": ["type": "integer", "description": "how long it is yours (default 60, at most 480); renew to keep it longer"]],
              required: ["platform"]),
@@ -111,8 +111,8 @@ enum MCPServer {
                 for lease in held { lines.append("  \(lease.id)  \(lease.platform.rawValue)/\(lease.config)  \(lease.state.rawValue)  until \(iso(lease.expires))") }
                 return text(lines.joined(separator: "\n"))
             case "oss_lease":
-                guard let name = arguments["platform"] as? String, let platform = Platform(rawValue: name) else {
-                    throw Failure(description: "platform is one of \(Platform.allCases.map { $0.rawValue }.joined(separator: ", "))")
+                guard let name = arguments["platform"] as? String, let platform = Platform(rawValue: name), platform != .container else {
+                    throw Failure(description: "platform is one of \(Platform.allCases.filter { $0 != .container }.map { $0.rawValue }.joined(separator: ", "))")
                 }
                 let key = defaultKey().flatMap { FileManager.default.contents(atPath: $0) }
                     .map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }

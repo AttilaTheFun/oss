@@ -145,7 +145,7 @@ struct MachinesSection: View {
             } else {
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
                     GridRow {
-                        Text("Machine"); Text("Holder"); Text("CPU"); Text("Memory"); Text("Time left"); Text("")
+                        Text("Machine"); Text("Holder"); Text("CPU"); Text("Memory"); Text("Disk"); Text("Time left"); Text("")
                     }
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     ForEach(rows) { row in
@@ -160,9 +160,8 @@ struct MachinesSection: View {
                             Text(row.lease.holder).lineLimit(1)
                             UsageCell(text: cpuText(row), fraction: cpuFraction(row), tint: .blue)
                             UsageCell(text: memoryText(row), fraction: memoryFraction(row), tint: .purple)
-                            Text(row.lease.state == .ready ? Format.minutes(row.lease.expires.timeIntervalSince(monitor.now))
-                                                           : row.lease.state.rawValue)
-                                .monospacedDigit()
+                            Text(row.usage?.diskBytes.map(Format.bytes) ?? "—").monospacedDigit()
+                            Text(timeText(row)).monospacedDigit()
                             // A macOS VM this app runs: its screen, live.
                             if MacVMs.names.contains(row.lease.name) {
                                 Button("Screen") { openWindow(id: "screen", value: row.lease.name) }
@@ -178,6 +177,13 @@ struct MachinesSection: View {
         } label: {
             Label("Leases", systemImage: "square.stack.3d.up")
         }
+    }
+
+    private func timeText(_ row: MachineRow) -> String {
+        guard row.lease.state == .ready else { return row.lease.state.rawValue }
+        // A container held until it is released has no end.
+        let left = row.lease.expires.timeIntervalSince(monitor.now)
+        return left > 365 * 86400 ? "until released" : Format.minutes(left)
     }
 
     private func cpuText(_ row: MachineRow) -> String {

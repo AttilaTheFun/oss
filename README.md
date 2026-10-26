@@ -306,34 +306,62 @@ Protocol](https://modelcontextprotocol.io) tools on stdio (`oss_status`,
 
 ## Setting it up (the server's Mac)
 
-1. **OS Server**, the app: `App/build.sh --install` builds `OS Server.app`
-   into /Applications. It is the server (in its own process), and shows
-   what the Mac and each lease use: CPU and memory against what each was
-   given, the capacity per platform, the Bazel cache, the server's log,
-   and **Screen** beside a macOS lease for its screen, live. Closing its
-   window leaves it in the menu bar (no Dock icon). Settings: open at
-   login, `~/.local/bin/oss` linked to the app's own command line (the
-   same version as the server), and **Remove Everything**. Quitting it
-   ends the macOS leases (their VMs are its own; it asks first) and keeps
-   the others, taken up again when it starts. A Mac still running
-   `oss serve` from the launch agent (`./install.sh --service`, before
-   0.6) shows "Another server answers": **Run It Here Instead** unloads
-   the agent (its plist kept as `.disabled`) and starts the app's. The
-   first time, macOS asks whether OS Server may find devices on the local
-   network (its VMs) and control UTM: **Allow** both.
-   Without the app, `./install.sh` puts the command line in `~/.local/bin`;
-   on a client, `./install.sh` alone.
-2. **UTM** (Linux and Windows VMs): `brew install --cask utm` (5.0.8 or later), and its CLI
-   on PATH: `ln -sf /Applications/UTM.app/Contents/MacOS/utmctl /opt/homebrew/bin/utmctl`.
-   The first time OS Server drives UTM, macOS asks whether it may control it:
-   **Allow** (System Settings → Privacy & Security → Automation, if a
-   "Don't Allow" needs undoing; while a prompt waits, UTM answers no one).
-3. **Xcode** (simulators): any Xcode with the iOS runtime you want.
-4. **Android**: `oss setup android [--api=35] [--tag=google_apis]` puts
-   the emulator, platform-tools and a system image in OS Server's folder
-   (`android-sdk`; `~/.local/share/oss/android-sdk` before 0.7), from
-   Google's repository (no Java).
-5. **The bases**, below. `oss doctor` says what's ready.
+1. **OS Server**, the app: put `OS Server.app` in /Applications and open
+   it (from a checkout, `App/build.sh --install`). It is the server (in its
+   own process), and shows what the Mac and each lease use: CPU, memory
+   and disk against what each was given, the capacity per platform, the
+   Bazel cache, the server's log, and **Screen** beside a macOS lease for
+   its screen, live. Closing its window leaves it in the menu bar (no Dock
+   icon). Quitting it ends the macOS leases (their VMs run in it; it asks
+   first) and keeps the others, which run in processes of their own and
+   are taken up again when it starts.
+2. **Set Up**: its first launch asks what this Mac lends; Settings ›
+   Components adds or removes any later. Each component is installed from
+   a download, or a file you give it, with no one at its screen, into OS
+   Server's folder, and removed on its own:
+   - **Linux containers**: the kernel (Kata Containers' arm64 build, as
+     Apple's `container` uses) and Containerization's init; Rosetta, if
+     the Mac hasn't it (the system asks). macOS 26 or later.
+   - **macOS VMs**: the newest macOS this Mac runs, from Apple's restore
+     image (or an `.ipsw` you give it), installed and `runner` made with
+     no one at its screen (macOS 27 here), then the vanilla layer.
+   - **Ubuntu VMs**: Ubuntu 26.04's arm64 cloud image (checked against
+     Ubuntu's SHA256SUMS), GNOME, `runner` and OS Server's key set up by
+     cloud-init, then the vanilla layer; about five minutes.
+   - **Windows VMs**: Windows 11 on Arm from its ISO, which you give it
+     (Microsoft hands it out only from its page), installed by an answer
+     file in about fifty minutes: Windows' own drivers for its disk (NVMe),
+     screen and input, Fedora's virtio-win (signed Arm64 drivers,
+     downloaded and checked) for its network card and GPU (1920 × 1080),
+     OpenSSH with OS Server's key, then the vanilla layer. It installs with
+     Windows' generic key: activate it yourself.
+   - **Android emulators**: Google's emulator, platform-tools and an
+     Android 15 phone image, from Google's repository (no Java).
+   - **iOS simulators**: an iPhone simulator of the newest runtime Xcode
+     has. Xcode is the one thing OS Server takes from outside.
+
+   A base's `runner` gets a password OS Server makes and keeps
+   (`guest-passwords.json`); a lease carries it.
+3. **Its command line**: Settings › Install in ~/.local/bin links
+   `~/.local/bin/oss` to the app's own (the same version as the server).
+
+Everything else it needs is inside it: QEMU for the Linux and Windows VMs
+(Homebrew's, with its libraries, made to stand alone by
+`tools/bundle_qemu.py`; `Contents/Resources/qemu/SOURCES.txt` says which
+versions, whose sources are QEMU's and Homebrew's), AXe for a simulator's
+input (MIT), the containers' helper, the layers' provisioning scripts, and
+its own SSH key, made the first time. It needs no Homebrew and no UTM.
+Settings › **Remove Everything** ends every lease and deletes all it keeps,
+so moving the app to the Trash afterwards leaves the Mac as it was.
+
+**A server from before 0.9** keeps what it has: its UTM bases (`useUTM`,
+on where UTM is installed) and the user's `~/.ssh/id_ed25519` as its key
+(written into its settings at the first start, since its bases trust it).
+A Mac still running `oss serve` from the launch agent (`./install.sh
+--service`, before 0.6) shows "Another server answers": **Run It Here
+Instead** unloads the agent and starts the app's. Without the app,
+`./install.sh` puts the command line in `~/.local/bin`; on a client,
+`./install.sh` alone.
 
 OS Server's files are `~/Library/Application Support/OS Server` (on Linux
 `~/.config/oss`, `~/.local/state/oss` and `~/.local/share/oss`): its
@@ -342,9 +370,9 @@ settings, its token, the leases (`State/`), the macOS bases (`Machines/`).
 Settings (`server.json` there, every field optional):
 
 ```json
-{"port": 7480, "capacity": {"macos": 2, "windows": 2, "linux": 2, "ios": 4, "android": 2},
+{"port": 7480, "capacity": {"macos": 2, "windows": 2, "linux": 2, "ios": 4, "android": 2, "container": 4},
  "defaultMinutes": 60, "maxMinutes": 480, "defaultConfig": {"macos": "vanilla", "ios": "iphone", "android": "phone"},
- "managementKey": "~/.ssh/id_ed25519"}
+ "managementKey": "<OS Server's folder>/ssh/id_ed25519"}
 ```
 
 A Bazel cache (off without `"cache"`; `{}` for these defaults):
@@ -388,37 +416,38 @@ one whenever it should change: leases made after have the change.
 
 ### VMs (macOS, Linux, Windows)
 
-The first base of each platform starts with an OS install in UTM's
-window (UTM reads only installers a person picks there), then
-`oss image build <platform> vanilla --from=base` makes `oss-<platform>-vanilla`:
-the `runner` account (logged in at boot, sudo without a password), SSH by
-the server's key only, no sleep or screen lock (`provision/<platform>/vanilla`).
+OS Server makes the first base of each platform itself, its component
+(above), or from the command line on the server's Mac:
 
-- **macOS** is OS Server's own, with no UTM:
-  `OSS_GUEST_PASSWORD=<password> oss image install macos base --ipsw=<IPSW>`
-  (or without `--ipsw`, the newest this Mac supports, downloaded) makes
-  `Machines/macos/base.vm`, installs macOS and, on its first boot, makes
-  `runner` (logged in at boot, Remote Login on) with no one at its screen
-  (macOS 27's guest provisioning, macOS 27 on host and guest): about four
-  minutes. Once, at its live view (OS Server's Screen while a layer
-  builds, or a lease of it): System Settings → General → Sharing →
-  **Screen Sharing** on (only that switch lets Screen Sharing capture the
-  screen; a script can't turn it on). Then
-  `oss image build macos vanilla --from=base`. A macOS VM UTM already has
-  becomes OS Server's own with `oss image import-utm <name> [--as=<config>]`
-  (an APFS clone: no space, a moment); each start takes in every
-  `oss-macos-` VM UTM has whose config OS Server hasn't got of its own.
-- **Windows 11** (Virtualize → Windows, the ISO, "Install drivers and
-  SPICE tools", 16 GB, 6 cores, 128 GB; display card `virtio-ramfb`, not
-  `-gl`): a local account `runner`; UTM's guest tools from its CD; then
-  `provision/windows/bootstrap.ps1` (the server's public key in it) in an
-  administrator's PowerShell. Name it `oss-windows-base`, shut it down,
-  `OSS_GUEST_PASSWORD=<password> oss image build windows vanilla --from=base`.
-- **Ubuntu Desktop** (Virtualize → Linux, the ISO, QEMU, display
-  `virtio-gpu-pci`, 16 GB, 6 cores, 128 GB): user `runner`, no disk
-  encryption; then `sudo apt-get install -y openssh-server` and the server's
-  key in `~/.ssh/authorized_keys`. Name it `oss-linux-base`, shut it down,
-  `oss image build linux vanilla --from=base`.
+```sh
+oss image install macos base [--ipsw=PATH]                 # macOS 27 here; then:
+oss image build macos vanilla --from=base
+oss image install linux base [--image=<a cloud image>]     # Ubuntu 26.04 by default
+oss image build linux vanilla --from=base
+oss image install windows base --iso=<Windows 11 on Arm's ISO> [--edition="Windows 11 Pro"]
+oss image build windows vanilla --from=base
+```
+
+Each takes `--cpus`, `--memory` and `--disk` (GB). The vanilla layer
+(`provision/<platform>/vanilla`): `runner` logged in at boot, sudo without
+a password, SSH by the server's key only, no sleep, lock, update notice or
+first-run welcome. Bases are folders in `Machines/<platform>/`: macOS's run
+on Apple's Virtualization in OS Server's process; Linux's and Windows' on
+its QEMU, each in a QEMU process of its own (so they outlive OS Server's
+restarts), with QEMU's own NAT (the guest is 10.0.2.15, the Mac
+10.0.2.2), SSH forwarded to a loopback port, and the screen QEMU's VNC.
+
+One manual step remains for macOS: once, at its live view (OS Server's
+Screen while a layer builds, or a lease of it), System Settings → General →
+Sharing → **Screen Sharing** on (only that switch lets Screen Sharing
+capture the screen; a script can't turn it on).
+
+**From UTM** (a server before 0.9): UTM's macOS VMs become OS Server's own
+with `oss image import-utm <name> [--as=<config>]` (an APFS clone: no
+space, a moment); each start takes in every `oss-macos-` VM UTM has whose
+config OS Server hasn't got of its own. UTM's Linux and Windows bases keep
+being lent from UTM while `useUTM` is on, until OS Server has its own of
+the same config.
 
 **Your own layers.** `oss image build <platform> <config> --from=<base config> --script=PATH [--copy=HOST:GUEST,…]`
 clones `oss-<platform>-<base>`, boots it, copies in what `--copy` names

@@ -44,13 +44,9 @@ final class ServerRunner {
             state = .elsewhere
             return
         }
-        // What the launch agent gave the server: Homebrew's tools (AXe) on
-        // PATH, and this checkout's provisioning scripts when it's there.
-        setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin", 1)
-        let repository = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Developer/oss").path
-        if ProcessInfo.processInfo.environment["OSS_REPO"] == nil, FileManager.default.fileExists(atPath: repository) {
-            setenv("OSS_REPO", repository, 1)
-        }
+        // The system's tools only: what OS Server needs beyond them comes
+        // inside it (AXe, the provisioning scripts) or into its folder.
+        setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin", 1)
         let file = LogFile(logFile)
         ServerLog.sink = { [weak self] line in
             file.append(Data((line + "\n").utf8))

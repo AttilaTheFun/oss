@@ -21,6 +21,7 @@ func log(_ message: String) {
     let stamp = ISO8601DateFormatter().string(from: Date())
     let line = "\(stamp) \(message)"
     FileHandle.standardError.write(Data((line + "\n").utf8))
+    ServerLog.lastLine = message
     ServerLog.sink?(line)
 }
 
@@ -28,6 +29,8 @@ func log(_ message: String) {
 /// app shows them and keeps them in a file.
 public enum ServerLog {
     nonisolated(unsafe) public static var sink: (@Sendable (String) -> Void)?
+    /// The last line logged (a component's install shows it as it goes).
+    nonisolated(unsafe) public static var lastLine: String?
 
     /// A line in the server's log, from what runs beside it (the app's containers).
     public static func write(_ message: String) { log(message) }
@@ -92,7 +95,9 @@ actor MachineManager {
     private func combineBases() async {
         // OS Server's own macOS bases (Virtualization's) before UTM's of the same config.
         #if canImport(Virtualization)
+        // Its own Linux and Windows bases too (its QEMU's).
         let own = MacVMStore.configs().map { Base(platform: .macos, config: $0) }
+            + [Platform.linux, .windows].flatMap { platform in QEMUStore.configs(platform).map { Base(platform: platform, config: $0) } }
         #else
         let own: [Base] = []
         #endif
@@ -130,6 +135,7 @@ actor MachineManager {
     }
 
     func all() -> [Lease] { leases.values.sorted { $0.created < $1.created } }
+    func held(_ platform: Platform) -> Int { leases.values.filter { $0.platform == platform && $0.state != .failed }.count }
     func lease(_ id: String) -> Lease? { leases[id] }
 
     // MARK: Leasing
@@ -277,6 +283,9 @@ actor MachineManager {
         if lease.platform == .macos, MacVMStore.hasBase(base.config) {
             return try await createMacVM(id, lease: lease, base: base, holderKey: holderKey)
         }
+        if lease.platform != .macos, QEMUStore.hasBase(lease.platform, base.config) {
+            return try await createQEMUVM(id, lease: lease, base: base, holderKey: holderKey)
+        }
         #endif
         // Windows and Linux show their screens through QEMU's VNC, on a loopback port of their own.
         let qemuVNC = lease.platform == .macos ? nil : freeQEMUVNCPort()
@@ -354,23 +363,41 @@ actor MachineManager {
         guard let address else { throw APIError(error: "\(lease.name) got no address, twice") }
         try await handOver(id, lease: lease, address: address, qemuVNC: nil, holderKey: holderKey)
     }
+
+    /// A Linux or Windows lease on OS Server's own QEMU: its base cloned and
+    /// started in a QEMU process of its own, reached through its forwarded
+    /// SSH, its screen QEMU's VNC.
+    private func createQEMUVM(_ id: String, lease: Lease, base: Base, holderKey: String?) async throws {
+        guard let vnc = freeQEMUVNCPort() else { throw APIError(error: "no free port for its screen") }
+        leases[id]?.qemuVNCPort = vnc
+        let ports = QEMUVMs.Ports(vnc: vnc)
+        let path = QEMUStore.leasePath(lease.name)
+        try QEMUVMs.clone(lease.platform, base.config, to: path)
+        let spec = try QEMUMachineSpec.load(path)
+        leases[id]?.mac = spec.mac
+        leases[id]?.cpus = spec.cpus
+        leases[id]?.memoryLimitBytes = Int64(spec.memoryBytes)
+        try await QEMUVMs.start(name: lease.name, path: path, ports: ports)
+        try await handOver(id, lease: lease, address: "127.0.0.1", sshPort: ports.ssh, qemuVNC: vnc, holderKey: holderKey)
+    }
     #endif
 
     /// A VM with an address made the holder's: their key let in, its
     /// screen's password set, the cache wired, SSH and VNC forwarded.
-    private func handOver(_ id: String, lease: Lease, address: String, qemuVNC: Int?, holderKey: String?) async throws {
-        let guest = Guest(platform: lease.platform, address: address, user: config.guestUser, key: config.managementKey)
+    private func handOver(_ id: String, lease: Lease, address: String, sshPort: Int = 22, qemuVNC: Int?, holderKey: String?) async throws {
+        let guest = Guest(platform: lease.platform, address: address, user: config.guestUser, key: config.managementKey, port: sshPort)
         guard await guest.waitUntilReachable(seconds: 300) else { throw APIError(error: "\(lease.name) at \(address): no SSH") }
         let password = Random.vncPassword()
         try await guest.prepare(holderKey: holderKey, vncPassword: password)
         await guest.setTimeZone(TimeZone.current.identifier)
         leases[id]?.guestPassword = GuestPasswords.password(for: lease.platform, config: lease.config)
-        if let bazelCache, let host = LocalNetworks.hostAddress(facing: address) {
+        // A QEMU guest of OS Server's own reaches the Mac through QEMU's NAT.
+        if let bazelCache, let host = sshPort == 22 ? LocalNetworks.hostAddress(facing: address) : "10.0.2.2" {
             await guest.useBazelCache(host: host, port: bazelCache.port, token: bazelCache.readToken)
         }
         if !(await guest.waitForDesktop(seconds: 240)) { log("lease \(id): no desktop after 240 s; handing it over anyway") }
         guard leases[id]?.state == .creating else { return }   // released meanwhile
-        let ssh = try forward(id, to: address, port: 22)
+        let ssh = try forward(id, to: address, port: sshPort)
         let vnc = try qemuVNC.map { try forward(id, to: "127.0.0.1", port: $0, vncPassword: password) }
             ?? forward(id, to: address, port: 5900)
         leases[id]?.guestAddress = address
@@ -426,6 +453,11 @@ actor MachineManager {
             if lease.platform == .macos, FileManager.default.fileExists(atPath: MacVMStore.leasePath(lease.name)) {
                 await MainActor.run { MacVMs.running[lease.name] }?.stop()
                 MacVMStore.remove(MacVMStore.leasePath(lease.name))
+                break
+            }
+            if lease.platform != .macos, FileManager.default.fileExists(atPath: QEMUStore.leasePath(lease.name)) {
+                await QEMUVMs.stop(QEMUStore.leasePath(lease.name), ports: lease.qemuVNCPort.map { QEMUVMs.Ports(vnc: $0) })
+                MacVMStore.remove(QEMUStore.leasePath(lease.name))
                 break
             }
             #endif
@@ -624,6 +656,20 @@ actor MachineManager {
             #if canImport(Virtualization)
             // OS Server's own macOS VMs ran in the process that ended: theirs went with it.
             if lease.platform == .macos, FileManager.default.fileExists(atPath: MacVMStore.leasePath(lease.name)) { continue }
+            // Its own QEMU machines run in processes of their own: forwarded again while they run.
+            if lease.platform != .macos, lease.platform.isVM, FileManager.default.fileExists(atPath: QEMUStore.leasePath(lease.name)) {
+                guard QEMUVMs.isRunning(QEMUStore.leasePath(lease.name)), let vnc = lease.qemuVNCPort else { continue }
+                let ports = QEMUVMs.Ports(vnc: vnc)
+                forwarders[lease.id] = []
+                for (port, target, password) in [(lease.sshPort, ports.ssh, nil as String?), (lease.vncPort, vnc, lease.vncPassword)] {
+                    guard let port, let forwarder = try? Forwarder(port: port, target: "127.0.0.1", targetPort: target, vncPassword: password) else { continue }
+                    forwarder.start()
+                    forwarders[lease.id]?.append(forwarder)
+                }
+                leases[lease.id] = lease
+                log("lease \(lease.id): recovered")
+                continue
+            }
             #endif
             switch lease.platform {
             case .macos, .linux, .windows:
@@ -667,6 +713,7 @@ actor MachineManager {
         for name in (try? FileManager.default.contentsOfDirectory(atPath: MacVMStore.leases)) ?? []
         where name.hasSuffix(".vm") && !leases.values.contains(where: { "\($0.name).vm" == name }) {
             log("deleting \(name): no lease holds it")
+            await QEMUVMs.stop("\(MacVMStore.leases)/\(name)", ports: nil)
             MacVMStore.remove("\(MacVMStore.leases)/\(name)")
         }
         #endif
@@ -698,10 +745,14 @@ public final class ServerHost: Sendable {
     /// `containers` it lends containers too.
     public static func start(containers: ContainerBackend? = nil) throws -> ServerHost {
         Paths.migrate()
+        ManagementKey.settle()
         let config = ServerConfig.load()
         let token = Token.ensure()
         let cache = config.cache.flatMap(Server.startCache)
         let machines = MachineManager(config: config, bazelCache: cache.map { ($0.config.port, $0.readToken) }, containers: containers)
+        #if os(macOS)
+        Task { await Components.shared.attach(containers: containers) { platform in await machines.held(platform) } }
+        #endif
         let http = try HTTPServer(port: config.port) { request in
             await Server.route(request, machines: machines, token: token, cache: cache)
         }

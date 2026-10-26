@@ -57,9 +57,12 @@ enum MachineInput {
 
     // MARK: iOS simulators (AXe)
 
-    /// AXe (github.com/cameroncooke/AXe, MIT; `brew install cameroncooke/axe/axe`).
+    /// AXe (github.com/cameroncooke/AXe, MIT): the one inside OS Server.app
+    /// (Contents/Helpers/axe), else `axePath` or Homebrew's (`oss serve` run
+    /// on its own).
     static var axe: String? {
-        let candidates = [ServerConfig.load().axePath, "/opt/homebrew/bin/axe", "/usr/local/bin/axe"].compactMap { $0 }
+        let candidates = [ServerConfig.load().axePath, Paths.bundled("Helpers/axe/axe"), "/opt/homebrew/bin/axe", "/usr/local/bin/axe"]
+            .compactMap { $0 }
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 

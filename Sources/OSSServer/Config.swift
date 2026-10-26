@@ -49,6 +49,34 @@ enum Paths {
     /// (Containerization's store).
     static let containers = "\(share)/Containers"
 
+    /// OS Server's own SSH key, which its bases trust (made the first time
+    /// it's needed). A server set up before 0.9 keeps using the user's
+    /// (`managementKey` in server.json, written by `migrate`).
+    static let ownKey = "\(support)/ssh/id_ed25519"
+
+    /// What comes inside OS Server.app (`Contents/<path>`): its provisioning
+    /// scripts, AXe. Found from the running program, the app's or the
+    /// command line's inside it (Contents/MacOS, Contents/Helpers); nil when
+    /// it doesn't run from the app.
+    static func bundled(_ path: String) -> String? {
+        var url = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        while url.path != "/" {
+            url.deleteLastPathComponent()
+            if url.pathExtension == "app" {
+                let found = url.appendingPathComponent("Contents").appendingPathComponent(path).path
+                return FileManager.default.fileExists(atPath: found) ? found : nil
+            }
+        }
+        return nil
+    }
+
+    /// The layers' scripts (`provision/<platform>/<layer>`): the app's, or
+    /// a checkout's (`OSS_REPO`, ~/Developer/oss) when run from one.
+    static var provisioning: String {
+        if let repo = ProcessInfo.processInfo.environment["OSS_REPO"] { return "\(repo)/provision" }
+        return bundled("Resources/provision") ?? "\(home)/Developer/oss/provision"
+    }
+
     static func ensure(_ directory: String) {
         try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
@@ -76,6 +104,9 @@ enum Paths {
         }
         if settings["androidAVDHome"] == nil, manager.fileExists(atPath: "\(oldShare)/avd") {
             settings["androidAVDHome"] = "\(oldShare)/avd"
+        }
+        if settings["managementKey"] == nil, manager.fileExists(atPath: "\(home)/.ssh/id_ed25519") {
+            settings["managementKey"] = "\(home)/.ssh/id_ed25519"
         }
         if var cache = settings["cache"] as? [String: Any], cache["directory"] == nil {
             cache["directory"] = "\(oldState)/bazel-cache"
@@ -118,8 +149,10 @@ struct ServerConfig: Codable, Sendable {
     /// Console ports for Android emulators (even; each one's adb is the next).
     var firstEmulatorPort: Int = 5700
     var lastEmulatorPort: Int = 5798
-    /// The key the server reaches its VM guests with (the bases trust its public half).
-    var managementKey: String = "\(Paths.home)/.ssh/id_ed25519"
+    /// The key the server reaches its VM guests with (the bases trust its
+    /// public half): OS Server's own (Paths.ownKey), or the one a server
+    /// set up before 0.9 used.
+    var managementKey: String = Paths.ownKey
     var guestUser: String = "runner"
     /// The config a lease gets when it names none, by platform.
     var defaultConfig: [String: String] = ["macos": "vanilla", "windows": "vanilla", "linux": "vanilla", "ios": "iphone", "android": "phone",
@@ -139,9 +172,10 @@ struct ServerConfig: Codable, Sendable {
     /// like its own: a second server (to try a change beside a running one)
     /// lends only what it's trying.
     var lends: [Platform]?
-    /// Whether to use UTM (Linux and Windows VMs, and macOS bases OS Server
-    /// hasn't got of its own).
-    var useUTM: Bool = true
+    /// Whether to use UTM (its Linux and Windows bases, and macOS bases OS
+    /// Server hasn't got of its own): by default, where UTM is installed (a
+    /// server set up before 0.9). OS Server makes its own bases without it.
+    var useUTM: Bool = FileManager.default.fileExists(atPath: "/Applications/UTM.app")
 
     init() {}
 
@@ -276,4 +310,44 @@ func constantTimeEqual(_ a: String, _ b: String) -> Bool {
     let x = Array(a.utf8), y = Array(b.utf8)
     guard x.count == y.count else { return false }
     return zip(x, y).reduce(0) { $0 | ($1.0 ^ $1.1) } == 0
+}
+
+/// The key OS Server reaches its VMs with. A new server makes its own
+/// (Paths.ownKey: in its folder, gone with it); one set up before 0.9,
+/// whose bases trust the user's ~/.ssh/id_ed25519, keeps that (written into
+/// its server.json once).
+enum ManagementKey {
+    static func settle() {
+        let manager = FileManager.default
+        let userKey = "\(Paths.home)/.ssh/id_ed25519"
+        var settings = (manager.contents(atPath: Paths.serverConfig)
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) ?? [:]
+        // Bases or leases from before (UTM's are listed in vm-bases.json): they trust the user's key.
+        let setUpBefore = manager.fileExists(atPath: Paths.machines) || manager.fileExists(atPath: Paths.leases)
+            || manager.fileExists(atPath: Paths.vmBases)
+        if settings["managementKey"] == nil, setUpBefore, !manager.fileExists(atPath: Paths.ownKey),
+           manager.fileExists(atPath: userKey) {
+            settings["managementKey"] = userKey
+            if let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
+                Paths.ensure(Paths.config)
+                manager.createFile(atPath: Paths.serverConfig, contents: data, attributes: [.posixPermissions: 0o600])
+            }
+            log("its bases trust \(userKey): kept as the management key")
+        }
+        let key = ServerConfig.load().managementKey
+        guard key == Paths.ownKey, !manager.fileExists(atPath: key) else { return }
+        Paths.ensure((key as NSString).deletingLastPathComponent)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+        process.arguments = ["-q", "-t", "ed25519", "-N", "", "-C", "OS Server on \(localHostName)", "-f", key]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            log("made OS Server's own SSH key")
+        } catch {
+            log("couldn't make an SSH key: \(error)")
+        }
+    }
 }

@@ -42,7 +42,7 @@ struct OSSApp: App {
         }
         // Taller with the canned server, so its screen holds everything.
         .defaultSize(width: 860, height: Fixture.isOn ? 1110 : 760)
-        .defaultLaunchBehavior(Fixture.showsPanel ? .suppressed : .presented)
+        .defaultLaunchBehavior(Fixture.showsPanel || Fixture.showsSetUp ? .suppressed : .presented)
 
         // A macOS VM's screen, live (by the machine's name).
         WindowGroup("Screen", id: "screen", for: String.self) { $name in
@@ -72,6 +72,13 @@ struct OSSApp: App {
             MenuBarLabel().environment(AppModel.shared.monitor)
         }
         .menuBarExtraStyle(.window)
+
+        // The first launch's: what should this Mac lend?
+        Window("Set Up OS Server", id: "setup") {
+            SetUpView().onAppear { AppActivation.windowShown() }
+        }
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(Fixture.showsSetUp || (!Fixture.isOn && !UserDefaults.standard.bool(forKey: "setUpShown")) ? .presented : .suppressed)
 
         Settings {
             SettingsView().environment(AppModel.shared.server)
@@ -196,6 +203,7 @@ struct SettingsView: View {
             }
             LabeledContent("Its files", value: "~/Library/Application Support/OS Server")
             LabeledContent("Log", value: "~/Library/Logs/OS Server.log")
+            ComponentsSection()
             MonitorSection()
             Section {
                 Toggle("UTM's oss machines too (its Linux and Windows bases)", isOn: $removeUTMMachines)
