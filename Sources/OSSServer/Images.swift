@@ -71,7 +71,7 @@ enum Images {
             : "bash ~/layer.sh"
         // The guest's password, when given (a base image's first sudo,
         // Windows' auto-login), goes on standard input, never a command line.
-        let password = ProcessInfo.processInfo.environment["OSS_GUEST_PASSWORD"]
+        let password = ProcessInfo.processInfo.environment["OSS_GUEST_PASSWORD"] ?? GuestPasswords.password(for: platform, config: "")
         let remote = platform == .windows ? run
             : (password == nil ? "" : "IFS= read -r pw; printf '%s\\n' \"$pw\" | sudo -S -p '' -v; ") + run
         let result = try await Shell.run("/usr/bin/ssh", sshOptions(config, port: guest.port) + ["\(config.guestUser)@\(guest.address)", remote],

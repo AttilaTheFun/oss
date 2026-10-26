@@ -47,6 +47,9 @@ let usage = """
                                                             OS Server's own Ubuntu base (its QEMU's), from Ubuntu's
                                                             cloud image (downloaded and checked), GNOME and runner
                                                             set up by cloud-init
+      oss image install windows [config] --iso=PATH [--edition="Windows 11 Pro"] [--cpus=6] [--memory=8] [--disk=128]
+                                                            OS Server's own Windows base (its QEMU's) from Windows 11
+                                                            on Arm's ISO, installed by an answer file
       oss image import-utm <UTM VM name>… [--as=CONFIG]     UTM's macOS VMs as OS Server's own bases (APFS clones)
       oss image provision-macos --vm=NAME [--install]       a UTM VM's (before OS Server ran its own)
     OS Monitor (OS Server's client: reads what the server is doing, nothing else):
@@ -225,7 +228,7 @@ public enum OSSCommand {
         let arguments = Arguments(Array(commandLine.dropFirst()),
                                   valued: ["config", "minutes", "key", "holder", "identity", "from", "script", "vm", "device", "runtime",
                                            "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "volume", "env", "env-file", "workdir",
-                                           "command", "socket"])
+                                           "command", "socket", "iso", "edition"])
         let command = arguments.positional.first ?? "help"
         let sub = arguments.positional.count > 1 ? arguments.positional[1] : nil
         let target = arguments.positional.count > 2 ? arguments.positional[2] : nil
@@ -501,6 +504,16 @@ public enum OSSCommand {
                                                  cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
                                                  memoryGB: Int(arguments.options["memory"] ?? "") ?? 8,
                                                  diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                exit(0)
+            }
+            if sub == "install", target == "windows" {
+                // oss image install windows [config] --iso=PATH [--edition="Windows 11 Pro"] [--cpus=N] [--memory=GB] [--disk=GB]
+                guard let iso = arguments.options["iso"] else { fail("oss image install windows [config] --iso=<Windows 11 on Arm's ISO>") }
+                try await WindowsInstaller.install(config: arguments.positional.count >= 4 ? arguments.positional[3] : "base", iso: iso,
+                                                   edition: arguments.options["edition"] ?? "Windows 11 Pro",
+                                                   cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
+                                                   memoryGB: Int(arguments.options["memory"] ?? "") ?? 8,
+                                                   diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
                 exit(0)
             }
             if sub == "install" {

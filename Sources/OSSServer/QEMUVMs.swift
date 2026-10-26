@@ -17,7 +17,7 @@ import OSSClient
 /// keeps for itself): the guest is 10.0.2.15, the Mac 10.0.2.2, and its SSH
 /// is forwarded to a loopback port. Its screen and input are QEMU's VNC
 /// server, its controls QMP, both on loopback: for a lease with VNC port V,
-/// QMP is at V-1000 and SSH at V-2000.
+/// QMP is at V-1000, SSH at V-2000 and the guest agent's channel at V-3000.
 enum QEMUStore {
     static func bases(_ platform: Platform) -> String { "\(Paths.machines)/\(platform.rawValue)" }
     static func basePath(_ platform: Platform, _ config: String) -> String { "\(bases(platform))/\(config).vm" }
@@ -88,6 +88,8 @@ enum QEMU {
     /// The ports a machine's VNC port V brings: QMP and SSH below it.
     static func qmpPort(vnc: Int) -> Int { vnc - 1000 }
     static func sshPort(vnc: Int) -> Int { vnc - 2000 }
+    /// The guest agent's channel (qemu-guest-agent in Linux guests).
+    static func agentPort(vnc: Int) -> Int { vnc - 3000 }
 
     static func run(_ tool: String?, _ arguments: [String], timeout: TimeInterval = 600) async throws -> ProcessResult {
         guard let tool else { throw ShellError(description: "no QEMU here: OS Server.app brings its own") }
@@ -102,6 +104,7 @@ enum QEMUVMs {
         var vnc: Int
         var qmp: Int { QEMU.qmpPort(vnc: vnc) }
         var ssh: Int { QEMU.sshPort(vnc: vnc) }
+        var agent: Int { QEMU.agentPort(vnc: vnc) }
     }
 
     /// Started, and its pid. `media`: images attached as removable USB
@@ -132,6 +135,10 @@ enum QEMUVMs {
             "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:\(ports.ssh)-:22",
             "-device", "\(spec.networkCard),netdev=net0,mac=\(spec.mac)",
             "-device", "virtio-rng-pci",
+            // The guest agent's channel, on a loopback port.
+            "-device", "virtio-serial-pci",
+            "-chardev", "socket,id=agent,host=127.0.0.1,port=\(ports.agent),server=on,wait=off",
+            "-device", "virtserialport,chardev=agent,name=org.qemu.guest_agent.0",
             "-vnc", "127.0.0.1:\(ports.vnc - 5900)",
             "-qmp", "tcp:127.0.0.1:\(ports.qmp),server=on,wait=off",
             "-display", "none", "-daemonize", "-pidfile", "\(path)/qemu.pid", "-D", "\(path)/qemu.log",
@@ -358,7 +365,7 @@ extension QEMUVMs {
         let config = ServerConfig.load()
         for vnc in stride(from: config.lastQEMUVNCPort, through: config.lastQEMUVNCPort - 40, by: -1) {
             let ports = Ports(vnc: vnc)
-            if [ports.vnc, ports.qmp, ports.ssh].allSatisfy(isFree) { return ports }
+            if [ports.vnc, ports.qmp, ports.ssh, ports.agent].allSatisfy(isFree) { return ports }
         }
         return nil
     }
@@ -374,6 +381,194 @@ extension QEMUVMs {
         return withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0 }
         }
+    }
+}
+#endif
+
+#if os(macOS)
+/// Windows bases made from Microsoft's ISO (Windows 11 on Arm, which you
+/// give it: Microsoft hands it out only from its page), installed with no
+/// one at the screen by an answer file (`autounattend.xml` on a drive of
+/// its own, which Setup looks for). Only what Windows has drivers for out
+/// of the box: an NVMe disk, the ramfb display, USB keyboard and tablet, a
+/// USB network card (RNDIS). The answer file passes over Windows 11's TPM
+/// and Secure Boot checks, the online account, and makes `runner` (logged
+/// in at boot); its first sign-in adds OpenSSH Server with OS Server's
+/// key. Then it is shut down; the vanilla layer is built on it.
+enum WindowsInstaller {
+    /// Windows 11 Pro's generic key (Microsoft's, for installing; it
+    /// doesn't activate).
+    static let genericProKey = "VK7JG-NPHTM-C97JM-9MPGT-3V66T"
+
+    static func install(config: String, iso: String, edition: String = "Windows 11 Pro", cpus: Int, memoryGB: Int,
+                        diskGB: Int) async throws {
+        let server = ServerConfig.load()
+        guard let password = ProcessInfo.processInfo.environment["OSS_GUEST_PASSWORD"]
+                ?? GuestPasswords.password(for: .windows, config: config), !password.isEmpty else {
+            throw ShellError(description: "set OSS_GUEST_PASSWORD (or guest-passwords.json's \"windows\") to the password runner gets")
+        }
+        guard let publicKey = try? String(contentsOfFile: server.managementKey + ".pub", encoding: .utf8) else {
+            throw ShellError(description: "no public key at \(server.managementKey).pub")
+        }
+        guard FileManager.default.fileExists(atPath: iso) else { throw ShellError(description: "no ISO at \(iso)") }
+        let path = QEMUStore.basePath(.windows, config)
+        let work = path + ".installing"
+        MacVMStore.remove(work)
+        Paths.ensure(work)
+        let created = try await QEMU.run(QEMU.img, ["create", "-f", "qcow2", "\(work)/Disk.qcow2", "\(diskGB)G"])
+        guard created.ok else { throw ShellError(description: "qemu-img create: \(created.error)") }
+        try QEMUMachineSpec(platform: .windows, cpus: cpus, memoryBytes: UInt64(memoryGB) << 30, mac: Random.mac(),
+                            diskInterface: "nvme", networkCard: "usb-net", display: "ramfb",
+                            origin: URL(fileURLWithPath: iso).lastPathComponent).save(work)
+        let answers = try await answerFile(in: work, edition: edition, user: server.guestUser, password: password,
+                                           publicKey: publicKey.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard let ports = QEMUVMs.freePorts() else { throw ShellError(description: "no free loopback ports for its QEMU") }
+        let name = "build-windows-\(config)"
+        log("installing \(edition) into \(config) from \(URL(fileURLWithPath: iso).lastPathComponent)")
+        try await QEMUVMs.start(name: name, path: work, ports: ports, media: [iso, answers])
+        do {
+            // Its boot loader waits for a key ("Press any key to boot from CD or DVD").
+            try await pressKeys(port: ports.qmp, seconds: 25)
+            let guest = QEMUVMs.guest(.windows, ports: ports, config: server)
+            log("\(name): Setup installing (a while)")
+            guard await guest.waitUntilReachable(seconds: 3 * 3600) else {
+                throw ShellError(description: "\(name): no SSH after three hours (Setup stopped? see its screen at VNC :\(ports.vnc))")
+            }
+            guard await guest.waitForDesktop(seconds: 1800) else { throw ShellError(description: "\(name): no desktop") }
+            _ = try? await guest.run("Stop-Computer -Force", timeout: 60)
+            guard await QEMUVMs.waitUntilStopped(work, seconds: 600) else { throw ShellError(description: "\(name) did not shut down") }
+        } catch {
+            await QEMUVMs.stop(work, ports: ports)
+            throw error
+        }
+        try? FileManager.default.removeItem(atPath: answers)
+        for leftover in ["qemu.pid", "qemu.log"] { try? FileManager.default.removeItem(atPath: "\(work)/\(leftover)") }
+        MacVMStore.remove(path)
+        try FileManager.default.moveItem(atPath: work, toPath: path)
+        log("Windows base \(config) is ready: \(edition), \(server.guestUser) made, SSH with the server's key")
+    }
+
+    /// Return pressed every half second for a while, through QMP.
+    static func pressKeys(port: Int, seconds: Int) async throws {
+        try await Task.sleep(for: .seconds(2))
+        try await Task.detached {
+            let qmp = try QMPConnection(port: port)
+            for _ in 0..<(seconds * 2) {
+                _ = try? qmp.execute("send-key", ["keys": [["type": "qcode", "data": "ret"]]])
+                usleep(500_000)
+            }
+            qmp.close()
+            return ()
+        }.value
+    }
+
+    /// `autounattend.xml` on an ISO of its own (Setup searches removable
+    /// drives for it). runner's password is in it until the install ends.
+    static func answerFile(in directory: String, edition: String, user: String, password: String, publicKey: String) async throws -> String {
+        func xml(_ text: String) -> String {
+            text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
+        }
+        let arch = "processorArchitecture=\"arm64\" publicKeyToken=\"31bf3856ad364e35\" language=\"neutral\" versionScope=\"nonSxS\""
+        // runner's first sign-in: the SSH server, OS Server's key, its firewall rule.
+        let ssh = """
+            Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0; \
+            Set-Service sshd -StartupType Automatic; Start-Service sshd; \
+            Set-Content -Path C:\\ProgramData\\ssh\\administrators_authorized_keys -Value '\(publicKey)'; \
+            icacls.exe C:\\ProgramData\\ssh\\administrators_authorized_keys /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F'; \
+            if (-not (Get-NetFirewallRule -Name OpenSSH-Server-In-TCP -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name OpenSSH-Server-In-TCP -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 }; \
+            Set-NetFirewallRule -Name OpenSSH-Server-In-TCP -Profile Any
+            """
+        let encoded = Data(ssh.utf16.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] }).base64EncodedString()
+        let answers = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+              <settings pass="windowsPE">
+                <component name="Microsoft-Windows-International-Core-WinPE" \(arch)>
+                  <SetupUILanguage><UILanguage>en-US</UILanguage></SetupUILanguage>
+                  <InputLocale>en-US</InputLocale><SystemLocale>en-US</SystemLocale><UILanguage>en-US</UILanguage><UserLocale>en-US</UserLocale>
+                </component>
+                <component name="Microsoft-Windows-Setup" \(arch)>
+                  <RunSynchronous>
+                    <RunSynchronousCommand wcm:action="add"><Order>1</Order><Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path></RunSynchronousCommand>
+                    <RunSynchronousCommand wcm:action="add"><Order>2</Order><Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path></RunSynchronousCommand>
+                    <RunSynchronousCommand wcm:action="add"><Order>3</Order><Path>reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path></RunSynchronousCommand>
+                  </RunSynchronous>
+                  <DiskConfiguration>
+                    <Disk wcm:action="add">
+                      <DiskID>0</DiskID><WillWipeDisk>true</WillWipeDisk>
+                      <CreatePartitions>
+                        <CreatePartition wcm:action="add"><Order>1</Order><Type>EFI</Type><Size>260</Size></CreatePartition>
+                        <CreatePartition wcm:action="add"><Order>2</Order><Type>MSR</Type><Size>16</Size></CreatePartition>
+                        <CreatePartition wcm:action="add"><Order>3</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
+                      </CreatePartitions>
+                      <ModifyPartitions>
+                        <ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Format>FAT32</Format><Label>System</Label></ModifyPartition>
+                        <ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>3</PartitionID><Format>NTFS</Format><Label>Windows</Label><Letter>C</Letter></ModifyPartition>
+                      </ModifyPartitions>
+                    </Disk>
+                  </DiskConfiguration>
+                  <ImageInstall>
+                    <OSImage>
+                      <InstallFrom><MetaData wcm:action="add"><Key>/IMAGE/NAME</Key><Value>\(xml(edition))</Value></MetaData></InstallFrom>
+                      <InstallTo><DiskID>0</DiskID><PartitionID>3</PartitionID></InstallTo>
+                    </OSImage>
+                  </ImageInstall>
+                  <UserData>
+                    <ProductKey><Key>\(genericProKey)</Key></ProductKey>
+                    <AcceptEula>true</AcceptEula>
+                  </UserData>
+                </component>
+              </settings>
+              <settings pass="specialize">
+                <component name="Microsoft-Windows-Shell-Setup" \(arch)>
+                  <ComputerName>oss-windows</ComputerName>
+                </component>
+                <component name="Microsoft-Windows-Deployment" \(arch)>
+                  <RunSynchronous>
+                    <RunSynchronousCommand wcm:action="add"><Order>1</Order><Path>reg add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\OOBE /v BypassNRO /t REG_DWORD /d 1 /f</Path></RunSynchronousCommand>
+                  </RunSynchronous>
+                </component>
+              </settings>
+              <settings pass="oobeSystem">
+                <component name="Microsoft-Windows-Shell-Setup" \(arch)>
+                  <OOBE>
+                    <HideEULAPage>true</HideEULAPage><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+                    <HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                    <ProtectYourPC>3</ProtectYourPC>
+                  </OOBE>
+                  <UserAccounts>
+                    <LocalAccounts>
+                      <LocalAccount wcm:action="add">
+                        <Name>\(xml(user))</Name><Group>Administrators</Group><DisplayName>\(xml(user))</DisplayName>
+                        <Password><Value>\(xml(password))</Value><PlainText>true</PlainText></Password>
+                      </LocalAccount>
+                    </LocalAccounts>
+                  </UserAccounts>
+                  <AutoLogon>
+                    <Username>\(xml(user))</Username><Enabled>true</Enabled><LogonCount>9999999</LogonCount>
+                    <Password><Value>\(xml(password))</Value><PlainText>true</PlainText></Password>
+                  </AutoLogon>
+                  <FirstLogonCommands>
+                    <SynchronousCommand wcm:action="add"><Order>1</Order>
+                      <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand \(encoded)</CommandLine>
+                      <Description>OpenSSH Server with OS Server's key</Description>
+                    </SynchronousCommand>
+                  </FirstLogonCommands>
+                </component>
+              </settings>
+            </unattend>
+            """
+        let folder = "\(directory)/answers"
+        Paths.ensure(folder)
+        try Data(answers.utf8).write(to: URL(fileURLWithPath: "\(folder)/autounattend.xml"))
+        chmod("\(folder)/autounattend.xml", 0o600)
+        let iso = "\(directory)/answers.iso"
+        let made = try await Shell.run("/usr/bin/hdiutil", ["makehybrid", "-iso", "-joliet", "-iso-volume-name", "ANSWERS",
+                                                            "-joliet-volume-name", "ANSWERS", "-o", iso, folder], timeout: 120)
+        try? FileManager.default.removeItem(atPath: folder)
+        guard made.ok else { throw ShellError(description: "making the answer file's drive: \(made.error)") }
+        return iso
     }
 }
 #endif
