@@ -30,6 +30,20 @@
   and disk kept by the server (`GET /v1/usage/history`).
 - **OS Monitor** shows them: each lease's disk, the disk over the last day,
   the volumes, containers ("until released").
+- **Self-contained**: OS Server needs no Homebrew and no UTM.
+  - **Components** (the first launch's Set Up, Settings › Components): Linux
+    containers, macOS, Ubuntu and Windows VMs, Android emulators, iOS
+    simulators, each installed from a download (or a file you give it) with
+    no one at its screen and removed on its own.
+  - **Linux and Windows VMs on its own QEMU** (Homebrew's, bundled with its
+    libraries and data): each in a process of its own (it outlives OS
+    Server's restarts), QEMU's NAT, SSH forwarded on loopback, the screen
+    QEMU's VNC. `oss image install linux` (Ubuntu 26.04's cloud image and
+    cloud-init) and `oss image install windows --iso=` (an answer file, only
+    Windows' own drivers) make their bases; layers build on them as on any.
+  - Its own SSH key in its folder (a server from before keeps the user's),
+    the provisioning scripts and AXe inside the app, guest passwords it
+    makes itself.
 - `OS Server --headless`: the server alone, no window (to try a change
   beside the running app, with an `OSS_HOME` of its own).
 

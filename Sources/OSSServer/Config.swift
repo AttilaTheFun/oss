@@ -172,9 +172,10 @@ struct ServerConfig: Codable, Sendable {
     /// like its own: a second server (to try a change beside a running one)
     /// lends only what it's trying.
     var lends: [Platform]?
-    /// Whether to use UTM (Linux and Windows VMs, and macOS bases OS Server
-    /// hasn't got of its own).
-    var useUTM: Bool = true
+    /// Whether to use UTM (its Linux and Windows bases, and macOS bases OS
+    /// Server hasn't got of its own): by default, where UTM is installed (a
+    /// server set up before 0.9). OS Server makes its own bases without it.
+    var useUTM: Bool = FileManager.default.fileExists(atPath: "/Applications/UTM.app")
 
     init() {}
 
