@@ -543,6 +543,9 @@ enum WindowsInstaller {
                 </component>
               </settings>
               <settings pass="oobeSystem">
+                <component name="Microsoft-Windows-International-Core" \(arch)>
+                  <InputLocale>0409:00000409</InputLocale><SystemLocale>en-US</SystemLocale><UILanguage>en-US</UILanguage><UserLocale>en-US</UserLocale>
+                </component>
                 <component name="Microsoft-Windows-Shell-Setup" \(arch)>
                   <OOBE>
                     <HideEULAPage>true</HideEULAPage><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
