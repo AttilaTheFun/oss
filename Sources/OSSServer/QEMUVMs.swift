@@ -479,16 +479,19 @@ enum WindowsInstaller {
                 .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
         }
         let arch = "processorArchitecture=\"arm64\" publicKeyToken=\"31bf3856ad364e35\" language=\"neutral\" versionScope=\"nonSxS\""
-        // runner's first sign-in: the SSH server, OS Server's key, its firewall rule.
+        // runner's first sign-in: the SSH server, OS Server's key, its firewall
+        // rule. A script on the answer drive: a first-logon command is at most
+        // 1024 characters.
         let ssh = """
-            Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0; \
-            Set-Service sshd -StartupType Automatic; Start-Service sshd; \
-            Set-Content -Path C:\\ProgramData\\ssh\\administrators_authorized_keys -Value '\(publicKey)'; \
-            icacls.exe C:\\ProgramData\\ssh\\administrators_authorized_keys /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F'; \
-            if (-not (Get-NetFirewallRule -Name OpenSSH-Server-In-TCP -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name OpenSSH-Server-In-TCP -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 }; \
+            Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+            Set-Service sshd -StartupType Automatic
+            Start-Service sshd
+            Set-Content -Path C:\\ProgramData\\ssh\\administrators_authorized_keys -Value '\(publicKey)'
+            icacls.exe C:\\ProgramData\\ssh\\administrators_authorized_keys /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F'
+            if (-not (Get-NetFirewallRule -Name OpenSSH-Server-In-TCP -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name OpenSSH-Server-In-TCP -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 }
             Set-NetFirewallRule -Name OpenSSH-Server-In-TCP -Profile Any
             """
-        let encoded = Data(ssh.utf16.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] }).base64EncodedString()
+        let firstLogon = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"foreach ($d in [char[]]'DEFGHIJ') { if (Test-Path ($d + ':\\oss-ssh.ps1')) { & ($d + ':\\oss-ssh.ps1'); break } }\""
         let answers = """
             <?xml version="1.0" encoding="utf-8"?>
             <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
@@ -560,7 +563,7 @@ enum WindowsInstaller {
                   </AutoLogon>
                   <FirstLogonCommands>
                     <SynchronousCommand wcm:action="add"><Order>1</Order>
-                      <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand \(encoded)</CommandLine>
+                      <CommandLine>\(xml(firstLogon))</CommandLine>
                       <Description>OpenSSH Server with OS Server's key</Description>
                     </SynchronousCommand>
                   </FirstLogonCommands>
@@ -572,6 +575,7 @@ enum WindowsInstaller {
         Paths.ensure(folder)
         try Data(answers.utf8).write(to: URL(fileURLWithPath: "\(folder)/autounattend.xml"))
         chmod("\(folder)/autounattend.xml", 0o600)
+        try Data(ssh.replacingOccurrences(of: "\n", with: "\r\n").utf8).write(to: URL(fileURLWithPath: "\(folder)/oss-ssh.ps1"))
         let iso = "\(directory)/answers.iso"
         let made = try await Shell.run("/usr/bin/hdiutil", ["makehybrid", "-iso", "-joliet", "-iso-volume-name", "ANSWERS",
                                                             "-joliet-volume-name", "ANSWERS", "-o", iso, folder], timeout: 120)
