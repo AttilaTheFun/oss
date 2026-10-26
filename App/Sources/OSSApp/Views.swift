@@ -200,7 +200,11 @@ struct MachinesSection: View {
     private func memoryText(_ row: MachineRow) -> String {
         guard let bytes = row.usage?.memoryBytes else { return "—" }
         let limit = row.usage?.memoryLimitBytes ?? row.lease.memoryLimitBytes
-        return limit.map { "\(Format.bytes(bytes)) of \(Format.bytes($0))" } ?? Format.bytes(bytes)
+        guard let limit else { return Format.bytes(bytes) }
+        // "9.0 of 16.0 GB": one unit, so the column stays one line beside the disk's.
+        let used = Format.bytes(bytes), of = Format.bytes(limit)
+        if used.hasSuffix(" GB"), of.hasSuffix(" GB") { return "\(used.dropLast(3)) of \(of)" }
+        return "\(used) of \(of)"
     }
 
     private func memoryFraction(_ row: MachineRow) -> Double? {
