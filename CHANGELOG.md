@@ -1,7 +1,15 @@
 # Changelog
 
-## Next
+## 0.11.0
 
+- **Files served by their SHA-256**, on the Bazel cache's port:
+  `GET /files/sha256/<hex>` with the cache's read token, for pinned
+  dependencies such as an Xcode SDK archive. Added on the server's Mac only
+  (`oss files add | list | remove`), never evicted. OS Server's disk shows
+  them, and its Linux and Windows bases.
+- **The cache and its files can be read over the server's tailnet**
+  (`tailnetReads`, on unless set off), as from the Mac, its VMs and its
+  containers; the token still decides.
 - OS Server answers over a tailnet: its API, Bazel cache and leases'
   forwarded ports listened through one IPv6 socket that also took IPv4,
   which never saw connections that came in over Tailscale's tunnel (the
@@ -11,6 +19,9 @@
 - Windows' vanilla layer turns off OneDrive (its "Turn On Windows Backup"
   toast came some minutes after logon) and apps' toasts: a screen that
   holds still.
+- OS Server's and OS Monitor's version lines use digits of one width, so a
+  new version moves nothing after it (a proof's diff landed on the server's
+  address for that).
 
 ## 0.10.1
 

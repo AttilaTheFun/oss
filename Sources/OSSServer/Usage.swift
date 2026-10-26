@@ -223,7 +223,8 @@ actor DiskSizes {
         let config = ServerConfig.load()
         var places: [(String, String)] = [("macOS bases", "\(Paths.machines)/macos"), ("macOS leases", "\(Paths.machines)/leases"),
                                           ("Android SDK", config.androidSDK), ("Android emulators", config.androidAVDHome),
-                                          ("Containers", Paths.containers)]
+                                          ("Linux bases", "\(Paths.machines)/linux"), ("Windows bases", "\(Paths.machines)/windows"),
+                                          ("Containers", Paths.containers), ("Served files", Paths.files)]
         if let cache = config.cache { places.append(("Bazel cache", cache.directory)) }
         var measured: [DiskPart] = []
         for (name, path) in places where FileManager.default.fileExists(atPath: path) {

@@ -178,7 +178,8 @@ protocol. It has two tokens, made with it in `~/.config/oss/`:
   or a computer of its own, `oss cache use` writes the same two files
   (`oss cache use --remove` takes them away); a program gets the token
   from `GET /v1/cache`. Reading is for the server's Mac, its VMs and its
-  containers: the LAN can't read unless `lanReads` says so.
+  containers, and its tailnet (`tailnetReads`, on unless set off): the
+  LAN can't read unless `lanReads` says so.
 - **The write token** is for one job: CI's, building `main` after each
   merge, with the same flags everyone else builds with (the cache matches
   an action by its exact command line). It never leaves the server's Mac
@@ -195,6 +196,28 @@ protocol. It has two tokens, made with it in `~/.config/oss/`:
 `oss cache status` says how big it is and how many lookups it answered.
 It keeps to its size, and keeps the disk's free space above its floor,
 by letting go of the entries read longest ago.
+
+**Files by their SHA-256.** The same port serves files as they are, for
+pinned Bazel dependencies too big or too private for anywhere else (an
+Xcode SDK archive): `GET /files/sha256/<hex>`, read with the read token
+and from the same places as the cache. The hash in the URL is the one a
+dependency pins, so any server's copy is the same bytes and Bazel checks
+them. They're added on the server's Mac only, and never evicted:
+
+```sh
+oss files add ~/Downloads/apple-sdks-27.0.tar.gz   # hashed, kept (an APFS clone); prints its URL
+oss files list
+oss files remove <sha256>
+```
+
+A dependency lists each server's URL, its own Mac's first (by tailnet name:
+this Mac's VMs and containers reach it that way too), and Bazel takes the
+token from the same `.netrc` as the cache's:
+
+```starlark
+urls = ["http://<a Mac's tailnet name>:7490/files/sha256/<sha256>", ...],
+sha256 = "<sha256>",
+```
 
 ### From other computers
 
@@ -379,7 +402,7 @@ A Bazel cache (off without `"cache"`; `{}` for these defaults):
 
 ```json
 {"cache": {"port": 7490, "directory": "<OS Server's folder>/State/bazel-cache", "maxGigabytes": 20,
-           "minFreeGigabytes": 30, "lanReads": false}}
+           "minFreeGigabytes": 30, "lanReads": false, "tailnetReads": true}}
 ```
 
 `"lends": ["macos"]` lends only those platforms, and leaves every other
