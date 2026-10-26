@@ -395,9 +395,10 @@ extension QEMUVMs {
 /// Windows bases made from Microsoft's ISO (Windows 11 on Arm, which you
 /// give it: Microsoft hands it out only from its page), installed with no
 /// one at the screen by an answer file (`autounattend.xml` on a drive of
-/// its own, which Setup looks for). Only what Windows has drivers for out
-/// of the box: an NVMe disk, the ramfb display, USB keyboard and tablet, a
-/// USB network card (RNDIS). The answer file passes over Windows 11's TPM
+/// its own, which Setup looks for): an NVMe disk, the ramfb display, USB
+/// keyboard and tablet (Windows' own drivers) and a virtio network card,
+/// whose driver (Fedora's virtio-win, on a third drive) runner's first
+/// sign-in installs. The answer file passes over Windows 11's TPM
 /// and Secure Boot checks, the online account, and makes `runner` (logged
 /// in at boot); its first sign-in adds OpenSSH Server with OS Server's
 /// key. Then it is shut down; the vanilla layer is built on it. The ISO's
@@ -406,6 +407,11 @@ enum WindowsInstaller {
     /// Windows 11 Pro's generic key (Microsoft's, for installing; it
     /// doesn't activate).
     static let genericProKey = "VK7JG-NPHTM-C97JM-9MPGT-3V66T"
+    /// The virtio drivers (Fedora's virtio-win, signed; Arm64 builds of the
+    /// network card's and the rest): Windows has none for QEMU's network
+    /// cards on Arm. Downloaded beside the bases once, checked.
+    static let virtioVersion = "0.1.302"
+    static let virtioSHA256 = "303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d"
 
     static func install(config: String, iso: String, edition: String = "Windows 11 Pro", cpus: Int, memoryGB: Int,
                         diskGB: Int) async throws {
@@ -425,14 +431,15 @@ enum WindowsInstaller {
         let created = try await QEMU.run(QEMU.img, ["create", "-f", "qcow2", "\(work)/Disk.qcow2", "\(diskGB)G"])
         guard created.ok else { throw ShellError(description: "qemu-img create: \(created.error)") }
         try QEMUMachineSpec(platform: .windows, cpus: cpus, memoryBytes: UInt64(memoryGB) << 30, mac: Random.mac(),
-                            diskInterface: "nvme", networkCard: "usb-net", display: "ramfb",
+                            diskInterface: "nvme", networkCard: "virtio-net-pci", display: "ramfb",
                             origin: URL(fileURLWithPath: iso).lastPathComponent).save(work)
+        let drivers = try await virtioDrivers()
         let answers = try await answerFile(in: work, edition: edition, user: server.guestUser, password: password,
                                            publicKey: publicKey.trimmingCharacters(in: .whitespacesAndNewlines))
         guard let ports = QEMUVMs.freePorts() else { throw ShellError(description: "no free loopback ports for its QEMU") }
         let name = "build-windows-\(config)"
         log("installing \(edition) into \(config) from \(URL(fileURLWithPath: iso).lastPathComponent)")
-        try await QEMUVMs.start(name: name, path: work, ports: ports, media: [iso, answers])
+        try await QEMUVMs.start(name: name, path: work, ports: ports, media: [iso, answers, drivers])
         do {
             // The ISO's loader waits a few seconds for a key ("Press any key to
             // boot from CD or DVD"), two to four seconds in; the firmware waits
@@ -458,6 +465,26 @@ enum WindowsInstaller {
         log("Windows base \(config) is ready: \(edition), \(server.guestUser) made, SSH with the server's key")
     }
 
+    /// Fedora's virtio-win ISO, downloaded once and checked.
+    static func virtioDrivers() async throws -> String {
+        let directory = "\(Paths.machines)/images"
+        Paths.ensure(directory)
+        let destination = URL(fileURLWithPath: "\(directory)/virtio-win-\(virtioVersion).iso")
+        if FileManager.default.fileExists(atPath: destination.path), try await LinuxInstaller.sha256(destination) == virtioSHA256 {
+            return destination.path
+        }
+        let source = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-\(virtioVersion)-1/virtio-win-\(virtioVersion).iso"
+        log("downloading \(source)")
+        let (temporary, response) = try await URLSession.shared.download(from: URL(string: source)!)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw ShellError(description: "downloading virtio-win: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+        }
+        guard try await LinuxInstaller.sha256(temporary) == virtioSHA256 else { throw ShellError(description: "virtio-win isn't the one expected") }
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: temporary, to: destination)
+        return destination.path
+    }
+
     /// Space pressed every 300 ms for a while, through QMP.
     static func pressKeys(port: Int, seconds: Int) async throws {
         try await Task.detached {
@@ -479,10 +506,16 @@ enum WindowsInstaller {
                 .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
         }
         let arch = "processorArchitecture=\"arm64\" publicKeyToken=\"31bf3856ad364e35\" language=\"neutral\" versionScope=\"nonSxS\""
-        // runner's first sign-in: the SSH server, OS Server's key, its firewall
+        // runner's first sign-in: the virtio drivers (the network card's
+        // among them), then the SSH server, OS Server's key, its firewall
         // rule. A script on the answer drive: a first-logon command is at most
-        // 1024 characters.
+        // 1024 characters. What it did goes to C:\oss-setup.log.
         let ssh = """
+            Start-Transcript -Path C:\\oss-setup.log
+            $virtio = Get-PSDrive -PSProvider FileSystem | Where-Object { Test-Path ($_.Root + 'NetKVM\\w11\\ARM64') } | Select-Object -First 1
+            if ($virtio) { Get-ChildItem ($virtio.Root + '*\\w11\\ARM64\\*.inf') | ForEach-Object { pnputil /add-driver $_.FullName /install } }
+            for ($i = 0; $i -lt 90; $i++) { if (Get-NetAdapter | Where-Object Status -eq 'Up') { break }; Start-Sleep -Seconds 2 }
+            Get-NetAdapter | Format-Table Name, Status, InterfaceDescription -AutoSize
             Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
             Set-Service sshd -StartupType Automatic
             Start-Service sshd
@@ -490,6 +523,7 @@ enum WindowsInstaller {
             icacls.exe C:\\ProgramData\\ssh\\administrators_authorized_keys /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F'
             if (-not (Get-NetFirewallRule -Name OpenSSH-Server-In-TCP -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name OpenSSH-Server-In-TCP -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 }
             Set-NetFirewallRule -Name OpenSSH-Server-In-TCP -Profile Any
+            Stop-Transcript
             """
         let firstLogon = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"foreach ($d in [char[]]'DEFGHIJ') { if (Test-Path ($d + ':\\oss-ssh.ps1')) { & ($d + ':\\oss-ssh.ps1'); break } }\""
         let answers = """
