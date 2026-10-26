@@ -21,6 +21,10 @@ let usage = """
                                                             a container: the command run in it, streamed, signals passed on
                                                             (--socket: the lease's execSocket, no server or token needed)
       oss volume list | delete <name>                       containers' volumes, kept ones too
+    What this Mac lends (on the server's Mac; the app's Settings › Components):
+      oss component list                                    each component: installed, or not, or why not here
+      oss component install <id> [--file=PATH]              macos, linux, windows (--file= its ISO), android, ios
+      oss component remove <id>                             what it installed deleted (refused while a lease uses it)
       oss machine simctl <id> <simctl arguments…>          iOS: install ./My.app, launch <bundle id>, openurl …
       oss machine adb <id> <adb arguments…>                 Android: install ./app.apk, shell …, logcat -d …
       oss machine screenshot <id> <file.png>                any lease
@@ -228,7 +232,7 @@ public enum OSSCommand {
         let arguments = Arguments(Array(commandLine.dropFirst()),
                                   valued: ["config", "minutes", "key", "holder", "identity", "from", "script", "vm", "device", "runtime",
                                            "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "volume", "env", "env-file", "workdir",
-                                           "command", "socket", "iso", "edition"])
+                                           "command", "socket", "iso", "edition", "file"])
         let command = arguments.positional.first ?? "help"
         let sub = arguments.positional.count > 1 ? arguments.positional[1] : nil
         let target = arguments.positional.count > 2 ? arguments.positional[2] : nil
@@ -359,6 +363,46 @@ public enum OSSCommand {
                 default:
                     print(usage)
                 }
+
+            case "component":
+                #if os(macOS)
+                // What this Mac lends, a component at a time (the app's Settings › Components).
+                func show(_ list: [ComponentInfo]) {
+                    for component in list {
+                        let state: String
+                        switch component.state {
+                        case .absent: state = component.needsFile ? "not installed (from a file: --file=)" : "not installed"
+                        case .installing(let line): state = "installing: \(line)"
+                        case .installed: state = "installed"
+                        case .unavailable(let why): state = "unavailable: \(why)"
+                        case .failed(let why): state = "failed: \(why)"
+                        }
+                        print("\(component.id)\t\(component.name): \(state)")
+                    }
+                }
+                switch sub {
+                case "list", nil:
+                    show(await Components.shared.list())
+                case "install":
+                    guard let target else { fail("oss component install <id> [--file=PATH]") }
+                    await Components.shared.install(target, file: arguments.options["file"])
+                    // Here, in this process: waited on until it's done.
+                    while case .installing = await Components.shared.list().first(where: { $0.id == target })?.state {
+                        try await Task.sleep(for: .seconds(5))
+                    }
+                    let done = await Components.shared.list().first { $0.id == target }
+                    show(done.map { [$0] } ?? [])
+                    if case .failed = done?.state { exit(1) }
+                case "remove":
+                    guard let target else { fail("oss component remove <id>") }
+                    try await Components.shared.remove(target)
+                    print("removed \(target)")
+                default:
+                    print(usage)
+                }
+                #else
+                fail("components are OS Server's on a Mac")
+                #endif
 
             case "volume":
                 let client = try await OSSClient.connect()

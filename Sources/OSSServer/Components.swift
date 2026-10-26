@@ -67,11 +67,13 @@ public actor Components {
             return .absent
         }
         let containersReady = await containers?.isPrepared() ?? false
+        let noContainers: String
+        if #available(macOS 26, *) { noContainers = "OS Server's app runs them" } else { noContainers = "needs macOS 26" }
         list.append(ComponentInfo(id: "containers", name: "Linux containers",
                                   detail: "Containers from any registry's images, on Apple's Containerization: its Linux kernel and init.",
                                   symbol: "shippingbox",
                                   state: state("containers", installed: containersReady,
-                                               unavailable: containers == nil ? "needs macOS 26" : nil),
+                                               unavailable: containers == nil ? noContainers : nil),
                                   accepts: []))
         let macOS27: Bool
         if #available(macOS 27, *) { macOS27 = true } else { macOS27 = false }
