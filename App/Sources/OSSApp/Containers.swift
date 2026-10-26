@@ -163,6 +163,19 @@ actor ContainerEngine: ContainerBackend {
         try deleteVolumeFiles(name)
     }
 
+    func prepare() async throws { _ = try await prepared() }
+
+    func isPrepared() async -> Bool {
+        FileManager.default.fileExists(atPath: kernelPath.path)
+            && FileManager.default.fileExists(atPath: root.appendingPathComponent("initfs.ext4").path)
+    }
+
+    func removeEverything() async {
+        await prune(keeping: [])
+        store = nil
+        try? FileManager.default.removeItem(at: root)
+    }
+
     // MARK: Images, volumes, helpers
 
     /// An image's root filesystem at a size, unpacked once (a big image takes

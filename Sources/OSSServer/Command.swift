@@ -43,6 +43,10 @@ let usage = """
       oss image install macos [config] [--ipsw=PATH] [--cpus=6] [--memory=16] [--disk=128]
                                                             OS Server's own macOS base (Virtualization's), installed
                                                             and runner made with no one at its screen (macOS 27)
+      oss image install linux [config] [--image=PATH] [--cpus=6] [--memory=8] [--disk=128]
+                                                            OS Server's own Ubuntu base (its QEMU's), from Ubuntu's
+                                                            cloud image (downloaded and checked), GNOME and runner
+                                                            set up by cloud-init
       oss image import-utm <UTM VM name>… [--as=CONFIG]     UTM's macOS VMs as OS Server's own bases (APFS clones)
       oss image provision-macos --vm=NAME [--install]       a UTM VM's (before OS Server ran its own)
     OS Monitor (OS Server's client: reads what the server is doing, nothing else):
@@ -490,9 +494,18 @@ public enum OSSCommand {
             case "image":
                 ManagementKey.settle()
                 #if canImport(Virtualization)
+            if sub == "install", target == "linux" {
+                // oss image install linux [config] [--image=PATH] [--cpus=N] [--memory=GB] [--disk=GB]
+                try await LinuxInstaller.install(config: arguments.positional.count >= 4 ? arguments.positional[3] : "base",
+                                                 image: arguments.options["image"],
+                                                 cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
+                                                 memoryGB: Int(arguments.options["memory"] ?? "") ?? 8,
+                                                 diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                exit(0)
+            }
             if sub == "install" {
                 // oss image install macos [config] [--ipsw=PATH] [--cpus=N] [--memory=GB] [--disk=GB]
-                guard target == "macos" else { fail("oss image install macos [config] [--ipsw=PATH] [--cpus=6] [--memory=16] [--disk=128]") }
+                guard target == "macos" else { fail("oss image install macos|linux [config] … (see oss --help)") }
                 guard #available(macOS 27, *) else { fail("installing macOS with no one at its screen needs macOS 27 here") }
                 try await MacInstaller.install(config: arguments.positional.count >= 4 ? arguments.positional[3] : "base",
                                                ipsw: arguments.options["ipsw"],

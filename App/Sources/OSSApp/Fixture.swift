@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import OSSClient
+import OSSServer
 
 /// A server's state, made up and always the same, for the proof's screens:
 /// the app shows it instead of running a server when it is launched with
@@ -26,6 +27,28 @@ enum Fixture {
     /// The menu bar's panel in a window of its own instead of the main
     /// window (`-panel YES`), for its screen.
     static var showsPanel: Bool { isOn && UserDefaults.standard.bool(forKey: "panel") }
+
+    /// Onboarding's window (`-setup YES`), for its screen.
+    static var showsSetUp: Bool { isOn && UserDefaults.standard.bool(forKey: "setup") }
+
+    /// The components as a Mac part-way through setting up has them.
+    static let components: [ComponentInfo] = [
+        ComponentInfo(id: "containers", name: "Linux containers",
+                      detail: "Containers from any registry's images, on Apple's Containerization: its Linux kernel and init.",
+                      symbol: "shippingbox", state: .installed, accepts: []),
+        ComponentInfo(id: "macos", name: "macOS VMs",
+                      detail: "The newest macOS this Mac runs, installed from Apple's restore image with no one at its screen.",
+                      symbol: "laptopcomputer", state: .absent, accepts: ["ipsw"]),
+        ComponentInfo(id: "linux", name: "Ubuntu VMs",
+                      detail: "Ubuntu 26.04 with GNOME, from Ubuntu's cloud image, on OS Server's QEMU.",
+                      symbol: "server.rack", state: .installing("build-linux-base: first boot, cloud-init installing the desktop (a while)"),
+                      accepts: ["img"]),
+        ComponentInfo(id: "android", name: "Android emulators",
+                      detail: "Google's emulator and an Android 15 phone image, from Google's repository.",
+                      symbol: "candybarphone", state: .installed, accepts: []),
+        ComponentInfo(id: "ios", name: "iOS simulators", detail: "An iPhone simulator of the newest runtime Xcode has.",
+                      symbol: "iphone", state: .absent, accepts: []),
+    ]
 
     /// The moment the screens show, so every relative time is the same.
     static let now = Date(timeIntervalSince1970: 1_793_534_400)

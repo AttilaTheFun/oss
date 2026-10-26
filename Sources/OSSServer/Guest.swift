@@ -9,9 +9,11 @@ struct Guest: Sendable {
     var address: String
     var user: String
     var key: String
+    /// Its SSH port: 22, or a QEMU guest's forwarded loopback port.
+    var port: Int = 22
 
     private var options: [String] {
-        ["-i", key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "LogLevel=ERROR",
+        ["-i", key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "LogLevel=ERROR", "-o", "Port=\(port)",
          // Guests come and go on reused addresses: their host keys are never kept.
          "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
     }

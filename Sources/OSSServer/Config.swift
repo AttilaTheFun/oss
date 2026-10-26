@@ -321,8 +321,9 @@ enum ManagementKey {
         let userKey = "\(Paths.home)/.ssh/id_ed25519"
         var settings = (manager.contents(atPath: Paths.serverConfig)
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) ?? [:]
-        let setUpBefore = manager.fileExists(atPath: Paths.serverConfig) || manager.fileExists(atPath: Paths.leases)
-            || manager.fileExists(atPath: Paths.machines)
+        // Bases or leases from before (UTM's are listed in vm-bases.json): they trust the user's key.
+        let setUpBefore = manager.fileExists(atPath: Paths.machines) || manager.fileExists(atPath: Paths.leases)
+            || manager.fileExists(atPath: Paths.vmBases)
         if settings["managementKey"] == nil, setUpBefore, !manager.fileExists(atPath: Paths.ownKey),
            manager.fileExists(atPath: userKey) {
             settings["managementKey"] = userKey

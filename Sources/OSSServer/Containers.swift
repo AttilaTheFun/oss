@@ -29,6 +29,13 @@ public protocol ContainerBackend: Sendable {
     /// The volumes on this Mac, kept ones too.
     func volumes() async -> [VolumeInfo]
     func deleteVolume(name: String) async throws
+    /// What containers need fetched (the kernel, the init filesystem): a
+    /// component of OS Server's, installed ahead or with the first container.
+    func prepare() async throws
+    func isPrepared() async -> Bool
+    /// Every container stopped and everything the backend keeps deleted
+    /// (the component removed).
+    func removeEverything() async
 }
 
 /// What a container gets where its lease asks for nothing.
