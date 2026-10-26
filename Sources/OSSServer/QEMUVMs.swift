@@ -123,10 +123,14 @@ enum QEMUVMs {
         var arguments = [
             "-name", name, "-L", QEMU.data ?? (firmware as NSString).deletingLastPathComponent,
             "-machine", "virt,highmem=on", "-accel", "hvf", "-cpu", "host",
+            // No wait for a key at the firmware's boot (a key then stops the boot).
+            "-boot", "menu=on,splash-time=0",
             "-smp", "\(spec.cpus)", "-m", "\(spec.memoryBytes >> 20)",
             "-drive", "if=pflash,format=raw,unit=0,readonly=on,file=\(firmware)",
             "-drive", "if=pflash,format=raw,unit=1,file=\(variables)",
-            "-device", "qemu-xhci,id=usb",
+            // Ports enough for every USB device without a hub: the firmware, which
+            // doesn't wait, sees a drive behind a hub too late to boot it.
+            "-device", "qemu-xhci,id=usb,p2=8,p3=8",
             // A tablet, not a mouse: VNC's pointer is absolute.
             "-device", "usb-kbd", "-device", "usb-tablet",
             "-device", spec.display == "ramfb" ? "ramfb" : "\(spec.display),xres=\(spec.displayWidth),yres=\(spec.displayHeight)",
@@ -143,9 +147,11 @@ enum QEMUVMs {
             "-qmp", "tcp:127.0.0.1:\(ports.qmp),server=on,wait=off",
             "-display", "none", "-daemonize", "-pidfile", "\(path)/qemu.pid", "-D", "\(path)/qemu.log",
         ]
+        // In the boot order after the disk (the firmware connects only what
+        // is in it): an empty disk boots the installer.
         for (index, image) in media.enumerated() {
             arguments += ["-drive", "if=none,id=media\(index),media=cdrom,readonly=on,file=\(image)",
-                          "-device", "usb-storage,drive=media\(index),removable=on"]
+                          "-device", "usb-storage,drive=media\(index),removable=on,bootindex=\(index + 1)"]
         }
         let result = try await Shell.run(system, arguments, timeout: 120)
         guard result.ok, let pid = pid(path) else {
@@ -394,7 +400,8 @@ extension QEMUVMs {
 /// USB network card (RNDIS). The answer file passes over Windows 11's TPM
 /// and Secure Boot checks, the online account, and makes `runner` (logged
 /// in at boot); its first sign-in adds OpenSSH Server with OS Server's
-/// key. Then it is shut down; the vanilla layer is built on it.
+/// key. Then it is shut down; the vanilla layer is built on it. The ISO's
+/// loader asks for a key to boot: QMP presses one.
 enum WindowsInstaller {
     /// Windows 11 Pro's generic key (Microsoft's, for installing; it
     /// doesn't activate).
@@ -427,8 +434,11 @@ enum WindowsInstaller {
         log("installing \(edition) into \(config) from \(URL(fileURLWithPath: iso).lastPathComponent)")
         try await QEMUVMs.start(name: name, path: work, ports: ports, media: [iso, answers])
         do {
-            // Its boot loader waits for a key ("Press any key to boot from CD or DVD").
-            try await pressKeys(port: ports.qmp, seconds: 25)
+            // The ISO's loader waits a few seconds for a key ("Press any key to
+            // boot from CD or DVD"), two to four seconds in; the firmware waits
+            // for none, so keys sent from the start reach it. Not for long: a
+            // key that reaches Setup's window presses its Cancel.
+            try await pressKeys(port: ports.qmp, seconds: 8)
             let guest = QEMUVMs.guest(.windows, ports: ports, config: server)
             log("\(name): Setup installing (a while)")
             guard await guest.waitUntilReachable(seconds: 3 * 3600) else {
@@ -448,14 +458,13 @@ enum WindowsInstaller {
         log("Windows base \(config) is ready: \(edition), \(server.guestUser) made, SSH with the server's key")
     }
 
-    /// Return pressed every half second for a while, through QMP.
+    /// Space pressed every 300 ms for a while, through QMP.
     static func pressKeys(port: Int, seconds: Int) async throws {
-        try await Task.sleep(for: .seconds(2))
         try await Task.detached {
             let qmp = try QMPConnection(port: port)
-            for _ in 0..<(seconds * 2) {
-                _ = try? qmp.execute("send-key", ["keys": [["type": "qcode", "data": "ret"]]])
-                usleep(500_000)
+            for _ in 0..<(seconds * 10 / 3) {
+                _ = try? qmp.execute("send-key", ["keys": [["type": "qcode", "data": "spc"]]])
+                usleep(300_000)
             }
             qmp.close()
             return ()
