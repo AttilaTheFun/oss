@@ -1,5 +1,11 @@
 # Changelog
 
+## Next
+
+- Windows' vanilla layer turns off OneDrive (its "Turn On Windows Backup"
+  toast came some minutes after logon) and apps' toasts: a screen that
+  holds still.
+
 ## 0.10.1
 
 - OS Server could crash as it started: its log's last line (which a
