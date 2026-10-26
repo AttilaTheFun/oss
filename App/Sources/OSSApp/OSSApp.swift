@@ -54,6 +54,15 @@ struct OSSApp: App {
         }
         .defaultSize(width: 1280, height: 820)
 
+        // A Linux or Windows VM's screen, live (its QEMU's VNC).
+        WindowGroup("Screen", id: "guest-screen", for: GuestScreenTarget.self) { $target in
+            if let target {
+                GuestScreen(target: target)
+                    .onAppear { AppActivation.windowShown() }
+            }
+        }
+        .defaultSize(width: 1280, height: 760)
+
         // The menu bar's panel in a window of its own, for the proof's
         // screen of it (`-fixture -panel`): the same view, no clicking.
         Window("OS Server menu", id: "panel") {

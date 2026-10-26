@@ -90,11 +90,11 @@ public actor Components {
                                                unavailable: QEMU.system == nil ? "this OS Server has no QEMU" : nil),
                                   accepts: ["img"]))
         list.append(ComponentInfo(id: "windows", name: "Windows VMs",
-                                  detail: "Windows 11 on Arm from Microsoft's ISO (download it from Microsoft's page), installed by an answer file on OS Server's QEMU, with Fedora's virtio drivers.",
+                                  detail: "Windows 11 on Arm from Microsoft's ISO (downloaded from Microsoft, about 6 GB), installed by an answer file on OS Server's QEMU, with Fedora's virtio drivers.",
                                   symbol: "pc",
                                   state: state("windows", installed: QEMUStore.hasBase(.windows, "vanilla"),
                                                unavailable: QEMU.system == nil ? "this OS Server has no QEMU" : nil),
-                                  accepts: ["iso"], needsFile: true))
+                                  accepts: ["iso"]))
         list.append(ComponentInfo(id: "android", name: "Android emulators",
                                   detail: "Google's emulator and an Android 15 phone image, from Google's repository.",
                                   symbol: "candybarphone",
@@ -149,9 +149,10 @@ public actor Components {
             try await LinuxInstaller.install(config: "base", image: file, cpus: 6, memoryGB: 8, diskGB: 128)
             try await Images.build(platform: .linux, layer: "vanilla", from: "base", script: nil, copies: [])
         case "windows":
-            guard let file else { throw ShellError(description: "Windows installs from its ISO: give it one") }
             GuestPasswords.ensure(.windows)
-            try await WindowsInstaller.install(config: "base", iso: file, cpus: 6, memoryGB: 8, diskGB: 128)
+            var iso = file
+            if iso == nil { iso = try await WindowsISO.download().path }
+            try await WindowsInstaller.install(config: "base", iso: iso ?? "", cpus: 6, memoryGB: 8, diskGB: 128)
             try await Images.build(platform: .windows, layer: "vanilla", from: "base", script: nil, copies: [])
         case "android":
             try await Emulators.setup(api: 35, tag: "google_apis")
@@ -185,6 +186,12 @@ public actor Components {
             try? FileManager.default.removeItem(atPath: "\(Paths.machines)/images/\(LinuxInstaller.imageName)")
         case "windows":
             try? FileManager.default.removeItem(atPath: QEMUStore.bases(.windows))
+            // The ISO it downloaded, and the virtio drivers.
+            let images = "\(Paths.machines)/images"
+            for name in (try? FileManager.default.contentsOfDirectory(atPath: images)) ?? []
+            where name.hasPrefix("Windows11_") || name.hasPrefix("virtio-win-") {
+                try? FileManager.default.removeItem(atPath: "\(images)/\(name)")
+            }
         case "android":
             await Emulators.stopADB()
             try? FileManager.default.removeItem(atPath: config.androidAVDHome)

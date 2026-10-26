@@ -162,12 +162,15 @@ struct MachinesSection: View {
                             UsageCell(text: memoryText(row), fraction: memoryFraction(row), tint: .purple)
                             Text(row.usage?.diskBytes.map(Format.bytes) ?? "—").monospacedDigit()
                             Text(timeText(row)).monospacedDigit()
-                            // A macOS VM of OS Server's: its screen, live (its
-                            // helper's window, or this app's for one run here).
+                            // A VM of OS Server's own: its screen, live (a macOS
+                            // VM's in its helper's window, or this app's for one
+                            // run here; a Linux or Windows VM's QEMU in the app's).
                             if MacVMs.names.contains(row.lease.name) {
                                 Button("Screen") { openWindow(id: "screen", value: row.lease.name) }
                             } else if MachineScreens.isOwn(row.lease) {
                                 Button("Screen") { Task { await MachineScreens.showInHelper(row.lease.name) } }
+                            } else if let port = row.lease.qemuVNCPort {
+                                Button("Screen") { openWindow(id: "guest-screen", value: GuestScreenTarget(name: row.lease.name, port: port)) }
                             } else {
                                 Text("")
                             }
