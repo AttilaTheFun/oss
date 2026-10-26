@@ -90,7 +90,7 @@ public actor Components {
                                                unavailable: QEMU.system == nil ? "this OS Server has no QEMU" : nil),
                                   accepts: ["img"]))
         list.append(ComponentInfo(id: "windows", name: "Windows VMs",
-                                  detail: "Windows 11 on Arm from Microsoft's ISO (download it from Microsoft's page), installed by an answer file on OS Server's QEMU.",
+                                  detail: "Windows 11 on Arm from Microsoft's ISO (download it from Microsoft's page), installed by an answer file on OS Server's QEMU, with Fedora's virtio drivers.",
                                   symbol: "pc",
                                   state: state("windows", installed: QEMUStore.hasBase(.windows, "vanilla"),
                                                unavailable: QEMU.system == nil ? "this OS Server has no QEMU" : nil),

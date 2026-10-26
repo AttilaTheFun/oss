@@ -330,9 +330,11 @@ Protocol](https://modelcontextprotocol.io) tools on stdio (`oss_status`,
      cloud-init, then the vanilla layer; about five minutes.
    - **Windows VMs**: Windows 11 on Arm from its ISO, which you give it
      (Microsoft hands it out only from its page), installed by an answer
-     file with only the drivers Windows has (NVMe, ramfb, USB keyboard,
-     tablet and network), OpenSSH with OS Server's key, then the vanilla
-     layer. It installs with Windows' generic key: activate it yourself.
+     file in about fifty minutes: Windows' own drivers for its disk (NVMe),
+     screen and input, Fedora's virtio-win (signed Arm64 drivers,
+     downloaded and checked) for its network card and GPU (1920 × 1080),
+     OpenSSH with OS Server's key, then the vanilla layer. It installs with
+     Windows' generic key: activate it yourself.
    - **Android emulators**: Google's emulator, platform-tools and an
      Android 15 phone image, from Google's repository (no Java).
    - **iOS simulators**: an iPhone simulator of the newest runtime Xcode

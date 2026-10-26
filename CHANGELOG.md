@@ -39,8 +39,9 @@
     libraries and data): each in a process of its own (it outlives OS
     Server's restarts), QEMU's NAT, SSH forwarded on loopback, the screen
     QEMU's VNC. `oss image install linux` (Ubuntu 26.04's cloud image and
-    cloud-init) and `oss image install windows --iso=` (an answer file, only
-    Windows' own drivers) make their bases; layers build on them as on any.
+    cloud-init) and `oss image install windows --iso=` (an answer file;
+    Fedora's virtio-win for the network card and GPU) make their bases;
+    layers build on them as on any. `oss component list|install|remove`.
   - Its own SSH key in its folder (a server from before keeps the user's),
     the provisioning scripts and AXe inside the app, guest passwords it
     makes itself.
