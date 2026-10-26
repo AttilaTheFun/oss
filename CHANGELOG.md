@@ -2,6 +2,12 @@
 
 ## 0.8.0
 
+- **A simulator's screenshots have their corners and Dynamic Island masked
+  black** (`simctl io screenshot --mask=black`): a fresh simulator draws
+  the island and another doesn't, so shots of one screen differed there.
+- **OS Monitor's iPhone build is signed as itself**: its own application
+  identifier and keychain group over the wildcard profile's `TEAM.*`.
+
 - **OS Monitor** (Monitor/), OS Server's client for iPhone, iPad and Mac, as
   Visor is Visor Server's.
   - For each server it shows:

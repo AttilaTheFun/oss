@@ -90,7 +90,10 @@ enum Simulators {
     static func screenshot(udid: String) async throws -> Data {
         let path = NSTemporaryDirectory() + "oss-sim-\(Random.hex(4)).png"
         defer { try? FileManager.default.removeItem(atPath: path) }
-        let result = try await simctl(["io", udid, "screenshot", path], timeout: 60)
+        // The corners and the Dynamic Island masked black: a fresh simulator
+        // draws the island and another doesn't, so unmasked shots of one screen
+        // differ there from run to run.
+        let result = try await simctl(["io", udid, "screenshot", "--mask=black", path], timeout: 60)
         guard result.ok, let data = FileManager.default.contents(atPath: path) else {
             throw APIError(error: "simctl io screenshot: \(result.error)")
         }
