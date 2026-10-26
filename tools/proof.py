@@ -97,11 +97,12 @@ def main():
                 items.append({"name": f"{item} ({appearance})", "status": "new", "capture": capture})
                 if item == "window":
                     # The app's menu bar item (its icon and lease count), with
-                    # a little of the bar around it.
+                    # a few pixels of the bar around it (no neighbour, whose
+                    # state changes from run to run).
                     item_frame = frames.get("statusItem")
                     if item_frame:
                         bar = f"menubar-{appearance}.png"
-                        margin = 40
+                        margin = 6
                         crop(screen, os.path.join(out, bar), max(0, item_frame["x"] - margin), 0,
                              item_frame["width"] + 2 * margin, frames["menuBarHeight"])
                         items.append({"name": f"menu bar ({appearance})", "status": "new", "capture": bar})

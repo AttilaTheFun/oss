@@ -37,6 +37,13 @@ server's HTTP API, which programs can call too: Swift ones through the
 Default capacity: two of each VM platform (16 GB each), four simulators
 and two emulators. All of it is configurable.
 
+A simulator's and an emulator's status bar is held still from the moment
+it's ready (9:41, full Wi-Fi, signal and battery; no carrier, no
+notifications), so screenshots of the same screen match from run to run.
+`oss machine simctl <id> status_bar clear`, or on Android `oss machine adb
+<id> shell am broadcast -a com.android.systemui.demo -e command exit`,
+gives the live one back.
+
 oss is for machines with a screen. It ran Linux containers too until
 0.3.0; containers for agents now belong to the program that runs the
 agents (Visor runs its own), and oss stays with what needs a GUI.

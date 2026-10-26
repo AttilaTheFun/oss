@@ -164,6 +164,7 @@ actor MachineManager {
         let udid = try await Simulators.lease(base: base, name: lease.name)
         leases[id]?.udid = udid
         guard leases[id]?.state == .creating else { await Simulators.release(udid: udid); return }
+        await Simulators.holdStatusBarStill(udid: udid)
         leases[id]?.state = .ready
         save()
         log("lease \(id): simulator \(udid) booted")
@@ -181,6 +182,7 @@ actor MachineManager {
         leases[id]?.cpus = allotted.cpus
         leases[id]?.memoryLimitBytes = allotted.memoryBytes
         guard leases[id]?.state == .creating else { return }
+        await Emulators.holdStatusBarStill(port: port)
         // adb from anywhere: `adb connect <server>:<adbPort>` reaches the emulator's own adb port.
         let adb = try forward(id, to: "127.0.0.1", port: port + 1)
         leases[id]?.adbPort = adb

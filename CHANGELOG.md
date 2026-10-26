@@ -38,6 +38,13 @@
   `~/.config`, `~/.local/state` and `~/.local/share`, its log, the launch
   agent's plist, the command line's link, the login item; UTM's `oss-` VMs
   if asked), then quits: removing the app leaves the Mac as it was.
+- **A simulator's and an emulator's status bar is held still** from the
+  moment the lease is ready, so screenshots of the same screen match from
+  run to run:
+  - the time 9:41, full Wi-Fi and signal, a full battery;
+  - no carrier on iOS, no notifications on Android;
+  - simctl's status bar override on iOS, SystemUI's demo mode on Android;
+  - `status_bar clear` or the demo's `exit` command gives the live one back.
 - **`"lends"` and `"useUTM"`** in server.json: a server lends only the
   platforms named (and leaves every other platform's machines alone,
   however they're named), and can leave UTM out. A second server, to try a

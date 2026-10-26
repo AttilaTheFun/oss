@@ -268,6 +268,25 @@ enum Emulators {
     /// What a holder may run against its own emulator (the server's adb, its serial).
     static let allowed: Set<String> = ["install", "install-multiple", "uninstall", "shell", "logcat", "exec-out", "push", "reverse", "forward"]
 
+    /// The status bar held still (SystemUI's demo mode): 09:41, full Wi-Fi
+    /// and signal, a full battery, no notifications. Every lease starts so,
+    /// so screenshots of the same screen match from one run to the next
+    /// (`oss machine adb <id> shell am broadcast -a com.android.systemui.demo
+    /// -e command exit` gives the live one back).
+    static func holdStatusBarStill(port: Int) async {
+        let c = ServerConfig.load()
+        let serial = ["-s", "emulator-\(port)"]
+        _ = try? await adb(c, serial + ["shell", "settings", "put", "global", "sysui_demo_allowed", "1"], timeout: 60)
+        // Wi-Fi and the cellular network in broadcasts of their own: an
+        // intent keeps one value a key, and both take `level`.
+        for command in [["enter"], ["clock", "-e", "hhmm", "0941"], ["battery", "-e", "level", "100", "-e", "plugged", "false"],
+                        ["network", "-e", "wifi", "show", "-e", "level", "4", "-e", "fully", "true"],
+                        ["network", "-e", "mobile", "show", "-e", "level", "4", "-e", "datatype", "none", "-e", "fully", "true"],
+                        ["notifications", "-e", "visible", "false"]] {
+            _ = try? await adb(c, serial + ["shell", "am", "broadcast", "-a", "com.android.systemui.demo", "-e", "command"] + command, timeout: 60)
+        }
+    }
+
     static func run(_ arguments: [String], port: Int) async throws -> ProcessResult {
         guard let command = arguments.first, allowed.contains(command) else {
             throw APIError(error: "adb \(arguments.first ?? ""): not allowed (allowed: \(allowed.sorted().joined(separator: ", ")))")

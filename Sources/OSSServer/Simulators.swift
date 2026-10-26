@@ -52,6 +52,16 @@ enum Simulators {
                                        "addmedia", "push", "privacy", "status_bar", "ui", "location", "spawn",
                                        "get_app_container", "keychain", "pbcopy", "pbpaste"]
 
+    /// The status bar held still, as Apple's own screenshots have it: 9:41,
+    /// full Wi-Fi and signal, a full battery, no carrier. Every lease starts
+    /// so, so screenshots of the same screen match from one run to the next
+    /// (`oss machine simctl <id> status_bar clear` gives the live one back).
+    static func holdStatusBarStill(udid: String) async {
+        _ = try? await simctl(["status_bar", udid, "override", "--time", "9:41", "--dataNetwork", "wifi", "--wifiMode", "active",
+                               "--wifiBars", "3", "--cellularMode", "active", "--cellularBars", "4", "--operatorName", "",
+                               "--batteryState", "charged", "--batteryLevel", "100"], timeout: 60)
+    }
+
     static func run(_ arguments: [String], udid: String) async throws -> ProcessResult {
         guard let command = arguments.first, allowed.contains(command) else {
             throw APIError(error: "simctl \(arguments.first ?? ""): not allowed (allowed: \(allowed.sorted().joined(separator: ", ")))")
