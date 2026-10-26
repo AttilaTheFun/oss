@@ -8,7 +8,8 @@ Builds the app (App/build.sh --zip, build/OS-Server.zip), leases a macOS VM from
 (or uses a held lease: `oss machine lease macos --exports > file`), installs
 the app there and opens it with its canned server (`-fixture YES`: the same
 leases, usage and log every time), light and dark: its window, its menu
-bar's panel (`-panel YES`) and the menu bar with its icon. Each screen is cut
+bar's panel (`-panel YES`), its first launch's Set Up window (`-setup YES`)
+and the menu bar with its icon. Each screen is cut
 from the VM's screenshot by the frames the app writes
 (~/oss-fixture-windows.json). The run is <dir>/review-macos/manifest.json
 (the review store's schema 1, app "oss"); --publish copies it to the
@@ -24,6 +25,7 @@ APP = os.path.join(ROOT, "App")
 SCREENS = [  # (item, arguments: AppKit's -key value pairs)
     ("window", ["-fixture", "YES"]),
     ("panel", ["-fixture", "YES", "-panel", "YES"]),
+    ("setup", ["-fixture", "YES", "-setup", "YES"]),
 ]
 APPEARANCES = ["light", "dark"]
 

@@ -27,8 +27,11 @@ public struct ComponentInfo: Identifiable, Sendable, Equatable {
     public var state: State
     /// What it can be installed from besides a download (a file to pick).
     public var accepts: [String]
+    /// It installs only from a file you give it (there's no download).
+    public var needsFile: Bool = false
 
-    public init(id: String, name: String, detail: String, symbol: String, state: State, accepts: [String]) {
+    public init(id: String, name: String, detail: String, symbol: String, state: State, accepts: [String], needsFile: Bool = false) {
+        self.needsFile = needsFile
         self.id = id
         self.name = name
         self.detail = detail
@@ -84,6 +87,12 @@ public actor Components {
                                   state: state("linux", installed: QEMUStore.hasBase(.linux, "vanilla"),
                                                unavailable: QEMU.system == nil ? "this OS Server has no QEMU" : nil),
                                   accepts: ["img"]))
+        list.append(ComponentInfo(id: "windows", name: "Windows VMs",
+                                  detail: "Windows 11 on Arm from Microsoft's ISO (download it from Microsoft's page), installed by an answer file on OS Server's QEMU.",
+                                  symbol: "pc",
+                                  state: state("windows", installed: QEMUStore.hasBase(.windows, "vanilla"),
+                                               unavailable: QEMU.system == nil ? "this OS Server has no QEMU" : nil),
+                                  accepts: ["iso"], needsFile: true))
         list.append(ComponentInfo(id: "android", name: "Android emulators",
                                   detail: "Google's emulator and an Android 15 phone image, from Google's repository.",
                                   symbol: "candybarphone",
@@ -137,6 +146,11 @@ public actor Components {
             GuestPasswords.ensure(.linux)
             try await LinuxInstaller.install(config: "base", image: file, cpus: 6, memoryGB: 8, diskGB: 128)
             try await Images.build(platform: .linux, layer: "vanilla", from: "base", script: nil, copies: [])
+        case "windows":
+            guard let file else { throw ShellError(description: "Windows installs from its ISO: give it one") }
+            GuestPasswords.ensure(.windows)
+            try await WindowsInstaller.install(config: "base", iso: file, cpus: 6, memoryGB: 8, diskGB: 128)
+            try await Images.build(platform: .windows, layer: "vanilla", from: "base", script: nil, copies: [])
         case "android":
             try await Emulators.setup(api: 35, tag: "google_apis")
             try await Emulators.build(config: "phone", api: 35, tag: "google_apis", script: nil)
@@ -151,7 +165,8 @@ public actor Components {
     /// Removed, with everything it put in OS Server's folder; refused while
     /// a lease uses it.
     public func remove(_ id: String) async throws {
-        let platform: Platform? = ["containers": .container, "macos": .macos, "linux": .linux, "android": .android, "ios": .ios][id]
+        let platform: Platform? = ["containers": .container, "macos": .macos, "linux": .linux, "windows": .windows,
+                                   "android": .android, "ios": .ios][id]
         if let platform, let held, await held(platform) > 0 {
             throw ShellError(description: "a lease uses it: release it first")
         }
@@ -166,6 +181,8 @@ public actor Components {
         case "linux":
             try? FileManager.default.removeItem(atPath: QEMUStore.bases(.linux))
             try? FileManager.default.removeItem(atPath: "\(Paths.machines)/images/\(LinuxInstaller.imageName)")
+        case "windows":
+            try? FileManager.default.removeItem(atPath: QEMUStore.bases(.windows))
         case "android":
             await Emulators.stopADB()
             try? FileManager.default.removeItem(atPath: config.androidAVDHome)

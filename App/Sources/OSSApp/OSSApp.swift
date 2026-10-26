@@ -42,7 +42,7 @@ struct OSSApp: App {
         }
         // Taller with the canned server, so its screen holds everything.
         .defaultSize(width: 860, height: Fixture.isOn ? 1110 : 760)
-        .defaultLaunchBehavior(Fixture.showsPanel ? .suppressed : .presented)
+        .defaultLaunchBehavior(Fixture.showsPanel || Fixture.showsSetUp ? .suppressed : .presented)
 
         // A macOS VM's screen, live (by the machine's name).
         WindowGroup("Screen", id: "screen", for: String.self) { $name in

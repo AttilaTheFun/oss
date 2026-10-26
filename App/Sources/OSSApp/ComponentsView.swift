@@ -67,7 +67,7 @@ struct ComponentRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            if let choosing, component.state == .absent {
+            if let choosing, component.state == .absent, !component.needsFile {
                 Toggle("", isOn: Binding(get: { choosing.wrappedValue.contains(component.id) },
                                          set: { on in if on { choosing.wrappedValue.insert(component.id) } else { choosing.wrappedValue.remove(component.id) } }))
                     .labelsHidden().toggleStyle(.checkbox)
@@ -79,7 +79,7 @@ struct ComponentRow: View {
                 status
             }
             Spacer(minLength: 8)
-            if choosing == nil { actions }
+            if choosing == nil || component.needsFile { actions }
         }
         .confirmationDialog("Remove \(component.name)?", isPresented: $confirmingRemoval) {
             Button("Remove", role: .destructive) { Task { await model.remove(component.id) } }
@@ -111,7 +111,9 @@ struct ComponentRow: View {
                 if !component.accepts.isEmpty {
                     Button("From a File…") { pickFile() }
                 }
-                Button("Install") { Task { await model.install(component.id) } }
+                if !component.needsFile {
+                    Button("Install") { Task { await model.install(component.id) } }
+                }
             }
         case .installing, .unavailable:
             EmptyView()
