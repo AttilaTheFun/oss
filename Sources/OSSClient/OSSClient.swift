@@ -222,4 +222,14 @@ public struct OSSClient: Sendable {
 
     /// What the server's Mac and each lease use now.
     public func usage() async throws -> Usage { try await json("GET", "/v1/usage") }
+
+    // MARK: Containers' volumes
+
+    /// The volumes containers made on the server's Mac, kept ones too.
+    public func volumes() async throws -> [VolumeInfo] { try await json("GET", "/v1/volumes") }
+
+    /// A kept volume deleted (one no lease is using).
+    public func deleteVolume(_ name: String) async throws {
+        _ = try await send("DELETE", "/v1/volumes/\(Self.encode(name))")
+    }
 }

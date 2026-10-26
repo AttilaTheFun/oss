@@ -4,55 +4,32 @@ import Network
 
 extension OSSClient {
     /// A command run in a container lease: `input` sent as it comes (stdin,
-    /// its end, a terminal's new size), what the command writes handed to
-    /// `output` (`.stdout`, `.stderr`); returns its exit status. Over the
-    /// server's port on loopback, upgraded to a stream of `ExecFrame`s: a
-    /// container is lent only on its server's Mac.
-    public func exec(_ id: String, _ request: ExecRequest, input: AsyncStream<ExecFrame>,
+    /// its end, a terminal's new size, signals), what the command writes
+    /// handed to `output` (`.stdout`, `.stderr`); returns its exit status.
+    /// Straight to the container over its Unix socket on the server's Mac
+    /// (`Lease.execSocket`), not through the server: a command outlives the
+    /// server's restarts. Ending the task (or the process) ends the command.
+    public func exec(_ lease: Lease, _ request: ExecRequest, input: AsyncStream<ExecFrame>,
                      output: @escaping @Sendable (ExecFrame) -> Void) async throws -> Int32 {
-        let port = server.port ?? 7480
-        let connection = ExecConnection(NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(integerLiteral: UInt16(port)), using: .tcp))
+        guard let path = lease.execSocket else {
+            throw OSSError(status: 0, message: "lease \(lease.id) takes no commands (a container's, once it is ready)")
+        }
+        let connection = ExecConnection(NWConnection(to: .unix(path: path), using: .tcp))
         try await connection.open()
         defer { connection.close() }
-        let body = try JSONEncoder.oss.encode(request)
-        var head = "POST /v1/machines/\(Self.encode(id))/exec HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\n"
-        head += "Authorization: Bearer \(try await token())\r\nOSS-API: \(OSS.apiLevel)\r\n"
-        head += "Content-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: Upgrade\r\nUpgrade: oss-exec\r\n\r\n"
-        try await connection.send(Data(head.utf8) + body)
-
-        // The answer's head: 101, or an error with the server's message.
-        var buffer = Data()
-        var end: Range<Data.Index>?
-        while true {
-            end = buffer.range(of: Data("\r\n\r\n".utf8))
-            if end != nil { break }
-            guard let more = try await connection.receive() else { throw OSSError(status: 0, message: "the server closed the connection") }
-            buffer.append(more)
-        }
-        let lines = String(decoding: buffer[..<end!.lowerBound], as: UTF8.self).components(separatedBy: "\r\n")
-        let status = Int(lines.first?.split(separator: " ").dropFirst().first ?? "") ?? 0
-        buffer = Data(buffer[end!.upperBound...])
-        guard status == 101 else {
-            let length = lines.dropFirst().compactMap { line -> Int? in
-                let pair = line.split(separator: ":", maxSplits: 1)
-                return pair.count == 2 && pair[0].lowercased() == "content-length" ? Int(pair[1].trimmingCharacters(in: .whitespaces)) : nil
-            }.first ?? 0
-            while buffer.count < length, let more = try await connection.receive() { buffer.append(more) }
-            let message = (try? JSONDecoder.oss.decode(APIError.self, from: buffer))?.error ?? String(decoding: buffer, as: UTF8.self)
-            throw OSSError(status: status, message: message)
-        }
-
+        try await connection.send(ExecFrame.start(request).encoded)
         let pump = Task {
             for await frame in input { try? await connection.send(frame.encoded) }
         }
         defer { pump.cancel() }
+        var buffer = Data()
         while true {
             for frame in ExecFrame.decode(&buffer) {
                 if case .exit(let code) = frame { return code }
                 output(frame)
             }
             guard let more = try await connection.receive() else {
-                throw OSSError(status: 0, message: "the connection closed before the command ended")
+                throw OSSError(status: 0, message: "the container closed the connection before the command ended")
             }
             buffer.append(more)
         }
@@ -76,7 +53,7 @@ private final class ExecConnection: Sendable {
                     continuation.resume()
                 case .failed(let error), .waiting(let error):
                     connection.stateUpdateHandler = nil
-                    continuation.resume(throwing: OSSError(status: 0, message: "127.0.0.1: \(error)"))
+                    continuation.resume(throwing: OSSError(status: 0, message: "the container's socket: \(error)"))
                 case .cancelled:
                     connection.stateUpdateHandler = nil
                     continuation.resume(throwing: CancellationError())

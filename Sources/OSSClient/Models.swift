@@ -12,31 +12,90 @@ public enum Platform: String, Codable, CaseIterable, Sendable {
 }
 
 /// What a container lease runs: an image from a registry, what it's given,
-/// the server Mac's folders shared into it, and its main process (by
-/// default one that waits, so commands are run in it with `exec`).
+/// the server Mac's folders shared into it, volumes of its own, and its main
+/// process (by default one that waits, so commands are run in it with
+/// `exec`). It runs in a process of its own on the server's Mac, so it and
+/// its execs outlive the server's restarts; after the Mac's, it is started
+/// again from its own disk.
 public struct ContainerSpec: Codable, Sendable, Hashable {
-    /// An image reference: `ghcr.io/owner/name:tag`, `docker.io/library/alpine:3.20`.
+    /// An image reference: `ghcr.io/owner/name:tag`, `alpine:3.20` (Docker
+    /// Hub's). Pulled once, kept by digest.
     public var image: String
     public var cpus: Int?
     public var memoryBytes: Int64?
     /// Its root filesystem's size.
     public var diskBytes: Int64?
     public var mounts: [ContainerMount]
+    public var volumes: [ContainerVolume]
+    /// x86_64 Linux programs run under Rosetta (where the Mac has it).
+    public var rosetta: Bool
     public var environment: [String: String]
     public var workingDirectory: String?
     /// Its main process; nil: one that waits until the lease ends.
     public var command: [String]?
 
     public init(image: String, cpus: Int? = nil, memoryBytes: Int64? = nil, diskBytes: Int64? = nil, mounts: [ContainerMount] = [],
-                environment: [String: String] = [:], workingDirectory: String? = nil, command: [String]? = nil) {
+                volumes: [ContainerVolume] = [], rosetta: Bool = false, environment: [String: String] = [:],
+                workingDirectory: String? = nil, command: [String]? = nil) {
         self.image = image
         self.cpus = cpus
         self.memoryBytes = memoryBytes
         self.diskBytes = diskBytes
         self.mounts = mounts
+        self.volumes = volumes
+        self.rosetta = rosetta
         self.environment = environment
         self.workingDirectory = workingDirectory
         self.command = command
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        image = try c.decode(String.self, forKey: .image)
+        cpus = try c.decodeIfPresent(Int.self, forKey: .cpus)
+        memoryBytes = try c.decodeIfPresent(Int64.self, forKey: .memoryBytes)
+        diskBytes = try c.decodeIfPresent(Int64.self, forKey: .diskBytes)
+        mounts = try c.decodeIfPresent([ContainerMount].self, forKey: .mounts) ?? []
+        volumes = try c.decodeIfPresent([ContainerVolume].self, forKey: .volumes) ?? []
+        rosetta = try c.decodeIfPresent(Bool.self, forKey: .rosetta) ?? false
+        environment = try c.decodeIfPresent([String: String].self, forKey: .environment) ?? [:]
+        workingDirectory = try c.decodeIfPresent(String.self, forKey: .workingDirectory)
+        command = try c.decodeIfPresent([String].self, forKey: .command)
+    }
+}
+
+/// A disk of its own for a container, by name (an ext4 filesystem of
+/// `sizeBytes`, allocated as it fills): one already there at that size is
+/// used again, at another size it is made anew. Deleted with the lease
+/// unless `keep`; a kept one is listed (`GET /v1/volumes`) until deleted.
+public struct ContainerVolume: Codable, Sendable, Hashable {
+    public var name: String
+    public var destination: String
+    public var sizeBytes: Int64
+    public var keep: Bool
+
+    public init(name: String, destination: String, sizeBytes: Int64, keep: Bool = false) {
+        self.name = name
+        self.destination = destination
+        self.sizeBytes = sizeBytes
+        self.keep = keep
+    }
+}
+
+/// A container volume on the server's Mac: its size, the disk it takes
+/// now, and the lease using it.
+public struct VolumeInfo: Codable, Sendable, Identifiable {
+    public var name: String
+    public var sizeBytes: Int64
+    public var allocatedBytes: Int64
+    public var lease: String?
+    public var id: String { name }
+
+    public init(name: String, sizeBytes: Int64, allocatedBytes: Int64, lease: String? = nil) {
+        self.name = name
+        self.sizeBytes = sizeBytes
+        self.allocatedBytes = allocatedBytes
+        self.lease = lease
     }
 }
 
@@ -53,9 +112,9 @@ public struct ContainerMount: Codable, Sendable, Hashable {
     }
 }
 
-/// A command run in a container lease (`POST /v1/machines/<id>/exec`, then
-/// a stream of `ExecFrame`s both ways).
-public struct ExecRequest: Codable, Sendable {
+/// A command run in a container lease: the first frame on its exec socket
+/// (`Lease.execSocket`), then a stream of `ExecFrame`s both ways.
+public struct ExecRequest: Codable, Sendable, Hashable {
     public var arguments: [String]
     /// A terminal of `columns` × `rows`, its output on stdout alone.
     public var tty: Bool
@@ -76,13 +135,19 @@ public struct ExecRequest: Codable, Sendable {
 }
 
 /// One frame of an exec's stream: a byte saying what it is, its length as
-/// four bytes (big-endian), then that many bytes.
+/// four bytes (big-endian), then that many bytes. The client's first is
+/// `start`; the container's last is `exit`. A connection that closes before
+/// that ends the command (TERM, then KILL ten seconds on).
 public enum ExecFrame: Sendable, Equatable {
-    /// Client to server.
+    /// Client to container.
+    case start(ExecRequest)
     case stdin(Data)
     case closeStdin
     case resize(columns: Int, rows: Int)
-    /// Server to client.
+    /// A signal for the command, by its Linux number (TERM 15, INT 2, HUP 1,
+    /// QUIT 3, USR1 10, USR2 12).
+    case signal(Int32)
+    /// Container to client.
     case stdout(Data)
     case stderr(Data)
     case exit(Int32)
@@ -102,6 +167,8 @@ public enum ExecFrame: Sendable, Equatable {
         case .stdout(let data): return frame(3, data)
         case .stderr(let data): return frame(4, data)
         case .exit(let code): return frame(5, int32(code))
+        case .signal(let number): return frame(6, int32(number))
+        case .start(let request): return frame(7, (try? JSONEncoder().encode(request)) ?? Data())
         }
     }
 
@@ -128,6 +195,8 @@ public enum ExecFrame: Sendable, Equatable {
             case 3: frames.append(.stdout(payload))
             case 4: frames.append(.stderr(payload))
             case 5: frames.append(.exit(int32(payload, at: 0)))
+            case 6: frames.append(.signal(int32(payload, at: 0)))
+            case 7: if let request = try? JSONDecoder().decode(ExecRequest.self, from: payload) { frames.append(.start(request)) }
             default: break
             }
         }
@@ -204,8 +273,10 @@ public struct Lease: Codable, Sendable {
     /// The guest's `runner` password, where the server knows it (VMs): to
     /// log in at its screen, or unlock it.
     public var guestPassword: String?
-    /// A container lease's spec (API 6).
+    /// A container lease's spec, and the Unix socket its commands are run
+    /// through on the server's Mac (`ExecFrame`s; API 6).
     public var container: ContainerSpec?
+    public var execSocket: String?
 
     public init(id: String, platform: Platform, config: String, name: String, holder: String, state: LeaseState,
                 created: Date, expires: Date, error: String? = nil) {
@@ -228,7 +299,8 @@ public struct LeaseRequest: Codable, Sendable {
     public var holder: String?
     /// The holder's public key, let into a VM for the lease.
     public var sshPublicKey: String?
-    /// A container lease's image and what it's given (API 6).
+    /// A container lease's image and what it's given (API 6). A container
+    /// may ask for `minutes: 0`: held until it is released.
     public var container: ContainerSpec?
 
     public init(platform: Platform, config: String? = nil, minutes: Int? = nil, holder: String? = nil, sshPublicKey: String? = nil,
@@ -526,9 +598,10 @@ public enum OSS {
     /// This build's version, and the API level it speaks.
     public static let version = "0.9.0"
     /// 6 from 0.9.0: container leases (`platform: container`, a
-    /// `ContainerSpec`, `POST /v1/machines/<id>/exec` streamed), a lease's
-    /// disk (`MachineUsage.diskBytes`), disk in usage's history. A client says
-    /// its level in an `OSS-API` header: one below 6 is shown no containers.
+    /// `ContainerSpec`, commands over `Lease.execSocket`), their volumes
+    /// (`/v1/volumes`), a lease's disk (`MachineUsage.diskBytes`). A client
+    /// says its level in an `OSS-API` header: one below 6 is shown no
+    /// containers.
     /// 5 from 0.8.0: usage says what is OS Server's, what is other
     /// processes', the disk, and the biggest other processes; a read-only
     /// token for OS Monitor (`MonitorConnection`).

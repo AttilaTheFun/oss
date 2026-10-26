@@ -1,28 +1,34 @@
 import Foundation
 import OSSClient
-#if canImport(Network)
-import Network
-#endif
 
 /// Linux containers, for a server that can run them: OS Server's app gives
-/// one (on Apple's Containerization, in its own process), `oss serve` on
-/// its own has none and lends no containers. The server keeps the leases;
-/// the backend keeps the containers, each named by its lease
-/// (`oss-lease-container-<id>`).
+/// one (Apple's Containerization, each container in a helper process of its
+/// own, so it outlives the server's restarts), `oss serve` on its own has
+/// none and lends no containers. The server keeps the leases; the backend
+/// keeps the containers, each named by its lease (`oss-lease-container-<id>`),
+/// and their volumes. A container's commands go to it directly, over the
+/// Unix socket the backend gives (`Lease.execSocket`).
 public protocol ContainerBackend: Sendable {
     /// Started from `spec` (its image pulled if this Mac hasn't it); returns
-    /// once its main process runs.
-    func start(name: String, spec: ContainerSpec) async throws
-    /// A command run in it, its standard streams through `session`; its
-    /// exit status.
-    func exec(name: String, request: ExecRequest, session: ExecSession) async throws -> Int32
-    /// Stopped and deleted, its root filesystem with it.
-    func stop(name: String) async
-    /// Every container deleted (at the server's start: none outlives the
-    /// process that ran it).
-    func removeAll() async
+    /// its exec socket once it runs.
+    func start(name: String, spec: ContainerSpec) async throws -> String
+    /// After the server's restart: its exec socket, the container still
+    /// running or started again from its disk (after the Mac's); nil when
+    /// it is gone.
+    func reattach(name: String, spec: ContainerSpec) async -> String?
+    /// Whether it still runs (its helper answers).
+    func isRunning(name: String) async -> Bool
+    /// Stopped and deleted, its root filesystem with it, and its volumes but
+    /// those it keeps.
+    func stop(name: String, spec: ContainerSpec?) async
+    /// Every container but `keeping` deleted (at the server's start, after
+    /// the leases are taken up again).
+    func prune(keeping: Set<String>) async
     /// The folder its root filesystem is in, for the disk it takes.
     func directory(name: String) -> String?
+    /// The volumes on this Mac, kept ones too.
+    func volumes() async -> [VolumeInfo]
+    func deleteVolume(name: String) async throws
 }
 
 /// What a container gets where its lease asks for nothing.
@@ -31,63 +37,6 @@ public enum ContainerDefaults {
     public static let memoryBytes: Int64 = 8 << 30
     public static let diskBytes: Int64 = 64 << 30
 }
-
-/// An exec's two directions: what the client sends (stdin, its end, a
-/// terminal's new size) and a way to send it stdout and stderr.
-public final class ExecSession: Sendable {
-    public let input: AsyncStream<ExecFrame>
-    private let output: @Sendable (ExecFrame) -> Void
-
-    init(input: AsyncStream<ExecFrame>, output: @escaping @Sendable (ExecFrame) -> Void) {
-        self.input = input
-        self.output = output
-    }
-
-    public func stdout(_ data: Data) { output(.stdout(data)) }
-    public func stderr(_ data: Data) { output(.stderr(data)) }
-}
-
-#if canImport(Network)
-/// The connection an exec runs over, once upgraded: frames in (decoded into
-/// the session's input), frames out; the exit status last, then closed.
-enum ExecBridge {
-    static func run(_ connection: NWConnection, rest: Data, lease: String, request: ExecRequest,
-                    backend: ContainerBackend) {
-        let (input, continuation) = AsyncStream<ExecFrame>.makeStream()
-        let session = ExecSession(input: input) { frame in
-            connection.send(content: frame.encoded, completion: .idempotent)
-        }
-        var buffer = rest
-        for frame in ExecFrame.decode(&buffer) { continuation.yield(frame) }
-        receive(connection, buffer: buffer, continuation: continuation)
-        Task {
-            let status: Int32
-            do {
-                status = try await backend.exec(name: lease, request: request, session: session)
-            } catch {
-                session.stderr(Data("oss: \(error)\n".utf8))
-                status = 126
-            }
-            continuation.finish()
-            connection.send(content: ExecFrame.exit(status).encoded, contentContext: .finalMessage, isComplete: true,
-                            completion: .contentProcessed { _ in connection.cancel() })
-        }
-    }
-
-    private static func receive(_ connection: NWConnection, buffer: Data, continuation: AsyncStream<ExecFrame>.Continuation) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { data, _, complete, error in
-            var buffer = buffer
-            if let data { buffer.append(data) }
-            for frame in ExecFrame.decode(&buffer) { continuation.yield(frame) }
-            if complete || error != nil {
-                continuation.yield(.closeStdin)
-                return
-            }
-            receive(connection, buffer: buffer, continuation: continuation)
-        }
-    }
-}
-#endif
 
 extension LocalNetworks {
     /// Whether an address is this Mac's own (loopback, or one of its

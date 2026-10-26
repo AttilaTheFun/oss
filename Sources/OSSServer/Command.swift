@@ -7,15 +7,19 @@ let usage = """
     Machines (a VM, a simulator, an emulator or a container of your own until you release it or its time runs out):
       oss machine lease <macos|ios|android|linux|windows> [--config=NAME] [--minutes=N] [--wait] [--json | --exports]
       oss machine lease container --image=REF [--cpus=N] [--memory=GB] [--disk=GB] [--mount=/mac/path:/path[:ro]]…
-                                  [--env=NAME=VALUE]… [--workdir=DIR] [--command="…"]
+                                  [--volume=NAME:/path:GB[:keep]]… [--rosetta] [--env=NAME=VALUE]… [--workdir=DIR]
+                                  [--command="…"] [--minutes=0]
                                                             a container on the server's Mac, for a client on that Mac
+                                                            (--minutes=0: held until released); it outlives the server's
+                                                            restarts, and after the Mac's starts again from its own disk
       oss machine renew <id | platform> [--minutes=N]       its time set to N minutes from now (default 60, at most 480)
       oss machine release <id | platform>                   given back: the clone is deleted
       oss machine list
       oss machine ssh <id> [-- command…]                    macOS, Linux, Windows
       oss machine vnc <id> [--open]                         macOS, Linux, Windows: its VNC address and password
-      oss machine exec <id> [--tty] [--env=NAME=VALUE]… [--workdir=DIR] -- command…
-                                                            a container: the command run in it, streamed
+      oss machine exec <id> [--tty] [--env=NAME=VALUE]… [--env-file=F] [--workdir=DIR] -- command…
+                                                            a container: the command run in it, streamed, signals passed on
+      oss volume list | delete <name>                       containers' volumes, kept ones too
       oss machine simctl <id> <simctl arguments…>          iOS: install ./My.app, launch <bundle id>, openurl …
       oss machine adb <id> <adb arguments…>                 Android: install ./app.apk, shell …, logcat -d …
       oss machine screenshot <id> <file.png>                any lease
@@ -169,6 +173,13 @@ func containerSpec(_ args: Arguments) -> ContainerSpec {
             return Int64(number * Double(1 << 30))
         }
     }
+    let volumes = (args.all["volume"] ?? []).map { value -> ContainerVolume in
+        let parts = value.split(separator: ":").map(String.init)
+        guard parts.count == 3 || (parts.count == 4 && parts[3] == "keep"), let size = Double(parts[2]) else {
+            fail("--volume=NAME:/path:GB[:keep]")
+        }
+        return ContainerVolume(name: parts[0], destination: parts[1], sizeBytes: Int64(size * Double(1 << 30)), keep: parts.count == 4)
+    }
     let mounts = (args.all["mount"] ?? []).map { value -> ContainerMount in
         let parts = value.split(separator: ":").map(String.init)
         guard parts.count == 2 || (parts.count == 3 && parts[2] == "ro") else { fail("--mount=/mac/path:/path[:ro]") }
@@ -182,7 +193,8 @@ func containerSpec(_ args: Arguments) -> ContainerSpec {
         environment[parts[0]] = parts[1]
     }
     return ContainerSpec(image: image, cpus: args.options["cpus"].flatMap(Int.init), memoryBytes: gigabytes("memory"),
-                         diskBytes: gigabytes("disk"), mounts: mounts, environment: environment,
+                         diskBytes: gigabytes("disk"), mounts: mounts, volumes: volumes, rosetta: args.flags.contains("rosetta"),
+                         environment: environment,
                          workingDirectory: args.options["workdir"],
                          command: args.options["command"].map { $0.split(separator: " ").map(String.init) })
 }
@@ -207,7 +219,8 @@ public enum OSSCommand {
     public static func run(_ commandLine: [String]) async -> Never {
         let arguments = Arguments(Array(commandLine.dropFirst()),
                                   valued: ["config", "minutes", "key", "holder", "identity", "from", "script", "vm", "device", "runtime",
-                                           "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "env", "workdir", "command"])
+                                           "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "volume", "env", "env-file", "workdir",
+                                           "command"])
         let command = arguments.positional.first ?? "help"
         let sub = arguments.positional.count > 1 ? arguments.positional[1] : nil
         let target = arguments.positional.count > 2 ? arguments.positional[2] : nil
@@ -326,6 +339,21 @@ public enum OSSCommand {
                     try await client.release(lease.id)
                     try? FileManager.default.removeItem(atPath: OSSClient.knownHosts(lease.id))
                     exit(status)
+                default:
+                    print(usage)
+                }
+
+            case "volume":
+                let client = try await OSSClient.connect()
+                switch sub {
+                case "list":
+                    for volume in try await client.volumes() {
+                        print("\(volume.name)  \(gigabytes(volume.sizeBytes)) (\(gigabytes(volume.allocatedBytes)) used)  \(volume.lease.map { "lease \($0)" } ?? "kept")")
+                    }
+                case "delete":
+                    guard let target else { fail("oss volume delete <name>") }
+                    try await client.deleteVolume(target)
+                    print("volume \(target) deleted")
                 default:
                     print(usage)
                 }

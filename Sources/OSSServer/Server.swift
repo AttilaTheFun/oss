@@ -145,6 +145,15 @@ actor MachineManager {
             for mount in spec.mounts where !mount.source.hasPrefix("/") || !FileManager.default.fileExists(atPath: mount.source) {
                 throw APIError(error: "no folder \(mount.source) to share")
             }
+            for volume in spec.volumes {
+                guard !volume.name.isEmpty, volume.name.allSatisfy({ $0.isLetter || $0.isNumber || "-_.".contains($0) }),
+                      !volume.name.hasPrefix(".") else { throw APIError(error: "a volume's name is letters, digits, - _ and .") }
+                if let user = leases.values.first(where: { $0.state != .failed && $0.container?.volumes.contains { $0.name == volume.name } == true }) {
+                    throw APIError(error: "volume \(volume.name) is in use by lease \(user.id)")
+                }
+            }
+        } else if request.minutes == 0 {
+            throw APIError(error: "only a container is held until it is released (minutes: 0)")
         }
         let config = request.config ?? self.config.defaultConfig(request.platform)
         guard let base = await findBase(request.platform, config) else {
@@ -156,15 +165,17 @@ actor MachineManager {
             throw APIError(error: "busy: \(held) of \(self.config.limit(request.platform)) \(request.platform.rawValue) machines are leased")
         }
         let id = Random.hex(4)
+        // A container may be held until it is released (an agent's, for days).
+        let untilReleased = request.platform == .container && request.minutes == 0
         let minutes = min(max(request.minutes ?? self.config.defaultMinutes, 1), self.config.maxMinutes)
         var lease = Lease(id: id, platform: request.platform, config: config, name: "oss-lease-\(request.platform.rawValue)-\(id)",
                           holder: request.holder ?? "unknown", state: .creating, created: Date(),
-                          expires: Date().addingTimeInterval(TimeInterval(minutes * 60)))
+                          expires: untilReleased ? .distantFuture : Date().addingTimeInterval(TimeInterval(minutes * 60)))
         if request.platform.isVM { lease.sshUser = self.config.guestUser }
         lease.container = request.container
         leases[id] = lease
         save()
-        log("lease \(id): \(base.name) for \(lease.holder), \(minutes) min")
+        log("lease \(id): \(base.name) for \(lease.holder), \(untilReleased ? "until released" : "\(minutes) min")")
         Task { await self.create(id, from: base, holderKey: request.sshPublicKey) }
         return lease
     }
@@ -197,20 +208,47 @@ actor MachineManager {
 
     private func createContainer(_ id: String, lease: Lease) async throws {
         guard let containers, let spec = lease.container else { throw APIError(error: "no container backend") }
-        try await containers.start(name: lease.name, spec: spec)
-        guard leases[id]?.state == .creating else { await containers.stop(name: lease.name); return }
+        let socket = try await containers.start(name: lease.name, spec: spec)
+        guard leases[id]?.state == .creating else { await containers.stop(name: lease.name, spec: spec); return }
         leases[id]?.cpus = spec.cpus ?? ContainerDefaults.cpus
         leases[id]?.memoryLimitBytes = spec.memoryBytes ?? ContainerDefaults.memoryBytes
+        leases[id]?.execSocket = socket
         leases[id]?.state = .ready
         save()
         log("lease \(id): container \(lease.name) running \(spec.image)")
     }
 
-    /// What an exec runs in: a ready container lease's container.
-    func execTarget(_ id: String) throws -> (name: String, backend: ContainerBackend) {
-        let lease = try ready(id)
-        guard lease.platform == .container, let containers else { throw APIError(error: "\(lease.platform.rawValue) leases take SSH or device commands, not exec") }
-        return (lease.name, containers)
+    /// Containers whose helper has stopped (it crashed, or its command
+    /// ended) are started again from their disks.
+    func reviveContainers() async {
+        guard let containers else { return }
+        for lease in leases.values where lease.platform == .container && lease.state == .ready {
+            guard let spec = lease.container, !(await containers.isRunning(name: lease.name)) else { continue }
+            log("lease \(lease.id): \(lease.name) stopped; starting it again")
+            if let socket = await containers.reattach(name: lease.name, spec: spec) {
+                leases[lease.id]?.execSocket = socket
+            } else {
+                leases[lease.id]?.error = "its container stopped and couldn't be started again"
+                await release(lease.id, reason: "its container is gone")
+            }
+        }
+    }
+
+    func volumes() async -> [VolumeInfo] {
+        guard let containers else { return [] }
+        return await containers.volumes().map { volume in
+            var volume = volume
+            volume.lease = leases.values.first { $0.state != .failed && $0.container?.volumes.contains { $0.name == volume.name } == true }?.id
+            return volume
+        }
+    }
+
+    func deleteVolume(_ name: String) async throws {
+        guard let containers else { throw APIError(error: "this server runs no containers") }
+        if let user = leases.values.first(where: { $0.state != .failed && $0.container?.volumes.contains { $0.name == name } == true }) {
+            throw APIError(error: "volume \(name) is in use by lease \(user.id)")
+        }
+        try await containers.deleteVolume(name: name)
     }
 
     private func createEmulator(_ id: String, lease: Lease, base: Base) async throws {
@@ -362,8 +400,13 @@ actor MachineManager {
 
     func renew(_ id: String, minutes: Int?) throws -> Lease {
         guard var lease = leases[id], lease.state != .returning, lease.state != .failed else { throw APIError(error: "no lease \(id)") }
-        let minutes = min(max(minutes ?? config.defaultMinutes, 1), config.maxMinutes)
-        lease.expires = Date().addingTimeInterval(TimeInterval(minutes * 60))
+        // A container held until it is released stays so; one asked for 0 is from now on.
+        if lease.platform == .container && (minutes == 0 || (minutes == nil && lease.expires == .distantFuture)) {
+            lease.expires = .distantFuture
+        } else {
+            let minutes = min(max(minutes ?? config.defaultMinutes, 1), config.maxMinutes)
+            lease.expires = Date().addingTimeInterval(TimeInterval(minutes * 60))
+        }
         leases[id] = lease
         save()
         return lease
@@ -403,7 +446,7 @@ actor MachineManager {
             // The last emulator gone: oss's adb server too (the next lease starts it again).
             if !leases.values.contains(where: { $0.platform == .android && $0.id != id }) { await Emulators.stopADB() }
         case .container:
-            await containers?.stop(name: lease.name)
+            await containers?.stop(name: lease.name, spec: lease.container)
         }
         try? FileManager.default.removeItem(atPath: "\(Paths.uploads)/\(id)")
         if leases[id]?.error != nil {
@@ -588,8 +631,10 @@ actor MachineManager {
                 forwarder.start()
                 forwarders[lease.id] = [forwarder]
             case .container:
-                // Containers ran in the process that ended: theirs went with it.
-                continue
+                // Each in a process of its own: still running, or started again from its disk.
+                guard let containers, config.lends(.container), let spec = lease.container,
+                      let socket = await containers.reattach(name: lease.name, spec: spec) else { continue }
+                lease.execSocket = socket
             }
             leases[lease.id] = lease
             log("lease \(lease.id): recovered")
@@ -616,7 +661,9 @@ actor MachineManager {
         for lease in saved where lease.platform == .android && leases[lease.id] == nil && config.lends(.android) {
             await Emulators.release(name: lease.name, port: lease.consolePort, pid: lease.emulatorPID)
         }
-        if let containers, config.lends(.container) { await containers.removeAll() }
+        if let containers, config.lends(.container) {
+            await containers.prune(keeping: Set(leases.values.filter { $0.platform == .container }.map(\.name)))
+        }
         save()
     }
 }
@@ -660,6 +707,7 @@ public final class ServerHost: Sendable {
             while true {
                 try? await Task.sleep(for: .seconds(15))
                 await machines.expire()
+                await machines.reviveContainers()
             }
         }
         log("oss serving on :\(config.port); capacity \(config.capacity)")
@@ -783,16 +831,14 @@ enum Server {
             case ("GET", 3) where parts[1] == "machines":
                 guard let lease = await machines.lease(parts[2]), visible(lease.platform) else { return .error("no lease \(parts[2])", status: 404) }
                 return .json(lease)
-            case ("POST", 4) where parts[1] == "machines" && parts[3] == "exec":
-                // A command in a container lease, its streams over the upgraded connection (ExecFrame).
+            case ("GET", 2) where parts[1] == "volumes":
+                return .json(await machines.volumes())
+            case ("DELETE", 3) where parts[1] == "volumes":
                 guard LocalNetworks.isThisMac(request.remoteAddress) else {
-                    return .error("a container takes commands only from its server's Mac", status: 403)
+                    return .error("a volume is deleted only from its server's Mac", status: 403)
                 }
-                let exec = try JSONDecoder.oss.decode(ExecRequest.self, from: request.body)
-                let target = try await machines.execTarget(parts[2])
-                return .upgrade("oss-exec") { connection, rest in
-                    ExecBridge.run(connection, rest: rest, lease: target.name, request: exec, backend: target.backend)
-                }
+                try await machines.deleteVolume(parts[2].removingPercentEncoding ?? parts[2])
+                return .json(["deleted": parts[2]])
             case ("DELETE", 3) where parts[1] == "machines":
                 guard await machines.lease(parts[2]) != nil else { return .error("no lease \(parts[2])", status: 404) }
                 let id = parts[2]

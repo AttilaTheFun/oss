@@ -4,7 +4,7 @@
 <dict>
   <!-- UTM is driven through Apple events (osascript, utmctl). -->
   <key>com.apple.security.automation.apple-events</key><true/>
-  <!-- The macOS VMs OS Server runs itself (Virtualization). -->
+  <!-- The macOS VMs OS Server runs itself, and its containers' VMs (Virtualization). -->
   <key>com.apple.security.virtualization</key><true/>
 </dict>
 </plist>
