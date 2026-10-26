@@ -117,7 +117,8 @@ struct ServerScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     if let capabilities = monitor.capabilities {
-                        Text(subtitle(capabilities)).font(.footnote).foregroundStyle(.secondary)
+                        // Digits all one width: a new version moves nothing after it.
+                        Text(subtitle(capabilities)).font(.footnote).monospacedDigit().foregroundStyle(.secondary)
                     }
                     ServerDashboard(monitor: monitor)
                 }
