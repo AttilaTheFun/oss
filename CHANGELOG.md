@@ -1,6 +1,6 @@
 # Changelog
 
-## Next
+## 0.10.2
 
 - OS Server answers over a tailnet: its API, Bazel cache and leases'
   forwarded ports listened through one IPv6 socket that also took IPv4,
@@ -11,6 +11,9 @@
 - Windows' vanilla layer turns off OneDrive (its "Turn On Windows Backup"
   toast came some minutes after logon) and apps' toasts: a screen that
   holds still.
+- OS Server's and OS Monitor's version lines use digits of one width, so a
+  new version moves nothing after it (a proof's diff landed on the server's
+  address for that).
 
 ## 0.10.1
 
