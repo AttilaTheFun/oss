@@ -140,10 +140,15 @@ public struct OSSPool: Sendable {
         }
     }
 
-    /// This computer's name, as a server on it says its host is.
-    static let thisHost: String = {
+    /// This computer's name, lowercased, as a server on it says its host
+    /// is (`/v1/hello`'s `host`).
+    public static let thisHost: String = {
+        #if os(Windows)
+        return ProcessInfo.processInfo.hostName.lowercased()
+        #else
         var buffer = [CChar](repeating: 0, count: 256)
         guard gethostname(&buffer, buffer.count) == 0 else { return ProcessInfo.processInfo.hostName.lowercased() }
         return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self).lowercased()
+        #endif
     }()
 }
