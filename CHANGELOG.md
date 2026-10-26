@@ -2,6 +2,12 @@
 
 ## Next
 
+- OS Server answers over a tailnet: its API, Bazel cache and leases'
+  forwarded ports listened through one IPv6 socket that also took IPv4,
+  which never saw connections that came in over Tailscale's tunnel (the
+  LAN's and loopback's it did). They listen on IPv4 now. A client away from
+  the LAN (OS Monitor on a phone, another Mac's `oss`) had fallen back to
+  the tailnet for nothing.
 - Windows' vanilla layer turns off OneDrive (its "Turn On Windows Backup"
   toast came some minutes after logon) and apps' toasts: a screen that
   holds still.

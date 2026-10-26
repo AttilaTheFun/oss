@@ -3,6 +3,21 @@ import OSSClient
 #if canImport(Network)
 import Network
 
+extension NWParameters {
+    /// TCP over IPv4, for OS Server's listeners (the API, the cache, a
+    /// lease's forwarded ports). Network.framework's default listener, one
+    /// IPv6 socket taking IPv4 too, never sees a connection that comes in over
+    /// a tailnet (Tailscale's tunnel), though it sees the LAN's and loopback's;
+    /// an IPv4 one sees them all. (Two listeners, one each, can't share the
+    /// port.) Nothing reaches OS Server over IPv6.
+    static var listening: NWParameters {
+        let parameters = NWParameters.tcp
+        parameters.allowLocalEndpointReuse = true
+        (parameters.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options)?.version = .v4
+        return parameters
+    }
+}
+
 struct HTTPRequest: Sendable {
     var method: String
     var path: String
@@ -46,8 +61,7 @@ final class HTTPServer: @unchecked Sendable {
     private let handler: Handler
 
     init(port: Int, handler: @escaping Handler) throws {
-        let parameters = NWParameters.tcp
-        parameters.allowLocalEndpointReuse = true
+        let parameters = NWParameters.listening
         listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: UInt16(port))!)
         self.handler = handler
     }

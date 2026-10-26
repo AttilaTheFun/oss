@@ -27,8 +27,7 @@ final class Forwarder: @unchecked Sendable {
         self.port = port
         destination = (target, targetPort)
         self.vncPassword = vncPassword
-        let parameters = NWParameters.tcp
-        parameters.allowLocalEndpointReuse = true
+        let parameters = NWParameters.listening
         listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: UInt16(port))!)
         queue = DispatchQueue(label: "oss.forward.\(port)")
     }
