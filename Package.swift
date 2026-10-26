@@ -20,6 +20,7 @@ let package = Package(
         .target(name: "OSSClient", exclude: ["BUILD.bazel"]),
         .target(name: "OSSServer", dependencies: ["OSSClient"]),
         .executableTarget(name: "OSSCLI", dependencies: ["OSSServer"]),
+        .testTarget(name: "OSSClientTests", dependencies: ["OSSClient"]),
     ]
 )
 
