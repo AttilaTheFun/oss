@@ -449,6 +449,46 @@ public struct Usage: Codable, Sendable {
     }
 }
 
+/// One minute of the server's Mac, as the server keeps it for a day
+/// (`GET /v1/usage/history`, API 6): CPU (100 a core) and memory, OS
+/// Server's and everyone else's, and the disk.
+public struct UsageSample: Codable, Sendable {
+    public var date: Date
+    public var cpus: Int
+    public var ourCPU: Double
+    public var otherCPU: Double
+    public var memoryBytes: Int64
+    public var ourMemory: Int64
+    public var otherMemory: Int64
+    public var diskBytes: Int64?
+    public var diskFreeBytes: Int64?
+    /// OS Server's own files, as last measured.
+    public var ourDiskBytes: Int64?
+
+    public init(date: Date, cpus: Int, ourCPU: Double, otherCPU: Double, memoryBytes: Int64, ourMemory: Int64, otherMemory: Int64,
+                diskBytes: Int64? = nil, diskFreeBytes: Int64? = nil, ourDiskBytes: Int64? = nil) {
+        self.date = date
+        self.cpus = cpus
+        self.ourCPU = ourCPU
+        self.otherCPU = otherCPU
+        self.memoryBytes = memoryBytes
+        self.ourMemory = ourMemory
+        self.otherMemory = otherMemory
+        self.diskBytes = diskBytes
+        self.diskFreeBytes = diskFreeBytes
+        self.ourDiskBytes = ourDiskBytes
+    }
+
+    public init(_ usage: Usage) {
+        let host = usage.host
+        self.init(date: usage.sampledAt, cpus: host.cpus, ourCPU: usage.ours?.cpuPercent ?? 0,
+                  otherCPU: usage.others?.cpuPercent ?? host.cpuPercent, memoryBytes: host.memoryBytes,
+                  ourMemory: usage.ours?.memoryBytes ?? 0, otherMemory: usage.others?.memoryBytes ?? host.memoryUsedBytes,
+                  diskBytes: usage.disk?.totalBytes, diskFreeBytes: usage.disk?.freeBytes,
+                  ourDiskBytes: usage.disk.flatMap { $0.parts.isEmpty ? nil : $0.parts.reduce(0) { $0 + $1.bytes } })
+    }
+}
+
 /// A share of the Mac's CPU (100 a core) and memory (physical footprint).
 public struct ResourceShare: Codable, Sendable {
     public var cpuPercent: Double
@@ -599,7 +639,8 @@ public enum OSS {
     public static let version = "0.9.0"
     /// 6 from 0.9.0: container leases (`platform: container`, a
     /// `ContainerSpec`, commands over `Lease.execSocket`), their volumes
-    /// (`/v1/volumes`), a lease's disk (`MachineUsage.diskBytes`). A client
+    /// (`/v1/volumes`), a lease's disk (`MachineUsage.diskBytes`), a day of
+    /// usage a minute at a time (`/v1/usage/history`). A client
     /// says its level in an `OSS-API` header: one below 6 is shown no
     /// containers.
     /// 5 from 0.8.0: usage says what is OS Server's, what is other

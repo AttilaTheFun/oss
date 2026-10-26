@@ -30,17 +30,26 @@ public enum MonitorFixture {
             lease("a90c3e17", .linux, "dev", "ci@runner", minutesAgo: 12, minutesLeft: 48, cpus: 6, memory: 16 * gb),
             lease("c44d8a20", .ios, "iphone", "visor:session-b", minutesAgo: 8, minutesLeft: 52, cpus: nil, memory: nil),
             lease("e5f61b39", .android, "phone", "visor:session-b", minutesAgo: 6, minutesLeft: 54, cpus: 4, memory: 4 * gb),
+            {
+                // An agent's container, held until it is released.
+                var held = lease("0d9c27f4", .container, "linux", "visor:session-c", minutesAgo: 95, minutesLeft: 0, cpus: 6, memory: 16 * gb)
+                held.expires = .distantFuture
+                return held
+            }(),
         ]
         let machines = [
             MachineUsage(id: "3f2a91c0", platform: .macos, config: "xcode-27.0", holder: "visor:session-a", cpus: 6,
-                         memoryLimitBytes: 16 * gb, cpuPercent: 412, memoryBytes: 17 * gb),
+                         memoryLimitBytes: 16 * gb, cpuPercent: 412, memoryBytes: 17 * gb, diskBytes: 38 * gb),
             MachineUsage(id: "7b1e04d2", platform: .windows, config: "swift-6.3.2", holder: "visor:session-a", cpus: 6,
-                         memoryLimitBytes: 16 * gb, cpuPercent: 538, memoryBytes: 19 * gb),
+                         memoryLimitBytes: 16 * gb, cpuPercent: 538, memoryBytes: 19 * gb, diskBytes: 46 * gb),
             MachineUsage(id: "a90c3e17", platform: .linux, config: "dev", holder: "ci@runner", cpus: 6,
-                         memoryLimitBytes: 16 * gb, cpuPercent: 96, memoryBytes: 7 * gb),
-            MachineUsage(id: "c44d8a20", platform: .ios, config: "iphone", holder: "visor:session-b", cpuPercent: 64, memoryBytes: 3 * gb),
+                         memoryLimitBytes: 16 * gb, cpuPercent: 96, memoryBytes: 7 * gb, diskBytes: 12 * gb),
+            MachineUsage(id: "c44d8a20", platform: .ios, config: "iphone", holder: "visor:session-b", cpuPercent: 64, memoryBytes: 3 * gb,
+                         diskBytes: 4 * gb),
             MachineUsage(id: "e5f61b39", platform: .android, config: "phone", holder: "visor:session-b", cpus: 4,
-                         memoryLimitBytes: 4 * gb, cpuPercent: 38, memoryBytes: 5 * gb),
+                         memoryLimitBytes: 4 * gb, cpuPercent: 38, memoryBytes: 5 * gb, diskBytes: 9 * gb),
+            MachineUsage(id: "0d9c27f4", platform: .container, config: "linux", holder: "visor:session-c", cpus: 6,
+                         memoryLimitBytes: 16 * gb, cpuPercent: 214, memoryBytes: 9 * gb, diskBytes: 7 * gb),
         ]
         let usage = Usage(
             sampledAt: now,
@@ -51,7 +60,7 @@ public enum MonitorFixture {
             disk: DiskUsage(totalBytes: 4_000 * gb, freeBytes: 2_710 * gb, parts: [
                 DiskPart(name: "macOS bases", bytes: 412 * gb), DiskPart(name: "macOS leases", bytes: 96 * gb),
                 DiskPart(name: "Bazel cache", bytes: 61 * gb), DiskPart(name: "Android SDK", bytes: 14 * gb),
-                DiskPart(name: "Android emulators", bytes: 22 * gb),
+                DiskPart(name: "Android emulators", bytes: 22 * gb), DiskPart(name: "Containers", bytes: 18 * gb),
             ], measuredAt: now),
             topProcesses: [
                 ProcessUsage(name: "Visor Server", processes: 14, cpuPercent: 118, memoryBytes: 38 * gb),
@@ -65,11 +74,12 @@ public enum MonitorFixture {
             Base(platform: .ios, config: "iphone"), Base(platform: .android, config: "phone"),
             Base(platform: .linux, config: "vanilla"), Base(platform: .linux, config: "dev"),
             Base(platform: .windows, config: "vanilla"), Base(platform: .windows, config: "dev"), Base(platform: .windows, config: "swift-6.3.2"),
+            Base(platform: .container, config: "linux"),
         ]
         let capacity = [
             Capacity(platform: .macos, limit: 2, leased: 1), Capacity(platform: .ios, limit: 10, leased: 1),
             Capacity(platform: .android, limit: 8, leased: 1), Capacity(platform: .linux, limit: 2, leased: 1),
-            Capacity(platform: .windows, limit: 2, leased: 1),
+            Capacity(platform: .windows, limit: 2, leased: 1), Capacity(platform: .container, limit: 4, leased: 1),
         ]
         let history = (0..<150).map { i -> ServerMonitor.Sample in
             let t = Double(i)
@@ -79,6 +89,17 @@ public enum MonitorFixture {
                                         ourMemory: 0.10 + 0.01 * sin(t / 17),
                                         otherMemory: 0.23 + 0.01 * sin(t / 11))
         }
+        // A day of the disk: filling with leases' clones in the afternoon, a cache trim at night.
+        let day = (0..<1440).map { i -> UsageSample in
+            let t = Double(i)
+            let used = 1_190 * gb + Int64((60 + 40 * sin(t / 230) + 8 * sin(t / 37)) * Double(gb))
+            let ours = 650 * gb + Int64((40 + 30 * sin(t / 230)) * Double(gb))
+            return UsageSample(date: now.addingTimeInterval(Double(i - 1439) * 60), cpus: 32, ourCPU: 1100, otherCPU: 300,
+                               memoryBytes: 512 * gb, ourMemory: 52 * gb, otherMemory: 119 * gb,
+                               diskBytes: 4_000 * gb, diskFreeBytes: 4_000 * gb - used, ourDiskBytes: ours)
+        }
+        let volumes = [VolumeInfo(name: "visor-session-c-build", sizeBytes: 128 * gb, allocatedBytes: 21 * gb, lease: "0d9c27f4"),
+                       VolumeInfo(name: "visor-session-a-build", sizeBytes: 128 * gb, allocatedBytes: 34 * gb)]
         monitor.pretend(
             capabilities: Capabilities(version: OSS.version, api: OSS.apiLevel, features: ["machines", "screenshots", "input", "usage", "cache"],
                                        platforms: Platform.allCases),
@@ -86,7 +107,7 @@ public enum MonitorFixture {
             usage: usage,
             cache: CacheInfo(port: 7490, readToken: "", bytes: 61 * gb, maxBytes: 200 * gb, freeBytes: 2_710 * gb,
                              hits: 48_213, misses: 3_907, writes: 11_542, evicted: 0),
-            history: history)
+            history: history, day: day, volumes: volumes)
         return monitor
     }
 }

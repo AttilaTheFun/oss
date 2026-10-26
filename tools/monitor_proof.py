@@ -11,7 +11,8 @@ and dark:
 
   ios    an iPhone simulator leased from this Mac's oss (its status bar
          held still by OS Server): the servers, a server's dashboard
-         (`-fixture.open YES`), and the dashboard scrolled to its end.
+         (`-fixture.open YES`), and the dashboard scrolled to its disk and
+         to its end.
   macos  a macOS VM leased from oss: the window (the list beside a server),
          cropped to it (tools/window_rect.swift, in the guest's session).
 
@@ -55,14 +56,15 @@ def ios(out, items):
     try:
         sh(["oss", "machine", "simctl", lease_id, "install", app])
         for appearance in APPEARANCES:
-            for name, args, scroll in [("servers", [], False), ("server", ["-fixture.open", "YES"], False),
-                                       ("server-end", ["-fixture.open", "YES"], True)]:
+            # Swipes down the dashboard: none, to its middle (the disk), to its end.
+            for name, args, scroll in [("servers", [], 0), ("server", ["-fixture.open", "YES"], 0),
+                                       ("server-disk", ["-fixture.open", "YES"], 2), ("server-end", ["-fixture.open", "YES"], 6)]:
                 sh(["oss", "machine", "simctl", lease_id, "terminate", BUNDLE], check=False)
                 sh(["oss", "machine", "simctl", lease_id, "launch", BUNDLE, "-fixture", "YES", "-appearance", appearance, *args])
                 time.sleep(4)
                 if scroll:
-                    for _ in range(3):
-                        sh(["oss", "machine", "swipe", lease_id, "600", "2200", "600", "400", "--ms=300"])
+                    for _ in range(scroll):
+                        sh(["oss", "machine", "swipe", lease_id, "600", "2000", "600", "900", "--ms=300"])
                         time.sleep(1)
                     time.sleep(1.5)
                 capture = f"{name}-{appearance}.png"

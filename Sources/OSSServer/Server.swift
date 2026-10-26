@@ -504,6 +504,22 @@ actor MachineManager {
     }
 
     private var lastUsage: Usage?
+    private lazy var history: [UsageSample] = FileManager.default.contents(atPath: Paths.usageHistory)
+        .flatMap { try? JSONDecoder.oss.decode([UsageSample].self, from: $0) } ?? []
+
+    /// A sample of the Mac for the day's history (every minute), kept
+    /// across restarts.
+    func recordHistory() async {
+        let sample = UsageSample(await usage())
+        history.append(sample)
+        history.removeAll { sample.date.timeIntervalSince($0.date) > 86400 }
+        if let data = try? JSONEncoder.oss.encode(history) {
+            Paths.ensure(Paths.state)
+            FileManager.default.createFile(atPath: Paths.usageHistory, contents: data)
+        }
+    }
+
+    func usageHistory() -> [UsageSample] { history }
 
     /// What the server's Mac and the leases use: sampled at most every
     /// three seconds (`ps` and `lsof` cost a moment).
@@ -710,6 +726,12 @@ public final class ServerHost: Sendable {
                 await machines.reviveContainers()
             }
         }
+        Task {
+            while true {
+                await machines.recordHistory()
+                try? await Task.sleep(for: .seconds(60))
+            }
+        }
         log("oss serving on :\(config.port); capacity \(config.capacity)")
         return ServerHost(port: config.port, machines: machines, http: http, cache: cache)
     }
@@ -807,6 +829,8 @@ enum Server {
                 var usage = await machines.usage()
                 usage.machines = usage.machines.filter { visible($0.platform) }
                 return .json(usage)
+            case ("GET", 3) where parts[1] == "usage" && parts[2] == "history":
+                return .json(await machines.usageHistory())
             case ("POST", 4) where parts[1] == "machines" && parts[3] == "input":
                 try await machines.input(parts[2], try JSONDecoder.oss.decode(InputRequest.self, from: request.body))
                 return .json(["done": "input"])

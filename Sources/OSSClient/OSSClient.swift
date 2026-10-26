@@ -223,6 +223,9 @@ public struct OSSClient: Sendable {
     /// What the server's Mac and each lease use now.
     public func usage() async throws -> Usage { try await json("GET", "/v1/usage") }
 
+    /// The last day of the server's Mac, a sample a minute.
+    public func usageHistory() async throws -> [UsageSample] { try await json("GET", "/v1/usage/history") }
+
     // MARK: Containers' volumes
 
     /// The volumes containers made on the server's Mac, kept ones too.

@@ -101,6 +101,58 @@ more as its owner builds. A lease that isn't renewed is released when its
 time runs out (60 minutes unless asked otherwise, at most 480). `renew`
 and `release` take the lease's id, or its platform when you hold just one.
 
+### Containers
+
+OS Server's app also lends Linux containers (API 6, macOS 26 or later):
+each a lightweight VM of its own on Apple's
+[Containerization](https://github.com/apple/containerization), from an
+image in a registry. A container is lent only to a client on the server's
+own Mac, since it shares that Mac's folders.
+
+```sh
+oss machine lease container --image=ghcr.io/owner/agent:1.2 --cpus=6 --memory=16 \
+    --mount=$HOME/Developer/app:$HOME/Developer/app --mount=/Applications/Xcode.app:/Applications/Xcode.app:ro \
+    --volume=app-build:/var/cache/bazel:128:keep --rosetta --minutes=0
+oss machine exec <id> -- uname -a                     # streamed; its exit status is exec's
+oss machine exec <id> --workdir=/src --env-file=agent.env -- ./agent --stdio
+oss machine exec <id> --tty -- bash                    # a terminal
+oss volume list                                         # volumes, kept ones too
+oss volume delete app-build
+```
+
+- **The image** is pulled once and kept by its digest; its root filesystem
+  is unpacked once at the size asked for (`--disk`, 64 GB by default) and
+  cloned for each container, so a second container of an image starts in
+  about a second. An unpacked image no container has been made from in two
+  weeks is deleted.
+- **Mounts** share a folder of the Mac's, read-only with `:ro`.
+- **Volumes** are disks of their own by name (ext4, allocated as they
+  fill): one already there at the size asked for is used again. A volume
+  is deleted with its lease unless it is kept (`:keep`); `oss volume delete`
+  removes a kept one, once no lease is using it.
+- **Rosetta** (`--rosetta`) runs x86_64 Linux programs, where the Mac has
+  Rosetta.
+- **The network** is NAT (vmnet's shared mode): the container reaches the
+  internet and the Mac's LAN addresses, the server's API and its Bazel
+  cache included.
+- **Held until released:** `--minutes=0` (a container only) is never
+  reclaimed: for an agent's container, which lives as long as its session.
+- **It outlives the server.** Each container runs in a helper process of
+  its own (`oss-container`, a launchd job of OS Server's), so quitting,
+  restarting or updating OS Server leaves it, and the commands running in
+  it, running; OS Server takes it up again when it starts. After the Mac's
+  restart, or if its helper ends, OS Server starts it again from its own
+  disk.
+- **exec** goes to the container directly, over its Unix socket on the
+  server's Mac (`Lease.execSocket`), not through the server. stdin goes in
+  with its end; stdout and stderr come back apart; TERM, INT, HUP, QUIT,
+  USR1 and USR2 sent to `oss machine exec` go on to the command, and if
+  `oss machine exec` ends first, so does the command (TERM, then KILL ten
+  seconds on). `--env-file` keeps secrets out of the command line.
+- What it runs: the image's own environment and working directory, the
+  lease's over them, and by default a process that waits (`--command`
+  names another): the work is done with exec.
+
 ### Self-hosted CI
 
 ```yaml
@@ -169,6 +221,26 @@ let lease = try await client.lease(LeaseRequest(platform: .ios))
 try await client.release(lease.id)
 ```
 
+A container's commands (`exec`) go straight to it, over its Unix socket:
+
+```swift
+let (input, feed) = AsyncStream<ExecFrame>.makeStream()   // .stdin(data), .closeStdin, .signal(15), .resize(...)
+let status = try await client.exec(lease, ExecRequest(arguments: ["make", "test"], workingDirectory: "/src"), input: input) { frame in
+    if case .stdout(let data) = frame { FileHandle.standardOutput.write(data) }
+}
+```
+
+`OSSPool` leases from several servers as one: from the nearest (this
+computer, then the LAN, then the tailnet) that has a base for the machine
+and room for it, a container only from this computer's own. It returns the
+lease and the client of the server that lent it:
+
+```swift
+let pool = OSSPool(entries: [OSSServerEntry(name: "MacBook Pro", servers: [here], token: { ... }),
+                             OSSServerEntry(name: "Mac mini", servers: [minisLAN, minisTailnet], token: { ... })])
+let (client, lease) = try await pool.lease(LeaseRequest(platform: .ios), waitForCapacity: true)
+```
+
 Requests go through URLSession; pass another `OSSTransport` (one
 method: a request in, status, headers and body out) where that can't
 reach the server, or to fake the server in tests (macOS lets only Apple's
@@ -183,9 +255,11 @@ more). Errors are `OSSError`, with the server's own message.
 Every request but `/v1/hello` and `/v1/capabilities` carries
 `Authorization: Bearer <token>`: the server's. The monitor token (OS
 Monitor's, from its connection code) is accepted for `GET /v1/status`,
-`/v1/usage` and `/v1/cache` (without the cache's read token) and refused
-for everything else.
-Bodies are JSON; errors are `{"error": "…"}`.
+`/v1/usage`, `/v1/usage/history`, `/v1/volumes` and `/v1/cache` (without
+the cache's read token) and refused for everything else.
+Bodies are JSON; errors are `{"error": "…"}`. A client says the API level
+it speaks in an `OSS-API` header (OSSClient does): one below 6 is shown no
+containers, which it couldn't read.
 
 | Method and path | Does |
 | --- | --- |
@@ -193,7 +267,7 @@ Bodies are JSON; errors are `{"error": "…"}`.
 | `GET /v1/capabilities` | its version, API level, features and platforms |
 | `GET /v1/status` | bases, capacity, leases |
 | `GET /v1/doctor` | whether the server can drive UTM, simulators and emulators |
-| `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?}` | a lease (state `creating`; poll it until `ready`) |
+| `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?, "container"?}` | a lease (state `creating`; poll it until `ready`). A container's `container` is a `ContainerSpec` (`image`, `cpus`, `memoryBytes`, `diskBytes`, `mounts`, `volumes`, `rosetta`, `environment`, `workingDirectory`, `command`); `minutes: 0` holds it until released; only a client on the server's Mac gets one |
 | `GET /v1/machines`, `GET /v1/machines/<id>` | leases; one lease: ports, VNC password, UDID, adb port… |
 | `POST /v1/machines/<id>/renew` `{"minutes"?}` | its time set again |
 | `DELETE /v1/machines/<id>` | released |
@@ -202,7 +276,18 @@ Bodies are JSON; errors are `{"error": "…"}`.
 | `GET /v1/machines/<id>/screenshot` | a PNG of its screen |
 | `POST /v1/machines/<id>/input` `{"action": "tap"\|"swipe"\|"type"\|"key", "x"?, "y"?, "toX"?, "toY"?, "milliseconds"?, "text"?, "key"?}` | a tap, swipe, text or key on its screen, in its screenshot's pixels |
 | `GET /v1/usage` | the server's CPU and memory, and each lease's (its processes on the Mac; 100% CPU is one core), against what it was given; from API 5 also OS Server's share (`ours`), everyone else's (`others`), the disk and OS Server's files on it (`disk`), and the other apps using the most (`topProcesses`) |
+| `GET /v1/usage/history` | the last day of the server's Mac, a sample a minute: CPU, memory and disk, OS Server's and everyone else's |
+| `GET /v1/volumes`, `DELETE /v1/volumes/<name>` | containers' volumes (size, disk taken, the lease using one); a kept one deleted (from the server's Mac) |
 | `GET /v1/cache` | the Bazel cache's port and read token, its size and how many lookups it answered (404 without one) |
+
+A container lease's commands go to its Unix socket (`execSocket`), a
+stream of frames each way: a kind byte, the payload's length (four bytes,
+big-endian), the payload. The client's first is `start` (7, an
+`ExecRequest` as JSON: `arguments`, `tty`, `columns`, `rows`,
+`environment`, `workingDirectory`), then `stdin` (0), `closeStdin` (1),
+`resize` (2, columns and rows as four bytes each), `signal` (6, Linux's
+number); the container's are `stdout` (3), `stderr` (4) and last `exit`
+(5, the status as four bytes).
 
 The Bazel cache is on a port of its own (7490): `GET`, `HEAD` and `PUT` of
 `/ac/<sha256>` and `/cas/<sha256>`, with the read or the write token as

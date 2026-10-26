@@ -40,6 +40,8 @@ enum Paths {
     /// UTM's VM bases as last listed.
     static let vmBases = "\(state)/vm-bases.json"
     static let uploads = "\(state)/uploads"
+    /// The last day of usage, a sample a minute.
+    static let usageHistory = "\(state)/usage-history.json"
     /// The macOS VMs' bases (OS Server's own, run by Apple's
     /// Virtualization framework) and their leases' clones.
     static let machines = "\(share)/Machines"

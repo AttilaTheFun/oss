@@ -4,8 +4,10 @@ import OSSClient
 
 /// One OS Server, watched: its status (capacity, bases, leases), its usage
 /// (the Mac's CPU, memory and disk, OS Server's share and everyone else's,
-/// each lease's), its Bazel cache, asked every few seconds while watched,
-/// and the last few minutes of CPU and memory for a chart. The first of the
+/// each lease's), its Bazel cache and containers' volumes, asked every few
+/// seconds while watched; the last few minutes of CPU and memory for a
+/// chart, and the server's own day of them and the disk (asked every
+/// minute). The first of the
 /// server's addresses that answers is used, and the rest are tried again
 /// when it stops answering.
 @available(macOS 15, iOS 18, *)
@@ -24,7 +26,11 @@ public final class ServerMonitor: Identifiable {
     public private(set) var status: Status?
     public private(set) var usage: Usage?
     public private(set) var cache: CacheInfo?
+    public private(set) var volumes: [VolumeInfo] = []
     public private(set) var history: [Sample] = []
+    /// The server's last day, a sample a minute (API 6).
+    public private(set) var day: [UsageSample] = []
+    private var dayAsked: Date?
     public private(set) var updated: Date?
     /// Canned (the proof's screens, previews): nothing is asked.
     public private(set) var isFixture = false
@@ -78,6 +84,13 @@ public final class ServerMonitor: Identifiable {
             self.status = status
             self.usage = usage
             cache = capabilities.features.contains("cache") ? try? await client.cache() : nil
+            if capabilities.api >= 6 {
+                volumes = (try? await client.volumes()) ?? []
+                if dayAsked.map({ Date().timeIntervalSince($0) > 60 }) ?? true, let day = try? await client.usageHistory() {
+                    self.day = day
+                    dayAsked = Date()
+                }
+            }
             updated = Date()
             state = .connected(url)
             record(usage)
@@ -112,13 +125,16 @@ public final class ServerMonitor: Identifiable {
     }
 
     /// Canned, for the proof's screens and previews.
-    public func pretend(capabilities: Capabilities, status: Status, usage: Usage, cache: CacheInfo?, history: [Sample]) {
+    public func pretend(capabilities: Capabilities, status: Status, usage: Usage, cache: CacheInfo?, history: [Sample],
+                        day: [UsageSample] = [], volumes: [VolumeInfo] = []) {
         isFixture = true
         self.capabilities = capabilities
         self.status = status
         self.usage = usage
         self.cache = cache
         self.history = history
+        self.day = day
+        self.volumes = volumes
         updated = usage.sampledAt
         state = .connected(connection.servers.first ?? URL(string: "http://localhost:7480")!)
     }

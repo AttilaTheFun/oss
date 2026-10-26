@@ -24,7 +24,7 @@ public struct ServerDashboard: View {
             if let usage = monitor.usage {
                 ResourcesCard(usage: usage, history: monitor.history)
                 MachinesCard(monitor: monitor)
-                if let disk = usage.disk { DiskCard(disk: disk) }
+                if let disk = usage.disk { DiskCard(disk: disk, day: monitor.day, volumes: monitor.volumes) }
                 if let top = usage.topProcesses, !top.isEmpty { OthersCard(processes: top) }
                 if let status = monitor.status { CapacityCard(status: status) }
                 if let cache = monitor.cache { CacheCard(cache: cache) }
@@ -179,15 +179,23 @@ struct MachinesCard: View {
                         VStack(alignment: .trailing, spacing: 2) {
                             Text(cpu(row)).monospacedDigit()
                             Text(memory(row)).monospacedDigit().foregroundStyle(.secondary)
-                            Text(row.lease.state == .ready ? Format.minutes(row.lease.expires.timeIntervalSince(monitor.now)) + " left"
-                                                           : row.lease.state.rawValue)
-                                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                            if let disk = row.usage?.diskBytes {
+                                Text("\(Format.bytes(disk)) disk").monospacedDigit().foregroundStyle(.secondary)
+                            }
+                            Text(time(row)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
                         }
                         .font(.callout)
                     }
                 }
             }
         }
+    }
+
+    private func time(_ row: MachineRow) -> String {
+        guard row.lease.state == .ready else { return row.lease.state.rawValue }
+        // A container held until it is released has no end.
+        let left = row.lease.expires.timeIntervalSince(monitor.now)
+        return left > 365 * 86400 ? "until released" : Format.minutes(left) + " left"
     }
 
     private func cpu(_ row: MachineRow) -> String {
@@ -208,6 +216,8 @@ struct MachinesCard: View {
 @available(macOS 15, iOS 18, *)
 struct DiskCard: View {
     let disk: DiskUsage
+    var day: [UsageSample] = []
+    var volumes: [VolumeInfo] = []
 
     var body: some View {
         let ours = disk.parts.reduce(0) { $0 + $1.bytes }
@@ -218,8 +228,25 @@ struct DiskCard: View {
                 ShareRow(title: "Used", total: Format.bytes(disk.totalBytes),
                          ours: Double(min(ours, used)) / total, others: Double(max(0, used - ours)) / total,
                          labels: (Format.bytes(ours), Format.bytes(max(0, used - ours)), Format.bytes(disk.freeBytes)))
+                let samples = day.filter { $0.diskBytes != nil }
+                if samples.count > 1 {
+                    DiskHistoryChart(samples: samples).frame(height: 60)
+                    HStack(spacing: 14) {
+                        Legend(color: .orange, text: "Used")
+                        Legend(color: .accentColor, text: "OS Server's")
+                        Text("the last \(Format.span(samples))").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .font(.caption)
+                }
                 ForEach(disk.parts) { part in
                     Row(part.name, Format.bytes(part.bytes))
+                }
+                if !volumes.isEmpty {
+                    Text("Volumes").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 2)
+                    ForEach(volumes) { volume in
+                        Row(volume.name, "\(Format.bytes(volume.allocatedBytes)) of \(Format.bytes(volume.sizeBytes))"
+                                + (volume.lease == nil ? " · kept" : ""))
+                    }
                 }
                 if !disk.parts.isEmpty {
                     Text("OS Server's files as allocated: a clone counts whole, though it shares its blocks.")
@@ -227,6 +254,41 @@ struct DiskCard: View {
                 }
             }
         }
+    }
+}
+
+/// The disk over the server's last day: all of it used, and OS Server's
+/// files, as fractions of the volume.
+@available(macOS 15, iOS 18, *)
+struct DiskHistoryChart: View {
+    let samples: [UsageSample]
+
+    var body: some View {
+        Canvas { context, size in
+            guard let first = samples.first?.date, let last = samples.last?.date else { return }
+            let span = max(1, last.timeIntervalSince(first))
+            func line(_ value: (UsageSample) -> Double?) -> Path {
+                var path = Path()
+                var started = false
+                for sample in samples {
+                    guard let value = value(sample) else { continue }
+                    let point = CGPoint(x: size.width * sample.date.timeIntervalSince(first) / span,
+                                        y: size.height * (1 - min(1, max(0, value))))
+                    if started { path.addLine(to: point) } else { path.move(to: point); started = true }
+                }
+                return path
+            }
+            func fraction(_ bytes: Int64?, of sample: UsageSample) -> Double? {
+                guard let bytes, let total = sample.diskBytes, total > 0 else { return nil }
+                return Double(bytes) / Double(total)
+            }
+            context.stroke(line { sample in
+                guard let total = sample.diskBytes, let free = sample.diskFreeBytes else { return nil }
+                return fraction(total - free, of: sample)
+            }, with: .color(.orange), lineWidth: 1.8)
+            context.stroke(line { fraction($0.ourDiskBytes, of: $0) }, with: .color(.accentColor), lineWidth: 1.8)
+        }
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.08)))
     }
 }
 
@@ -370,6 +432,13 @@ public enum Format {
         String(format: "%.1f", percent / 100)
     }
 
+    /// How long the samples cover: "24 h", "35 min".
+    public static func span(_ samples: [UsageSample]) -> String {
+        guard let first = samples.first?.date, let last = samples.last?.date else { return "" }
+        let minutes = Int((last.timeIntervalSince(first) / 60).rounded())
+        return minutes >= 120 ? "\(minutes / 60) h" : "\(minutes) min"
+    }
+
     public static func minutes(_ seconds: TimeInterval) -> String {
         "\(max(0, Int((seconds / 60).rounded()))) min"
     }
@@ -412,7 +481,7 @@ public struct UsageOverview: View {
             VStack(alignment: .leading, spacing: 16) {
                 ResourcesCard(usage: usage, history: monitor.history)
                 HStack(alignment: .top, spacing: 16) {
-                    if let disk = usage.disk { DiskCard(disk: disk) }
+                    if let disk = usage.disk { DiskCard(disk: disk, day: monitor.day, volumes: monitor.volumes) }
                     if let top = usage.topProcesses, !top.isEmpty { OthersCard(processes: top) }
                 }
             }
