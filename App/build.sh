@@ -1,11 +1,12 @@
 #!/bin/bash
 # Builds OS Server: App/build/OS Server.app, the server (in the app's own
 # process) with its window and menu bar, the command line (`oss`), the
-# containers' helper (`oss-container`), AXe and QEMU in Contents/Helpers, the
-# provisioning scripts in Contents/Resources; all signed with your Apple Development identity (ad hoc
-# without one; OSS_SIGN_IDENTITY for another, a Developer ID's for
-# notarizing), with App/entitlements.plist (Apple events for UTM,
-# Virtualization for its macOS VMs). The version is OSS.version
+# machines' helper (`oss-machine`: a container or a macOS VM each), AXe and
+# QEMU in Contents/Helpers, the provisioning scripts in Contents/Resources;
+# all signed with your Apple Development identity (ad hoc without one;
+# OSS_SIGN_IDENTITY for another, a Developer ID's for notarizing), with
+# App/entitlements.plist (Apple events for UTM, Virtualization for its
+# macOS VMs and containers). The version is OSS.version
 # (Sources/OSSClient/Models.swift); the build number OSS_APP_BUILD (1).
 #
 #   App/build.sh                 # build/OS Server.app
@@ -19,13 +20,13 @@ BUILD="${OSS_APP_BUILD:-1}"
 
 (cd .. && swift build -c release --product oss)
 swift build -c release --product OSSApp
-swift build -c release --product OSSContainer
+swift build -c release --product OSSMachine
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp .build/release/OSSApp "$APP/Contents/MacOS/OS Server"
 cp ../.build/release/oss "$APP/Contents/Helpers/oss"
-cp .build/release/OSSContainer "$APP/Contents/Helpers/oss-container"
+cp .build/release/OSSMachine "$APP/Contents/Helpers/oss-machine"
 # The layers' provisioning scripts, and AXe (simulator input; MIT), pinned
 # and checked: OS Server needs neither this checkout nor Homebrew.
 cp -R ../provision "$APP/Contents/Resources/provision"
@@ -73,7 +74,7 @@ sign() {
   else codesign --force --sign - "$@"; fi
 }
 sign --identifier oss --entitlements entitlements.plist "$APP/Contents/Helpers/oss"
-sign --identifier oss-container --entitlements entitlements.plist "$APP/Contents/Helpers/oss-container"
+sign --identifier oss-machine --entitlements entitlements.plist "$APP/Contents/Helpers/oss-machine"
 for framework in "$APP/Contents/Helpers/axe/Frameworks/"*.framework; do sign "$framework"; done
 for library in "$APP/Contents/Helpers/qemu/lib/"*; do sign "$library"; done
 sign --identifier qemu-img "$APP/Contents/Helpers/qemu/bin/qemu-img"

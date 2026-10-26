@@ -95,13 +95,16 @@ SSH, VNC and adb too. With no `client.json` it tries `127.0.0.1` only.
 - The server is OS Server, the app (since 0.7: in the app's own process,
   `App/`). Its files are `~/Library/Application Support/OS Server`
   (server.json, the token, `State/leases.json`, the macOS bases in
-  `Machines/`); its log `~/Library/Logs/OS Server.log`. macOS leases are
-  OS Server's own VMs (Apple's Virtualization, in its process): quitting
-  the app ends them. Linux and Windows are still UTM's, iOS simulators
-  and Android emulators the Mac's; a restart keeps those leases and
-  deletes clones nobody holds.
-- Never restart or quit OS Server while others hold leases without
-  asking them first: their macOS machines end with it.
+  `Machines/`); its log `~/Library/Logs/OS Server.log`. Every lease's
+  machine runs outside its process (since 0.10): macOS VMs and containers
+  in `oss-machine` helpers (launchd jobs `oss.machine.<name>`,
+  `oss.container.<name>`), Linux and Windows VMs in QEMU processes (or
+  UTM's on a server from before 0.9), simulators and emulators the Mac's.
+  A restart keeps the leases, starts again from its disk any machine
+  whose process is gone, and deletes clones nobody holds.
+- Still ask before restarting or quitting OS Server while others hold
+  leases: their machines go on, but the API and forwarded ports are gone
+  until it's back.
 - `oss doctor` says whether the server can drive UTM, simulators and
   emulators.
 - To try a change beside the running server: a server of its own with

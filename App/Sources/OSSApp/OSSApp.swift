@@ -27,8 +27,9 @@ enum Entry {
 /// OS Server, the app: it is the server (the API, the machines it lends,
 /// its Bazel cache, all in this process), shows what the Mac and each
 /// lease use, and stays in the menu bar with its window closed (no Dock
-/// icon then). Its macOS VMs run headless; any of them can be watched live
-/// in a window of its own.
+/// icon then). Its machines run in helpers of their own and outlive it; a
+/// macOS VM's screen is shown live in a window of its helper's (a base being
+/// built, in a window of the app's).
 struct OSSApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
@@ -42,7 +43,7 @@ struct OSSApp: App {
         }
         // Taller with the canned server, so its screen holds everything.
         .defaultSize(width: 860, height: Fixture.isOn ? 1110 : 760)
-        .defaultLaunchBehavior(Fixture.showsPanel || Fixture.showsSetUp ? .suppressed : .presented)
+        .defaultLaunchBehavior(Fixture.showsPanel || Fixture.showsSetUp || Fixture.guestScreen != nil ? .suppressed : .presented)
 
         // A macOS VM's screen, live (by the machine's name).
         WindowGroup("Screen", id: "screen", for: String.self) { $name in
@@ -52,6 +53,25 @@ struct OSSApp: App {
             }
         }
         .defaultSize(width: 1280, height: 820)
+
+        // The proof's guest screen (`-guestScreen YES`): a real guest's, at a
+        // fixed size.
+        Window("Screen", id: "fixture-guest-screen") {
+            if let target = Fixture.guestScreen {
+                GuestScreen(target: target, password: Fixture.guestScreenPassword)
+            }
+        }
+        .defaultSize(width: 1280, height: 748)
+        .defaultLaunchBehavior(Fixture.guestScreen != nil ? .presented : .suppressed)
+
+        // A Linux or Windows VM's screen, live (its QEMU's VNC).
+        WindowGroup("Screen", id: "guest-screen", for: GuestScreenTarget.self) { $target in
+            if let target {
+                GuestScreen(target: target)
+                    .onAppear { AppActivation.windowShown() }
+            }
+        }
+        .defaultSize(width: 1280, height: 748)
 
         // The menu bar's panel in a window of its own, for the proof's
         // screen of it (`-fixture -panel`): the same view, no clicking.
@@ -130,9 +150,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
-    /// The macOS VMs run in this process: quitting ends their leases, so it
-    /// asks first while any runs. (The other machines' leases are kept, and
-    /// taken up again at the next launch.)
+    /// A build without the machines' helper runs macOS VMs in this process:
+    /// quitting would end their leases, so it asks first while any runs.
+    /// (Leases in helpers are kept, and taken up again at the next launch.)
     @MainActor
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let running = MacVMs.names.filter { $0.hasPrefix("oss-lease-") }

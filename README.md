@@ -139,7 +139,7 @@ oss volume delete app-build
 - **Held until released:** `--minutes=0` (a container only) is never
   reclaimed: for an agent's container, which lives as long as its session.
 - **It outlives the server.** Each container runs in a helper process of
-  its own (`oss-container`, a launchd job of OS Server's), so quitting,
+  its own (`oss-machine container`, a launchd job of OS Server's), so quitting,
   restarting or updating OS Server leaves it, and the commands running in
   it, running; OS Server takes it up again when it starts. After the Mac's
   restart, or if its helper ends, OS Server starts it again from its own
@@ -310,11 +310,10 @@ Protocol](https://modelcontextprotocol.io) tools on stdio (`oss_status`,
    it (from a checkout, `App/build.sh --install`). It is the server (in its
    own process), and shows what the Mac and each lease use: CPU, memory
    and disk against what each was given, the capacity per platform, the
-   Bazel cache, the server's log, and **Screen** beside a macOS lease for
+   Bazel cache, the server's log, and **Screen** beside a VM's lease for
    its screen, live. Closing its window leaves it in the menu bar (no Dock
-   icon). Quitting it ends the macOS leases (their VMs run in it; it asks
-   first) and keeps the others, which run in processes of their own and
-   are taken up again when it starts.
+   icon). Quitting it keeps every lease: each machine runs in a process of
+   its own, taken up again when it starts.
 2. **Set Up**: its first launch asks what this Mac lends; Settings ›
    Components adds or removes any later. Each component is installed from
    a download, or a file you give it, with no one at its screen, into OS
@@ -328,9 +327,10 @@ Protocol](https://modelcontextprotocol.io) tools on stdio (`oss_status`,
    - **Ubuntu VMs**: Ubuntu 26.04's arm64 cloud image (checked against
      Ubuntu's SHA256SUMS), GNOME, `runner` and OS Server's key set up by
      cloud-init, then the vanilla layer; about five minutes.
-   - **Windows VMs**: Windows 11 on Arm from its ISO, which you give it
-     (Microsoft hands it out only from its page), installed by an answer
-     file in about fifty minutes: Windows' own drivers for its disk (NVMe),
+   - **Windows VMs**: Windows 11 on Arm from Microsoft's ISO, downloaded
+     as Microsoft's page downloads it and checked against the SHA-256 the
+     page lists (about 9 GB, kept; or an ISO you give it, should Microsoft
+     refuse), installed by an answer file in about fifty minutes: Windows' own drivers for its disk (NVMe),
      screen and input, Fedora's virtio-win (signed Arm64 drivers,
      downloaded and checked) for its network card and GPU (1920 × 1080),
      OpenSSH with OS Server's key, then the vanilla layer. It installs with
@@ -349,7 +349,7 @@ Everything else it needs is inside it: QEMU for the Linux and Windows VMs
 (Homebrew's, with its libraries, made to stand alone by
 `tools/bundle_qemu.py`; `Contents/Resources/qemu/SOURCES.txt` says which
 versions, whose sources are QEMU's and Homebrew's), AXe for a simulator's
-input (MIT), the containers' helper, the layers' provisioning scripts, and
+input (MIT), the machines' helper, the layers' provisioning scripts, and
 its own SSH key, made the first time. It needs no Homebrew and no UTM.
 Settings › **Remove Everything** ends every lease and deletes all it keeps,
 so moving the app to the Trash afterwards leaves the Mac as it was.
@@ -424,7 +424,7 @@ oss image install macos base [--ipsw=PATH]                 # macOS 27 here; then
 oss image build macos vanilla --from=base
 oss image install linux base [--image=<a cloud image>]     # Ubuntu 26.04 by default
 oss image build linux vanilla --from=base
-oss image install windows base --iso=<Windows 11 on Arm's ISO> [--edition="Windows 11 Pro"]
+oss image install windows base --iso=<Windows 11 on Arm's ISO> [--edition="Windows 11 Pro"]   # or: oss component install windows
 oss image build windows vanilla --from=base
 ```
 
@@ -432,10 +432,13 @@ Each takes `--cpus`, `--memory` and `--disk` (GB). The vanilla layer
 (`provision/<platform>/vanilla`): `runner` logged in at boot, sudo without
 a password, SSH by the server's key only, no sleep, lock, update notice or
 first-run welcome. Bases are folders in `Machines/<platform>/`: macOS's run
-on Apple's Virtualization in OS Server's process; Linux's and Windows' on
-its QEMU, each in a QEMU process of its own (so they outlive OS Server's
-restarts), with QEMU's own NAT (the guest is 10.0.2.15, the Mac
+on Apple's Virtualization, a lease's in a helper of its own (`oss-machine
+macos`, a launchd job); Linux's and Windows' on its QEMU, each in a QEMU
+process of its own, with QEMU's own NAT (the guest is 10.0.2.15, the Mac
 10.0.2.2), SSH forwarded to a loopback port, and the screen QEMU's VNC.
+Either way a lease's machine outlives OS Server's restarts, and one whose
+process is gone (the Mac restarted, it crashed, its guest shut down) is
+started again from its own disk, its lease and ports kept.
 
 One manual step remains for macOS: once, at its live view (OS Server's
 Screen while a layer builds, or a lease of it), System Settings → General →
@@ -494,9 +497,13 @@ snapshot.
 
 ## How it works, and what bit
 
-- **macOS VMs run in OS Server's process** (Virtualization's
-  `VZVirtualMachine`, headless; the window's Screen is
-  `VZVirtualMachineView` on the same machine). A base's folder holds the
+- **A macOS lease's VM runs in a helper** (`oss-machine macos <helper.json>`,
+  the launchd job `oss.machine.<name>`: Virtualization's
+  `VZVirtualMachine`, headless). Its socket (`$TMPDIR/oss/<name>.sock`)
+  answers `status`, `screen` and `stop`; Screen opens the helper's own
+  window (`VZVirtualMachineView` must be in the machine's process), the app
+  yielding its activation to it. Installs and layer builds run in OS
+  Server's process, their Screen in its window. A base's folder holds the
   hardware model and machine identifier it was installed with; a lease
   clones the folder (clonefile: the disk's blocks are shared until
   written) and gives the clone a network card of its own, so the NAT's

@@ -22,8 +22,8 @@ let package = Package(
                            .product(name: "ContainerizationOCI", package: "containerization"),
                            .product(name: "ContainerizationOS", package: "containerization")]
         ),
-        // `oss-container`: one container, a launchd job of OS Server's (Contents/Helpers).
-        .executableTarget(name: "OSSContainer", dependencies: ["ContainerRuntime"]),
+        // `oss-machine`: one container or macOS VM, a launchd job of OS Server's (Contents/Helpers).
+        .executableTarget(name: "OSSMachine", dependencies: ["ContainerRuntime", .product(name: "OSSServer", package: "oss")]),
         .executableTarget(
             name: "OSSApp",
             dependencies: ["ContainerRuntime",

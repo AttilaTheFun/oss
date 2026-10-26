@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.10.0
+
+- **macOS VMs in helpers of their own**, as containers are: each lease's VM
+  runs in `oss-machine macos`, a launchd job, so quitting, restarting or
+  updating OS Server leaves it running. Its Screen window is the helper's
+  (Virtualization's view needs the machine in its process). The helper is
+  `Contents/Helpers/oss-machine` (`oss-container` before), containers'
+  too. Installs and layer builds still run in OS Server.
+- **Every VM starts again from its own disk** when its process is gone:
+  after the Mac restarts, a crash, or its guest shutting down; macOS VMs
+  and Linux and Windows ones on OS Server's QEMU alike, the lease, its
+  ports and its address kept.
+- **The Windows component downloads Windows 11 on Arm's ISO** from
+  Microsoft, as Microsoft's download page does (no account), checks it
+  against the SHA-256 the page lists and keeps it in `Machines/images`.
+  When Microsoft refuses, the component says so: an ISO of your own is
+  still taken (From a File…, `oss component install windows --file=`).
+- **A live Screen window for Linux and Windows VMs**: OS Server's own VNC
+  viewer (`RFBSession`) on the VM's QEMU, scaled to the window, with the
+  pointer, the wheel and the keyboard.
+- **Windows VMs keep the right time**: QEMU's clock is UTC, which Windows
+  took for local time (its clock ran the zone's hours off). Their vanilla
+  layer also holds the screen still: no taskbar widgets (live weather), no
+  Spotlight (a new wallpaper each day).
+- OSSClient's API is unchanged (API 6).
+
 ## 0.9.0
 
 - **Containers** (API 6, OS Server's app on macOS 26 or later): a lease

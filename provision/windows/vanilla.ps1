@@ -30,5 +30,24 @@ $au = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
 New-Item -Path $au -Force | Out-Null
 Set-ItemProperty -Path $au -Name NoAutoRebootWithLoggedOnUsers -Value 1 -Type DWord
 Set-ItemProperty -Path $au -Name AUOptions -Value 2 -Type DWord
+# QEMU's clock is UTC; Windows takes a machine's clock for local time unless
+# told (its time was off by the zone's hours).
+Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation' -Name RealTimeIsUniversal -Value 1 -Type QWord
+# A screen that holds still: no widgets (the taskbar's live weather) and no
+# Spotlight (a new wallpaper every day), Windows' own wallpaper instead.
+$dsh = 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh'
+New-Item -Path $dsh -Force | Out-Null
+Set-ItemProperty -Path $dsh -Name AllowNewsAndInterests -Value 0 -Type DWord
+$cloud = 'HKCU:\Software\Policies\Microsoft\Windows\CloudContent'
+New-Item -Path $cloud -Force | Out-Null
+Set-ItemProperty -Path $cloud -Name DisableWindowsSpotlightFeatures -Value 1 -Type DWord
+Set-ItemProperty -Path $cloud -Name DisableSpotlightCollectionOnDesktop -Value 1 -Type DWord
+$wallpaper = 'C:\Windows\Web\Wallpaper\Windows\img0.jpg'
+if (Test-Path $wallpaper) {
+    Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name Wallpaper -Value $wallpaper
+    $wallpapers = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Wallpapers'
+    New-Item -Path $wallpapers -Force | Out-Null
+    Set-ItemProperty -Path $wallpapers -Name BackgroundType -Value 0 -Type DWord
+}
 # The screen is QEMU's VNC (the server sets it up per lease): nothing to install for it.
 "vanilla: " + (Get-CimInstance Win32_OperatingSystem).Caption

@@ -31,6 +31,22 @@ enum Fixture {
     /// Onboarding's window (`-setup YES`), for its screen.
     static var showsSetUp: Bool { isOn && UserDefaults.standard.bool(forKey: "setup") }
 
+    /// A Linux or Windows VM's Screen window instead of the main window
+    /// (`-guestScreen YES`, with `-guestScreenHost`, `-guestScreenPort` and
+    /// `-guestScreenName`; its VNC password in ~/oss-fixture-vnc-password),
+    /// for its screen: a real guest's, through its lease's relay.
+    static var guestScreen: GuestScreenTarget? {
+        let defaults = UserDefaults.standard
+        guard isOn, defaults.bool(forKey: "guestScreen"), let host = defaults.string(forKey: "guestScreenHost") else { return nil }
+        return GuestScreenTarget(name: defaults.string(forKey: "guestScreenName") ?? "guest", host: host,
+                                 port: defaults.integer(forKey: "guestScreenPort"))
+    }
+
+    static var guestScreenPassword: String {
+        let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("oss-fixture-vnc-password")
+        return ((try? String(contentsOf: file, encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// The components as a Mac part-way through setting up has them.
     static let components: [ComponentInfo] = [
         ComponentInfo(id: "containers", name: "Linux containers",
@@ -44,8 +60,8 @@ enum Fixture {
                       symbol: "server.rack", state: .installing("build-linux-base: first boot, cloud-init installing the desktop (a while)"),
                       accepts: ["img"]),
         ComponentInfo(id: "windows", name: "Windows VMs",
-                      detail: "Windows 11 on Arm from Microsoft's ISO (download it from Microsoft's page), installed by an answer file on OS Server's QEMU, with Fedora's virtio drivers.",
-                      symbol: "pc", state: .absent, accepts: ["iso"], needsFile: true),
+                      detail: "Windows 11 on Arm from Microsoft's ISO (downloaded from Microsoft, about 9 GB), installed by an answer file on OS Server's QEMU, with Fedora's virtio drivers.",
+                      symbol: "pc", state: .absent, accepts: ["iso"]),
         ComponentInfo(id: "android", name: "Android emulators",
                       detail: "Google's emulator and an Android 15 phone image, from Google's repository.",
                       symbol: "candybarphone", state: .installed, accepts: []),
@@ -66,6 +82,8 @@ enum Fixture {
                               expires: now.addingTimeInterval(minutesLeft * 60))
             lease.cpus = cpus
             lease.memoryLimitBytes = memory
+            // OS Server's own QEMU: its Screen window.
+            if platform == .linux || platform == .windows { lease.qemuVNCPort = 46500 }
             return lease
         }
         let leases = [

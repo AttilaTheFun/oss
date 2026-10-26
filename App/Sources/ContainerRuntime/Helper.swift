@@ -4,7 +4,7 @@ import Foundation
 import Network
 import OSSClient
 
-/// A container's helper (`oss-container <helper.json>`): it boots the
+/// A container's helper (`oss-machine container <helper.json>`): it boots the
 /// container's VM (Apple's Containerization, in this process), runs its
 /// commands as they come on its Unix socket, and stops it on TERM. A launchd
 /// job of OS Server's, not OS Server's child: the container and its
@@ -14,7 +14,7 @@ public enum ContainerHelper {
     public static func main(_ arguments: [String]) async -> Never {
         guard arguments.count == 2, let data = FileManager.default.contents(atPath: arguments[1]),
               let spec = try? JSONDecoder().decode(HelperSpec.self, from: data) else {
-            say("oss-container <helper.json>: no spec to run")
+            say("oss-machine container <helper.json>: no spec to run")
             exit(2)
         }
         let directory = URL(fileURLWithPath: arguments[1]).deletingLastPathComponent()

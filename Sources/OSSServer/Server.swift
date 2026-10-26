@@ -48,6 +48,8 @@ actor MachineManager {
     /// minutes to answer while it's busy).
     private var knownBases: [Base] = []
     private var forwarders: [String: [Forwarder]] = [:]
+    /// Leases whose machine is being started again from its disk.
+    private var restarting: Set<String> = []
     private let utm = UTMQueue()
     /// The server's Bazel cache, which every VM lease reads.
     private let bazelCache: (port: Int, readToken: String)?
@@ -224,9 +226,27 @@ actor MachineManager {
         log("lease \(id): container \(lease.name) running \(spec.image)")
     }
 
-    /// Containers whose helper has stopped (it crashed, or its command
-    /// ended) are started again from their disks.
-    func reviveContainers() async {
+    /// Machines whose process has stopped are started again from their
+    /// disks: a container's helper (it crashed, or its command ended), a VM's
+    /// helper or QEMU (it crashed, or its guest shut down).
+    func reviveMachines() async {
+        await reviveContainers()
+        #if canImport(Virtualization)
+        for lease in leases.values where lease.state == .ready && lease.platform.isVM && !restarting.contains(lease.id) {
+            if lease.platform == .macos {
+                guard FileManager.default.fileExists(atPath: "\(MacVMStore.leasePath(lease.name))/helper.json"),
+                      !(await MacVMJobs.isRunning(lease.name)) else { continue }
+            } else {
+                guard lease.qemuVNCPort != nil, FileManager.default.fileExists(atPath: QEMUStore.leasePath(lease.name)),
+                      !QEMUVMs.isRunning(QEMUStore.leasePath(lease.name)) else { continue }
+            }
+            log("lease \(lease.id): \(lease.name) stopped; starting it again from its disk")
+            Task { await self.restartOwnVM(lease) }
+        }
+        #endif
+    }
+
+    private func reviveContainers() async {
         guard let containers else { return }
         for lease in leases.values where lease.platform == .container && lease.state == .ready {
             guard let spec = lease.container, !(await containers.isRunning(name: lease.name)) else { continue }
@@ -348,20 +368,91 @@ actor MachineManager {
         let path = MacVMStore.leasePath(lease.name)
         var address: String?
         for attempt in 1...2 where address == nil {
-            let vm = try await MacVMs.startClone(of: base.config, as: lease.name, at: path)
-            leases[id]?.mac = vm.spec.mac
-            leases[id]?.cpus = vm.spec.cpus
-            leases[id]?.memoryLimitBytes = Int64(vm.spec.memoryBytes)
-            address = try? await MacVMs.address(of: vm.spec.mac, seconds: 150)
+            let spec: MacMachineSpec
+            if MacVMJobs.helper != nil {
+                // In a helper of its own (a launchd job): it outlives this process.
+                try MacVMStore.clone(MacVMStore.basePath(base.config), to: path)
+                var made = try MacMachineSpec.load(path)
+                made.mac = Random.mac()
+                made.origin = base.config
+                try made.save(path)
+                try await MacVMJobs.start(name: lease.name, path: path)
+                spec = made
+            } else {
+                spec = try await MacVMs.startClone(of: base.config, as: lease.name, at: path).spec
+            }
+            leases[id]?.mac = spec.mac
+            leases[id]?.cpus = spec.cpus
+            leases[id]?.memoryLimitBytes = Int64(spec.memoryBytes)
+            address = try? await MacVMs.address(of: spec.mac, seconds: 150)
             if address == nil {
                 log("lease \(id): \(lease.name) got no address after 150 s (try \(attempt) of 2)")
-                await vm.stop()
+                await stopMacVM(lease.name)
                 MacVMStore.remove(path)
                 guard leases[id]?.state == .creating else { return }
             }
         }
         guard let address else { throw APIError(error: "\(lease.name) got no address, twice") }
         try await handOver(id, lease: lease, address: address, qemuVNC: nil, holderKey: holderKey)
+    }
+
+    /// A macOS VM of a lease's stopped, in its helper or in this process.
+    private func stopMacVM(_ name: String) async {
+        await MainActor.run { MacVMs.running[name] }?.stop()
+        await MacVMJobs.stop(name)
+    }
+
+    /// A VM lease of OS Server's own whose machine has stopped (the Mac
+    /// restarted, or its process ended): booted again from its own disk,
+    /// its ports as they were, the lease kept.
+    private func restartOwnVM(_ lease: Lease) async {
+        guard restarting.insert(lease.id).inserted else { return }
+        defer { restarting.remove(lease.id) }
+        do {
+            if lease.platform == .macos {
+                try await MacVMJobs.start(name: lease.name, path: MacVMStore.leasePath(lease.name))
+                let address = try await MacVMs.address(of: lease.mac ?? "", seconds: 300)
+                leases[lease.id]?.guestAddress = address
+                reforward(lease.id, ssh: (address, 22), screen: (address, 5900, nil))
+            } else {
+                guard let vnc = lease.qemuVNCPort else { throw ShellError(description: "no ports kept") }
+                let ports = QEMUVMs.Ports(vnc: vnc)
+                try await QEMUVMs.start(name: lease.name, path: QEMUStore.leasePath(lease.name), ports: ports)
+                reforward(lease.id, ssh: ("127.0.0.1", ports.ssh), screen: ("127.0.0.1", vnc, lease.vncPassword))
+            }
+            // Released meanwhile: release has stopped what it found, and this is gone too.
+            guard leases[lease.id]?.state == .ready else {
+                forwarders.removeValue(forKey: lease.id)?.forEach { $0.stop() }
+                if lease.platform == .macos { await stopMacVM(lease.name) } else {
+                    await QEMUVMs.stop(QEMUStore.leasePath(lease.name), ports: lease.qemuVNCPort.map { QEMUVMs.Ports(vnc: $0) })
+                }
+                return
+            }
+            log("lease \(lease.id): \(lease.name) started again from its disk")
+        } catch {
+            log("lease \(lease.id): starting \(lease.name) again failed: \(error)")
+            leases[lease.id]?.error = "its machine stopped and couldn't be started again"
+            await release(lease.id, reason: "its machine is gone")
+        }
+    }
+
+    /// A lease's SSH and screen forwarded again, on the ports it had: its
+    /// forwarders pointed at the machine where they are (a listener's port
+    /// isn't free again at once), made where they aren't.
+    private func reforward(_ id: String, ssh: (String, Int), screen: (String, Int, String?)) {
+        guard let lease = leases[id] else { return }
+        var made: [Forwarder] = []
+        for (port, host, target, password) in [(lease.sshPort, ssh.0, ssh.1, nil as String?), (lease.vncPort, screen.0, screen.1, screen.2)] {
+            guard let port else { continue }
+            if let kept = forwarders[id]?.first(where: { $0.port == port }) {
+                kept.retarget(host, target)
+                made.append(kept)
+            } else if let forwarder = try? Forwarder(port: port, target: host, targetPort: target, vncPassword: password) {
+                forwarder.start()
+                made.append(forwarder)
+            }
+        }
+        forwarders[id] = made
     }
 
     /// A Linux or Windows lease on OS Server's own QEMU: its base cloned and
@@ -451,7 +542,7 @@ actor MachineManager {
         case .macos, .linux, .windows:
             #if canImport(Virtualization)
             if lease.platform == .macos, FileManager.default.fileExists(atPath: MacVMStore.leasePath(lease.name)) {
-                await MainActor.run { MacVMs.running[lease.name] }?.stop()
+                await stopMacVM(lease.name)
                 MacVMStore.remove(MacVMStore.leasePath(lease.name))
                 break
             }
@@ -654,20 +745,32 @@ actor MachineManager {
         let vms = config.useUTM && config.lends.map({ $0.contains(where: \.isVM) }) ?? true ? ((try? await UTM.list()) ?? []) : []
         for var lease in ordered where lease.state == .ready && lease.expires > Date() {
             #if canImport(Virtualization)
-            // OS Server's own macOS VMs ran in the process that ended: theirs went with it.
-            if lease.platform == .macos, FileManager.default.fileExists(atPath: MacVMStore.leasePath(lease.name)) { continue }
-            // Its own QEMU machines run in processes of their own: forwarded again while they run.
-            if lease.platform != .macos, lease.platform.isVM, FileManager.default.fileExists(atPath: QEMUStore.leasePath(lease.name)) {
-                guard QEMUVMs.isRunning(QEMUStore.leasePath(lease.name)), let vnc = lease.qemuVNCPort else { continue }
-                let ports = QEMUVMs.Ports(vnc: vnc)
-                forwarders[lease.id] = []
-                for (port, target, password) in [(lease.sshPort, ports.ssh, nil as String?), (lease.vncPort, vnc, lease.vncPassword)] {
-                    guard let port, let forwarder = try? Forwarder(port: port, target: "127.0.0.1", targetPort: target, vncPassword: password) else { continue }
-                    forwarder.start()
-                    forwarders[lease.id]?.append(forwarder)
-                }
+            // OS Server's own macOS VMs run in helpers of their own: forwarded
+            // again while they run, started again from their disks when not (the
+            // Mac restarted). One run in the process that ended went with it.
+            if lease.platform == .macos, FileManager.default.fileExists(atPath: MacVMStore.leasePath(lease.name)) {
+                guard MacVMJobs.helper != nil, FileManager.default.fileExists(atPath: "\(MacVMStore.leasePath(lease.name))/helper.json") else { continue }
                 leases[lease.id] = lease
-                log("lease \(lease.id): recovered")
+                if await MacVMJobs.isRunning(lease.name), let address = lease.guestAddress {
+                    reforward(lease.id, ssh: (address, 22), screen: (address, 5900, nil))
+                    log("lease \(lease.id): recovered")
+                } else {
+                    log("lease \(lease.id): \(lease.name) isn't running; starting it again from its disk")
+                    Task { await self.restartOwnVM(lease) }
+                }
+                continue
+            }
+            // Its own QEMU machines run in processes of their own: likewise.
+            if lease.platform != .macos, lease.platform.isVM, FileManager.default.fileExists(atPath: QEMUStore.leasePath(lease.name)) {
+                guard let vnc = lease.qemuVNCPort else { continue }
+                leases[lease.id] = lease
+                if QEMUVMs.isRunning(QEMUStore.leasePath(lease.name)) {
+                    reforward(lease.id, ssh: ("127.0.0.1", QEMU.sshPort(vnc: vnc)), screen: ("127.0.0.1", vnc, lease.vncPassword))
+                    log("lease \(lease.id): recovered")
+                } else {
+                    log("lease \(lease.id): \(lease.name) isn't running; starting it again from its disk")
+                    Task { await self.restartOwnVM(lease) }
+                }
                 continue
             }
             #endif
@@ -713,6 +816,7 @@ actor MachineManager {
         for name in (try? FileManager.default.contentsOfDirectory(atPath: MacVMStore.leases)) ?? []
         where name.hasSuffix(".vm") && !leases.values.contains(where: { "\($0.name).vm" == name }) {
             log("deleting \(name): no lease holds it")
+            await MacVMJobs.stop(String(name.dropLast(3)))
             await QEMUVMs.stop("\(MacVMStore.leases)/\(name)", ports: nil)
             MacVMStore.remove("\(MacVMStore.leases)/\(name)")
         }
@@ -774,7 +878,7 @@ public final class ServerHost: Sendable {
             while true {
                 try? await Task.sleep(for: .seconds(15))
                 await machines.expire()
-                await machines.reviveContainers()
+                await machines.reviveMachines()
             }
         }
         Task {
