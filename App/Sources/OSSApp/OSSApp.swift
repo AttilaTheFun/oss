@@ -61,12 +61,12 @@ struct OSSApp: App {
     }
 }
 
-@MainActor
+@MainActor @Observable
 final class AppModel {
     static let shared = AppModel()
 
-    let monitor = Monitor()
-    let server = ServerRunner()
+    @ObservationIgnored let monitor = Monitor()
+    @ObservationIgnored let server = ServerRunner()
     /// This server as OS Monitor sees it (its usage split three ways),
     /// asked through its own monitor token once it serves.
     var watcher: ServerMonitor?

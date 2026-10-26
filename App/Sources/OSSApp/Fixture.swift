@@ -82,7 +82,7 @@ enum Fixture {
                                   memoryFraction: 0.31 + 0.02 * sin(t / 17))
         }
         monitor.pretend(
-            capabilities: Capabilities(version: "0.7.0", api: 4, features: ["machines", "screenshots", "input", "usage", "cache"],
+            capabilities: Capabilities(version: OSS.version, api: OSS.apiLevel, features: ["machines", "screenshots", "input", "usage", "cache"],
                                        platforms: Platform.allCases),
             status: Status(server: "Mac Studio", bases: bases, capacity: capacity, leases: leases),
             usage: usage,
