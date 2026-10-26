@@ -35,8 +35,10 @@ public struct ServerDashboard: View {
     }
 }
 
-// MARK: - CPU, memory and their history
+// MARK: - CPU, memory and disk, and their history
 
+/// The Mac's CPU, memory and disk side by side, each split three ways (OS
+/// Server's, everyone else's, free), and the last minutes of CPU and memory.
 @available(macOS 15, iOS 18, *)
 struct ResourcesCard: View {
     let usage: Usage
@@ -49,7 +51,7 @@ struct ResourcesCard: View {
         let otherCPU = usage.others?.cpuPercent ?? host.cpuPercent
         let ourMemory = Double(usage.ours?.memoryBytes ?? 0)
         let otherMemory = Double(usage.others?.memoryBytes ?? host.memoryUsedBytes)
-        Card("CPU and memory", systemImage: "cpu") {
+        Card(usage.disk == nil ? "CPU and memory" : "CPU, memory and disk", systemImage: "cpu") {
             VStack(alignment: .leading, spacing: 14) {
                 ShareRow(title: "CPU", total: "\(host.cpus) cores",
                          ours: ourCPU / cores, others: otherCPU / cores,
@@ -58,6 +60,14 @@ struct ResourcesCard: View {
                          ours: ourMemory / Double(max(1, host.memoryBytes)), others: otherMemory / Double(max(1, host.memoryBytes)),
                          labels: (Format.bytes(Int64(ourMemory)), Format.bytes(Int64(otherMemory)),
                                   Format.bytes(max(0, host.memoryBytes - Int64(ourMemory) - Int64(otherMemory)))))
+                if let disk = usage.disk {
+                    let ours = disk.parts.reduce(0) { $0 + $1.bytes }
+                    let used = disk.totalBytes - disk.freeBytes
+                    let total = Double(max(1, disk.totalBytes))
+                    ShareRow(title: "Disk", total: Format.bytes(disk.totalBytes),
+                             ours: Double(min(ours, used)) / total, others: Double(max(0, used - ours)) / total,
+                             labels: (Format.bytes(ours), Format.bytes(max(0, used - ours)), Format.bytes(disk.freeBytes)))
+                }
                 if history.count > 1 {
                     HistoryChart(history: history).frame(height: 70)
                     HStack(spacing: 14) {
@@ -220,14 +230,8 @@ struct DiskCard: View {
     var volumes: [VolumeInfo] = []
 
     var body: some View {
-        let ours = disk.parts.reduce(0) { $0 + $1.bytes }
-        let used = disk.totalBytes - disk.freeBytes
-        let total = Double(max(1, disk.totalBytes))
         Card("Disk", systemImage: "internaldrive") {
             VStack(alignment: .leading, spacing: 10) {
-                ShareRow(title: "Used", total: Format.bytes(disk.totalBytes),
-                         ours: Double(min(ours, used)) / total, others: Double(max(0, used - ours)) / total,
-                         labels: (Format.bytes(ours), Format.bytes(max(0, used - ours)), Format.bytes(disk.freeBytes)))
                 let samples = day.filter { $0.diskBytes != nil }
                 if samples.count > 1 {
                     DiskHistoryChart(samples: samples).frame(height: 60)
