@@ -7,8 +7,10 @@ import OSSClient
 // after each merge to main) with the write token, which never leaves the
 // server's Mac but piped into what keeps it; everyone else reads it with the
 // read token, which leases get in their bazelrc and API clients from
-// `GET /v1/cache`. Reading is for this Mac, its VMs and its containers only
-// (the networks it shares with them), unless the settings open it to the LAN.
+// `GET /v1/cache`. Reading is for this Mac, its VMs and its containers and
+// the server's tailnet (the networks it shares with them, and Tailscale's),
+// unless the settings open it to the LAN. The same port serves files by
+// their SHA-256 (`/files/sha256/<hex>`, ServedFiles), read the same way.
 
 /// The cache's settings: `"cache"` in server.json (`{}` for the defaults);
 /// without it the server keeps no cache.
@@ -26,6 +28,10 @@ struct CacheConfig: Codable, Sendable {
     /// (the LAN, a VPN) may read with the read token. The write token reads
     /// and writes from anywhere.
     var lanReads: Bool = false
+    /// Whether computers on the server's tailnet (Tailscale's 100.64.0.0/10:
+    /// the other Macs, and this Mac's VMs and containers reaching it by its
+    /// tailnet name) may read with the read token.
+    var tailnetReads: Bool = true
 
     init() {}
 
@@ -37,6 +43,7 @@ struct CacheConfig: Codable, Sendable {
         maxGigabytes = try c.decodeIfPresent(Double.self, forKey: .maxGigabytes) ?? d.maxGigabytes
         minFreeGigabytes = try c.decodeIfPresent(Double.self, forKey: .minFreeGigabytes) ?? d.minFreeGigabytes
         lanReads = try c.decodeIfPresent(Bool.self, forKey: .lanReads) ?? d.lanReads
+        tailnetReads = try c.decodeIfPresent(Bool.self, forKey: .tailnetReads) ?? d.tailnetReads
     }
 
     var maxBytes: Int64 { Int64(maxGigabytes * 1_000_000_000) }
@@ -333,9 +340,22 @@ final class CacheServer: @unchecked Sendable {
         return (kind, hash)
     }
 
+    /// Whether a connection comes from the tailnet (Tailscale's CGNAT range).
+    static func tailnetPeer(_ endpoint: NWEndpoint) -> Bool {
+        guard case .hostPort(let host, _) = endpoint else { return false }
+        let ipv4: IPv4Address?
+        switch host {
+        case .ipv4(let address): ipv4 = address
+        case .ipv6(let address): ipv4 = address.asIPv4
+        default: ipv4 = nil
+        }
+        guard let bytes = ipv4?.rawValue, bytes.count == 4 else { return false }
+        return bytes[0] == 100 && bytes[1] & 0xC0 == 64
+    }
+
     private func serve(_ connection: NWConnection) async {
         let peer = CachePeer(connection)
-        let internalPeer = Self.internalPeer(connection.endpoint)
+        let internalPeer = Self.internalPeer(connection.endpoint) || (config.tailnetReads && Self.tailnetPeer(connection.endpoint))
         defer { connection.cancel() }
         while let head = await peer.head() {
             guard let request = CacheRequest(head) else {
@@ -354,15 +374,25 @@ final class CacheServer: @unchecked Sendable {
             let close = unreadBody || !request.keepAlive
             return await peer.respond(status, message, close: close) && !close
         }
-        guard let (kind, hash) = Self.entry(request.target) else {
-            return await refuse(404, "not a cache entry: /ac/<sha256> or /cas/<sha256>")
-        }
         let role = self.role(request.header("authorization"))
+        if let hash = ServedFiles.hash(inTarget: request.target) {
+            guard request.method == "GET" || request.method == "HEAD" else {
+                return await refuse(405, "files are added on the server's Mac (oss files add)")
+            }
+            guard role != .none else { return await refuse(401, "the files take the cache's token") }
+            guard role == .write || internalPeer || config.lanReads else {
+                return await refuse(403, "the files are read from the server's Mac, its VMs and its containers, and its tailnet")
+            }
+            return await serveFile(hash, request, peer, refuse: refuse)
+        }
+        guard let (kind, hash) = Self.entry(request.target) else {
+            return await refuse(404, "not a cache entry: /ac/<sha256> or /cas/<sha256> (or a file: /files/sha256/<sha256>)")
+        }
         switch request.method {
         case "GET", "HEAD":
             guard role != .none else { return await refuse(401, "the cache takes a token") }
             guard role == .write || internalPeer || config.lanReads else {
-                return await refuse(403, "the cache is read from the server's Mac, its VMs and its containers")
+                return await refuse(403, "the cache is read from the server's Mac, its VMs and its containers, and its tailnet")
             }
             return await read(kind, hash, request, peer, refuse: refuse)
         case "PUT":
@@ -386,6 +416,21 @@ final class CacheServer: @unchecked Sendable {
         // Read now: the last to be evicted.
         utimes(path, nil)
         if kind == .ac { await store.looked(hit: true) }
+        guard await peer.respond(200, length: Int64(size), close: !request.keepAlive) else { return false }
+        if request.method == "GET" {
+            while let chunk = try? file.read(upToCount: 1 << 20), !chunk.isEmpty {
+                guard await peer.send(chunk) else { return false }
+            }
+        }
+        return request.keepAlive
+    }
+
+    /// A served file, whole (never evicted, so no read time kept).
+    private func serveFile(_ hash: String, _ request: CacheRequest, _ peer: CachePeer,
+                           refuse: (Int, String) async -> Bool) async -> Bool {
+        guard let file = FileHandle(forReadingAtPath: ServedFiles.path(hash)) else { return await refuse(404, "no file \(hash) here") }
+        defer { try? file.close() }
+        guard let size = try? file.seekToEnd(), (try? file.seek(toOffset: 0)) != nil else { return await refuse(500, "unreadable file") }
         guard await peer.respond(200, length: Int64(size), close: !request.keepAlive) else { return false }
         if request.method == "GET" {
             while let chunk = try? file.read(upToCount: 1 << 20), !chunk.isEmpty {

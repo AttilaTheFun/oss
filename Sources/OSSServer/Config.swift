@@ -48,6 +48,8 @@ enum Paths {
     /// The containers' kernel, images and root filesystems
     /// (Containerization's store).
     static let containers = "\(share)/Containers"
+    /// Files served by their SHA-256 (ServedFiles: `oss files add`).
+    static let files = "\(share)/Files"
 
     /// OS Server's own SSH key, which its bases trust (made the first time
     /// it's needed). A server set up before 0.9 keeps using the user's

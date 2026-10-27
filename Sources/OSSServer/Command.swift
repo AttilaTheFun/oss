@@ -63,6 +63,10 @@ let usage = """
       oss cache use [--remove]                              this computer's Bazel reads it (~/.bazelrc, the token in ~/.netrc)
       oss cache token --write | <what keeps it>             a token (the server's Mac only; piped, never shown)
       oss cache serve                                       the cache alone (to try one, with an OSS_HOME of its own)
+    Files served by their SHA-256 on the cache's port (pinned Bazel dependencies; the cache's read token):
+      oss files add <path>                                  hashed and kept (never evicted); prints its URL
+      oss files list                                        what this server serves
+      oss files remove <sha256>
     Tools for programs that speak the Model Context Protocol:
       oss mcp                                               an MCP server on stdio: lease, use and release machines
 
@@ -403,6 +407,29 @@ public enum OSSCommand {
                 #else
                 fail("components are OS Server's on a Mac")
                 #endif
+
+            case "files":
+                // On the server's Mac, in its folder: nothing writes them over the network.
+                let port = ServerConfig.load().cache?.port
+                func url(_ hash: String) -> String { "http://\(localHostName):\(port ?? 7490)/files/sha256/\(hash)" }
+                switch sub {
+                case "add":
+                    guard let target else { fail("oss files add <path>") }
+                    let entry = try ServedFiles.add(target)
+                    print("\(entry.name), \(gigabytes(entry.bytes)): sha256 \(entry.sha256)")
+                    print("  \(url(entry.sha256))  (by this Mac's tailnet name too; the cache's read token)")
+                    if port == nil { print("  this server keeps no cache: files are served on the cache's port once it has one") }
+                case "list":
+                    for entry in ServedFiles.list() {
+                        print("\(entry.sha256)  \(gigabytes(entry.bytes))  \(entry.name)")
+                    }
+                case "remove":
+                    guard let target else { fail("oss files remove <sha256>") }
+                    try ServedFiles.remove(target)
+                    print("removed \(target)")
+                default:
+                    print(usage)
+                }
 
             case "volume":
                 let client = try await OSSClient.connect()
