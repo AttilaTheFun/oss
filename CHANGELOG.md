@@ -1,6 +1,6 @@
 # Changelog
 
-## Next
+## 0.12.1
 
 - **OS Server no longer dies of SIGPIPE.** A forwarded connection's relay
   that had exited (a lease's SSH connection the guest closed) while its
