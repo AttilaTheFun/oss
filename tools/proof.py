@@ -34,6 +34,10 @@ SCREENS = [  # (item, arguments: AppKit's -key value pairs)
     ("setup", ["-fixture", "YES", "-setup", "YES"]),
 ]
 APPEARANCES = ["light", "dark"]
+# The window each screen is cut from, by its title: never "the largest", which
+# was a window left from the launch before (the panel, restored) when the
+# screen's own hadn't come up.
+TITLES = {"window": "OS Server", "panel": "OS Server menu", "setup": "Set Up OS Server"}
 
 
 def sh(command, check=True, **kwargs):
@@ -102,27 +106,37 @@ def main():
                     hold_clock(guest)
                     sh(["oss", "machine", "ssh", lease_id, "--", "umask 077; cat > ~/oss-fixture-vnc-password"],
                        input=guest["OSS_VNC_PASSWORD"] + "\n")
-                # Without the window sizes the last launch kept.
-                ssh("pkill -x 'OS Server'; defaults delete com.LoganShire.OSS; rm -f ~/oss-fixture-windows.json", check=False)
-                time.sleep(1)
-                launch = arguments + ["-appearance", appearance]
-                ssh("sudo launchctl asuser $(id -u runner) open -n ~/Applications/'OS Server.app' --args " + " ".join(launch))
-                # The app writes its windows' frames as they settle (at 2,
-                # 4, 6 and 8 s): the last is read.
-                for _ in range(30):
+                title = TITLES.get(item) or arguments[arguments.index("-guestScreenName") + 1]
+                window = None
+                for attempt in range(2):
+                    # Nothing of the launch before: its process gone, its
+                    # settings (window sizes) and its saved windows, which
+                    # macOS would otherwise restore (the app is killed, not
+                    # quit), and restoration off for this launch.
+                    ssh("pkill -x 'OS Server'; for i in 1 2 3 4 5 6 7 8 9 10; do pgrep -x 'OS Server' >/dev/null || break; sleep 0.5; done; "
+                        "defaults delete com.LoganShire.OSS; rm -rf ~/Library/'Saved Application State'/com.LoganShire.OSS.savedState; "
+                        "rm -f ~/oss-fixture-windows.json", check=False)
                     time.sleep(1)
-                    if ssh("test -s ~/oss-fixture-windows.json", check=False).returncode == 0:
+                    launch = arguments + ["-appearance", appearance, "-ApplePersistenceIgnoreState", "YES"]
+                    ssh("sudo launchctl asuser $(id -u runner) open -n ~/Applications/'OS Server.app' --args " + " ".join(launch))
+                    # The app writes its windows' frames as they settle (at 2,
+                    # 4, 6 and 8 s): the last is read.
+                    for _ in range(30):
+                        time.sleep(1)
+                        if ssh("test -s ~/oss-fixture-windows.json", check=False).returncode == 0:
+                            break
+                    time.sleep(7)
+                    text = ssh("cat ~/oss-fixture-windows.json 2>/dev/null", check=False).stdout
+                    frames = json.loads(text) if text.strip() else None
+                    window = next((w for w in (frames or {}).get("windows", []) if w.get("title") == title), None)
+                    if window:
                         break
-                time.sleep(7)
-                text = ssh("cat ~/oss-fixture-windows.json 2>/dev/null", check=False).stdout
-                frames = json.loads(text) if text.strip() else None
-                if not frames or not frames["windows"]:
-                    print(f"{item} ({appearance}): no window")
+                    print(f"{item} ({appearance}): no window titled {title!r} (try {attempt + 1} of 2)")
+                if not window:
                     continue
                 time.sleep(1)
                 screen = os.path.join(work, f"{item}-{appearance}-screen.png")
                 sh(["oss", "machine", "screenshot", lease_id, screen])
-                window = max(frames["windows"], key=lambda w: w["width"] * w["height"])
                 capture = f"{item}-{appearance}.png"
                 crop(screen, os.path.join(out, capture), window["x"], window["y"], window["width"], window["height"])
                 items.append({"name": f"{item} ({appearance})", "status": "new", "capture": capture})
