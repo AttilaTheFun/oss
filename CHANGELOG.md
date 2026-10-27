@@ -5,8 +5,9 @@
 - `oss machine run container … --inside -- <command>` runs the command in
   the leased container, in this folder (mounted at its own path), and
   releases the lease however it ends: CI's job in a container.
-  `--netrc=<host>` puts the cache's read token in the container's
-  `~/.netrc` for each host given.
+  `--cache=<host>` has its Bazel read this server's cache there
+  (`~/.bazelrc`, read-only, the token in `~/.netrc`); `--netrc=<host>` puts
+  the cache's read token in its `~/.netrc` for each other host given.
 
 ## 0.11.0
 
