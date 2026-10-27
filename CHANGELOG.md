@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.0 (unreleased)
+
+- `oss machine run` holds a five-minute lease, renewed each minute while
+  its command runs, and SIGTERM releases it at once. A CI runner cancelling
+  a job sends SIGINT, SIGTERM, then SIGKILL within seconds, before Bazel
+  has stopped: the killed client left its lease (and the CI volume it held)
+  for up to an hour, and the next job was refused the volume.
+- The README's CI example keeps its volume (`:keep`): without it the
+  volume, Bazel's tree, went with each lease, so every job built cold.
+
 ## 0.12.1
 
 - **OS Server no longer dies of SIGPIPE.** A forwarded connection's relay

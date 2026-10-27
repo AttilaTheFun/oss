@@ -167,9 +167,13 @@ step.
 A job in a container, on the runner's own Mac (containers are lent there
 only): `--inside` runs the command in the container, in the runner's
 folder (mounted at its own path), its output and exit status passed
-through, and the lease released however it ends (a signal goes on to the
-command; a lease is for 60 minutes, renewed while it runs, so a hard-killed
-job's ends on its own). `--cache=<host>` has its Bazel read this server's
+through, and the lease released however it ends: a signal goes on to the
+command, and SIGTERM (a runner cancelling the job: SIGINT, then SIGTERM,
+then SIGKILL) releases the lease at once. A `run` lease is for five
+minutes, renewed each minute while it runs, so a job killed outright frees
+its lease and volumes within five minutes. A volume named `:keep` (Bazel's
+tree, warm from one job to the next) stays when the lease goes; one
+without it is deleted with the lease. `--cache=<host>` has its Bazel read this server's
 cache there (`~/.bazelrc`, read-only), and `--cache` and `--netrc=<host>`
 put the cache's read token in its `~/.netrc` for each host its build names
 the server by, so Bazel's cache and downloader (the files served by
@@ -178,7 +182,7 @@ SHA-256) take it:
 ```yaml
 - run: >
     oss machine run container --image=<a builder image> --rosetta
-    --mount="$PWD:$PWD" --volume=<repo>-ci:/var/cache/bazel:128
+    --mount="$PWD:$PWD" --volume=<repo>-ci:/var/cache/bazel:128:keep
     --inside --cache=<this Mac's tailnet name> -- bazel test //...
 ```
 
