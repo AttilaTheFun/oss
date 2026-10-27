@@ -164,6 +164,24 @@ or `oss machine lease linux --exports >> "$GITHUB_ENV"`, then `$OSS_SSH '…'`
 in later steps and `oss machine release "$OSS_ID"` in an `if: always()`
 step.
 
+A job in a container, on the runner's own Mac (containers are lent there
+only): `--inside` runs the command in the container, in the runner's
+folder (mounted at its own path), its output and exit status passed
+through, and the lease released however it ends (a signal goes on to the
+command; a lease is for 60 minutes, renewed while it runs, so a hard-killed
+job's ends on its own). `--cache=<host>` has its Bazel read this server's
+cache there (`~/.bazelrc`, read-only), and `--cache` and `--netrc=<host>`
+put the cache's read token in its `~/.netrc` for each host its build names
+the server by, so Bazel's cache and downloader (the files served by
+SHA-256) take it:
+
+```yaml
+- run: >
+    oss machine run container --image=<a builder image> --rosetta
+    --mount="$PWD:$PWD" --volume=<repo>-ci:/var/cache/bazel:128
+    --inside --cache=<this Mac's tailnet name> -- bazel test //...
+```
+
 ### A Bazel cache
 
 With `"cache"` in its settings (below), the server keeps a [Bazel remote
