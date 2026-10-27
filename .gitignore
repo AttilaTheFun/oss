@@ -4,6 +4,8 @@
 *.ipsw
 # Builds.
 .build/
+# Python's bytecode (tools/proof.py, imported by a test).
+__pycache__/
 .swiftpm/
 /bin/
 # Bazel (OS Monitor's apps, Monitor/): its output links, and a builder's own
