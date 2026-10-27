@@ -215,7 +215,8 @@ protocol. It has two tokens, made with it in `~/.config/oss/`:
 It keeps to its size, and keeps the disk's free space above its floor,
 by letting go of the entries read longest ago.
 
-**Files by their SHA-256.** The same port serves files as they are, for
+**Files by their SHA-256.** The same port serves files as they are (so a
+server serves them only with `"cache"` in its settings: `{}` will do), for
 pinned Bazel dependencies too big or too private for anywhere else (an
 Xcode SDK archive): `GET /files/sha256/<hex>`, read with the read token
 and from the same places as the cache. The hash in the URL is the one a
