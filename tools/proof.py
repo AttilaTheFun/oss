@@ -94,6 +94,14 @@ def main():
 
         sh(["oss", "machine", "upload", lease_id, zip_path, "/Users/runner/OS-Server.zip"])
         ssh("rm -rf ~/Applications/'OS Server.app' && mkdir -p ~/Applications && ditto -x -k ~/OS-Server.zip ~/Applications")
+        # Scroll bars as overlays, shown only while scrolling: "Automatic" (the
+        # default) chooses by the pointing devices the VM has, and Isomer's
+        # proof saw it draw legacy scroll bars in one lease and not another.
+        # Set by runner itself, before the app opens.
+        ssh("defaults write -g AppleShowScrollBars -string WhenScrolling")
+        shown = ssh("defaults read -g AppleShowScrollBars", check=False).stdout.strip()
+        if shown != "WhenScrolling":
+            sys.exit(f"AppleShowScrollBars is {shown!r}, not WhenScrolling")
         # This Mac, as the VM reaches it (its NAT's gateway): the guests' relays.
         gateway = ssh("route -n get default | awk '/gateway/ {print $2}'").stdout.strip()
         screens = list(SCREENS) + [
