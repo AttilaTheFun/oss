@@ -211,6 +211,27 @@ def hold_clock(guest):
             # Explorer starts again by itself, taking it up.
             "Stop-Process -Name explorer -Force",
             "Start-Sleep -Seconds 5",
+            # A click in the middle of the desktop, in runner's own session (an
+            # interactive task: SSH's session has no desktop): an auto-hidden
+            # taskbar stays up while it has the focus, which it took after
+            # Explorer started again in one lease of three.
+            "$click = @'",
+            "Add-Type @\"",
+            "using System; using System.Runtime.InteropServices;",
+            "public static class Desk {",
+            "  [DllImport(\"user32.dll\")] public static extern int GetSystemMetrics(int index);",
+            "  [DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int x, int y);",
+            "  [DllImport(\"user32.dll\")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);",
+            "}",
+            "\"@",
+            "[Desk]::SetCursorPos([Desk]::GetSystemMetrics(0) / 2, [Desk]::GetSystemMetrics(1) / 2) | Out-Null",
+            "[Desk]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)",
+            "[Desk]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)",
+            "'@",
+            "Set-Content -Path \"$env:TEMP\\oss-proof-click.ps1\" -Value $click",
+            "schtasks /create /f /tn OSSProofClick /tr \"powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $env:TEMP\\oss-proof-click.ps1\" /sc once /st 23:59 /ru runner /it | Out-Null",
+            "schtasks /run /tn OSSProofClick | Out-Null",
+            "Start-Sleep -Seconds 5",
         ])
         # Encoded, so no shell between here and PowerShell reads its quotes.
         command = "powershell -NoProfile -EncodedCommand " + base64.b64encode(script.encode("utf-16-le")).decode()
