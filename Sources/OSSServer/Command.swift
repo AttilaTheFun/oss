@@ -263,6 +263,8 @@ public enum OSSCommand {
     #endif
 
     public static func run(_ commandLine: [String]) async -> Never {
+        // A closed pipe or socket is an error to handle, not the end of `oss`.
+        signal(SIGPIPE, SIG_IGN)
         let arguments = Arguments(Array(commandLine.dropFirst()),
                                   valued: ["config", "minutes", "key", "holder", "identity", "from", "script", "vm", "device", "runtime",
                                            "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "volume", "env", "env-file", "workdir",

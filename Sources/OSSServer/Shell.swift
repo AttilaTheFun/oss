@@ -48,7 +48,8 @@ enum Shell {
                 return
             }
             if let input {
-                inPipe.fileHandleForWriting.write(input)
+                // A command that exits before reading it all: its exit status says so.
+                try? inPipe.fileHandleForWriting.write(contentsOf: input)
                 try? inPipe.fileHandleForWriting.close()
             }
             if let timeout {

@@ -102,7 +102,7 @@ private final class Relay: @unchecked Sendable {
     private func pipe() {
         guard !closed else { return }
         if !clientBuffer.isEmpty {
-            toGuest.fileHandleForWriting.write(clientBuffer)
+            guard (try? toGuest.fileHandleForWriting.write(contentsOf: clientBuffer)) != nil else { close(); return }
             clientBuffer.removeAll()
         }
         fromGuest.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -152,7 +152,7 @@ private final class Relay: @unchecked Sendable {
     }
 
     private func sendClient(_ bytes: [UInt8]) { connection.send(content: Data(bytes), completion: .contentProcessed { _ in }) }
-    private func sendGuest(_ bytes: [UInt8]) { toGuest.fileHandleForWriting.write(Data(bytes)) }
+    private func sendGuest(_ bytes: [UInt8]) { try? toGuest.fileHandleForWriting.write(contentsOf: Data(bytes)) }
 
     /// RFB 3.8 with both sides: the guest's server offers no authentication,
     /// the client is offered VNC's (a DES challenge) and must answer it with
@@ -183,7 +183,11 @@ private final class Relay: @unchecked Sendable {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] data, _, complete, error in
             guard let self else { return }
             if let data, !data.isEmpty {
-                self.toGuest.fileHandleForWriting.write(data)
+                // The relay gone (the guest closed its side): the client's side closes too.
+                guard (try? self.toGuest.fileHandleForWriting.write(contentsOf: data)) != nil else {
+                    self.close()
+                    return
+                }
             }
             if complete || error != nil {
                 self.close()
