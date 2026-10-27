@@ -5,7 +5,10 @@
 - The proofs hold still across releases: OS Server's and OS Monitor's
   canned servers show a version of their own (1.0.0), not the build's; a
   Windows guest's taskbar is hidden in its Screen window's proof (its
-  tray's icons came and went between leases).
+  tray's icons came and went between leases); each screen is cut from its
+  own window, by title, with no window restored from the launch before;
+  a window's rounded corners and outer pixel are cut away (transparent),
+  where its edge blended with its shadow and the desktop behind.
 
 ## 0.12.0
 
