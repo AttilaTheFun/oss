@@ -17,7 +17,8 @@ linux --exports > file`, kept mode 600: it holds the VNC password, which goes
 to the VM on standard input), its clock held at 09:41 first (no time
 service). Each screen is cut
 from the VM's screenshot by the frames the app writes
-(~/oss-fixture-windows.json). The run is <dir>/review-macos/manifest.json
+(~/oss-fixture-windows.json), its rounded corners and outer pixel cut away
+(Pillow): the window's edge blends with its shadow and what is behind it. The run is <dir>/review-macos/manifest.json
 (the review store's schema 1, app "oss"); --publish copies it to the
 review store on that host (~/ReleaseReview/runs/oss/<version>/macos, the
 app's icon beside its versions), where Reviews shows it against the last
@@ -25,6 +26,8 @@ approved run. The lease is released however the run ends (a held one is
 left).
 """
 import argparse, base64, json, os, shlex, subprocess, sys, tempfile, time
+
+from PIL import Image, ImageDraw
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP = os.path.join(ROOT, "App")
@@ -139,6 +142,7 @@ def main():
                 sh(["oss", "machine", "screenshot", lease_id, screen])
                 capture = f"{item}-{appearance}.png"
                 crop(screen, os.path.join(out, capture), window["x"], window["y"], window["width"], window["height"])
+                cut_corners(os.path.join(out, capture))
                 items.append({"name": f"{item} ({appearance})", "status": "new", "capture": capture})
                 if item == "window":
                     # The app's menu bar item (its icon and lease count), with
@@ -209,6 +213,23 @@ def hold_clock(guest):
 
 def crop(source, destination, x, y, width, height):
     sh(["sips", "-c", str(height), str(width), "--cropOffset", str(y), str(x), source, "--out", destination])
+
+
+# A window's corners in the VM's screenshots (macOS 27, at 1x): the curve is
+# 14 pixels in from its outer pixel; two more for a darker shadow.
+CORNER_RADIUS = 16
+
+
+def cut_corners(path):
+    """A window's shot without what isn't the window's: its outer pixel and
+    the curve of its corners, where its edge blends with its shadow and
+    whatever is behind (a run's edge came out 15-20 levels darker than the
+    last's, the window's own pixels the same), made transparent."""
+    image = Image.open(path).convert("RGBA")
+    image = image.crop((1, 1, image.width - 1, image.height - 1))
+    mask = Image.new("L", image.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, image.width - 1, image.height - 1), radius=CORNER_RADIUS, fill=255)
+    Image.composite(image, Image.new("RGBA", image.size, (0, 0, 0, 0)), mask).save(path)
 
 
 if __name__ == "__main__":
