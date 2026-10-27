@@ -1,5 +1,13 @@
 # Changelog
 
+## Next
+
+- `oss machine run container … --inside -- <command>` runs the command in
+  the leased container, in this folder (mounted at its own path), and
+  releases the lease however it ends: CI's job in a container.
+  `--netrc=<host>` puts the cache's read token in the container's
+  `~/.netrc` for each host given.
+
 ## 0.11.0
 
 - **Files served by their SHA-256**, on the Bazel cache's port:

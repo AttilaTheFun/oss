@@ -36,6 +36,10 @@ let usage = """
       oss machine upload <id> <local> <remote>              macOS, Linux, Windows (scp; a directory too)
       oss machine download <id> <remote> <local>
       oss machine run <platform> [--config=NAME] [--minutes=N] -- command…
+      oss machine run container --image=REF [lease options…] --inside [--netrc=HOST]… [--env=…] -- command…
+                                                            the command in the container, in this folder (mount it
+                                                            at its own path), the lease released after; --netrc: the
+                                                            cache's read token in its ~/.netrc for HOST (CI)
                                                             lease, run the command with OSS_* set, release
     The server and its bases (on the server's Mac):
       oss serve | status | capabilities | doctor
@@ -232,11 +236,30 @@ func resolveLease(_ argument: String?, _ client: OSSClient) async throws -> Leas
 /// this and nothing else; the OS Server app hosts the server itself
 /// (`ServerHost`) and ships this beside it as its command line.
 public enum OSSCommand {
+    #if canImport(Network)
+    /// The cache's read token in a container's ~/.netrc, a line for each
+    /// host its builds name the server by (Bazel's downloader and HTTP cache
+    /// read credentials there), through its exec socket: never on a
+    /// command line.
+    static func writeNetrc(socket: String, hosts: [String], client: OSSClient) async throws {
+        let cache = try await client.cache()
+        guard !cache.readToken.isEmpty else { throw OSSError(status: 0, message: "this server keeps no cache: no token for --netrc") }
+        let lines = hosts.map { CacheClientFiles.netrcEntry(host: $0, token: cache.readToken) + "\n" }.joined()
+        let (input, continuation) = AsyncStream<ExecFrame>.makeStream()
+        continuation.yield(.stdin(Data(lines.utf8)))
+        continuation.yield(.closeStdin)
+        continuation.finish()
+        let request = ExecRequest(arguments: ["sh", "-c", "umask 077 && cat >> \"$HOME/.netrc\""])
+        let status = try await OSSClient.exec(socket: socket, request, input: input) { _ in }
+        guard status == 0 else { throw OSSError(status: 0, message: "couldn't write the container's ~/.netrc (\(status))") }
+    }
+    #endif
+
     public static func run(_ commandLine: [String]) async -> Never {
         let arguments = Arguments(Array(commandLine.dropFirst()),
                                   valued: ["config", "minutes", "key", "holder", "identity", "from", "script", "vm", "device", "runtime",
                                            "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "volume", "env", "env-file", "workdir",
-                                           "command", "socket", "iso", "edition", "file"])
+                                           "command", "socket", "iso", "edition", "file", "netrc"])
         let command = arguments.positional.first ?? "help"
         let sub = arguments.positional.count > 1 ? arguments.positional[1] : nil
         let target = arguments.positional.count > 2 ? arguments.positional[2] : nil
@@ -354,11 +377,35 @@ public enum OSSCommand {
                             _ = try? await client.renew(lease.id, minutes: minutes)
                         }
                     }
-                    let environment = ProcessInfo.processInfo.environment.merging(client.environment(lease)) { $1 }
                     let status: Int32
-                    do { status = try Shell.passthrough("/usr/bin/env", arguments.rest, environment: environment) } catch {
-                        status = 127
-                        FileHandle.standardError.write(Data("oss: \(error)\n".utf8))
+                    if arguments.flags.contains("inside") {
+                        // In the container, in this folder (mounted at its own path), as `exec` runs it.
+                        #if canImport(Network)
+                        guard lease.platform == .container, let socket = lease.execSocket else {
+                            renewing.cancel()
+                            try? await client.release(lease.id)
+                            fail("--inside is for a container lease")
+                        }
+                        do {
+                            if let hosts = arguments.all["netrc"], !hosts.isEmpty {
+                                try await Self.writeNetrc(socket: socket, hosts: hosts, client: client)
+                            }
+                            var inside = arguments
+                            inside.options["workdir"] = arguments.options["workdir"] ?? FileManager.default.currentDirectoryPath
+                            status = try await ExecCommand.run(socket: socket, inside)
+                        } catch {
+                            status = 127
+                            FileHandle.standardError.write(Data("oss: \(error)\n".utf8))
+                        }
+                        #else
+                        fail("--inside runs on the container's Mac")
+                        #endif
+                    } else {
+                        let environment = ProcessInfo.processInfo.environment.merging(client.environment(lease)) { $1 }
+                        do { status = try Shell.passthrough("/usr/bin/env", arguments.rest, environment: environment) } catch {
+                            status = 127
+                            FileHandle.standardError.write(Data("oss: \(error)\n".utf8))
+                        }
                     }
                     renewing.cancel()
                     try await client.release(lease.id)
