@@ -856,6 +856,11 @@ public final class ServerHost: Sendable {
     /// left), base listings and expiry go on in the background. With
     /// `containers` it lends containers too.
     public static func start(containers: ContainerBackend? = nil) throws -> ServerHost {
+        // A write to a pipe or socket whose other end has gone (a forwarded
+        // connection's relay that exited) fails with EPIPE, the connection
+        // closed: SIGPIPE's default ended the server, every lease's ports with
+        // it, after a lease's SSH connection closed.
+        signal(SIGPIPE, SIG_IGN)
         Paths.migrate()
         ManagementKey.settle()
         let config = ServerConfig.load()

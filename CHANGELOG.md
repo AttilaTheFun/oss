@@ -2,6 +2,14 @@
 
 ## Next
 
+- **OS Server no longer dies of SIGPIPE.** A forwarded connection's relay
+  that had exited (a lease's SSH connection the guest closed) while its
+  client still sent bytes made the server write into a closed pipe, and
+  SIGPIPE's default ended it, every lease's ports and the API with it (the
+  MacBook's, 2026-10-27, after 3 hours up). Every oss process (the server
+  and app, `oss`, the machine helpers) now ignores SIGPIPE, and the pipe
+  writes that could meet a closed reader throw: the connection closes, the
+  server goes on.
 - The proofs hold still across releases: OS Server's and OS Monitor's
   canned servers show a version of their own (1.0.0), not the build's; a
   Windows guest's taskbar is hidden in its Screen window's proof (its
