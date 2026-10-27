@@ -101,7 +101,9 @@ public enum MonitorFixture {
         let volumes = [VolumeInfo(name: "visor-session-c-build", sizeBytes: 128 * gb, allocatedBytes: 21 * gb, lease: "0d9c27f4"),
                        VolumeInfo(name: "visor-session-a-build", sizeBytes: 128 * gb, allocatedBytes: 34 * gb)]
         monitor.pretend(
-            capabilities: Capabilities(version: OSS.version, api: OSS.apiLevel, features: ["machines", "screenshots", "input", "usage", "cache"],
+            // A version of the fixture's own, not the build's: the proof's
+            // screens are the same from one release to the next.
+            capabilities: Capabilities(version: "1.0.0", api: OSS.apiLevel, features: ["machines", "screenshots", "input", "usage", "cache"],
                                        platforms: Platform.allCases),
             status: Status(server: name, bases: bases, capacity: capacity, leases: leases),
             usage: usage,

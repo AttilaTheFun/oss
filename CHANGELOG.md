@@ -1,5 +1,12 @@
 # Changelog
 
+## Next
+
+- The proofs hold still across releases: OS Server's and OS Monitor's
+  canned servers show a version of their own (1.0.0), not the build's; a
+  Windows guest's taskbar is hidden in its Screen window's proof (its
+  tray's icons came and went between leases).
+
 ## 0.12.0
 
 - `oss machine run container … --inside -- <command>` runs the command in

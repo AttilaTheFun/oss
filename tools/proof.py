@@ -24,7 +24,7 @@ app's icon beside its versions), where Reviews shows it against the last
 approved run. The lease is released however the run ends (a held one is
 left).
 """
-import argparse, json, os, shlex, subprocess, sys, tempfile, time
+import argparse, base64, json, os, shlex, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP = os.path.join(ROOT, "App")
@@ -167,10 +167,27 @@ CANNED = {"linux": "a90c3e17", "windows": "7b1e04d2"}
 
 
 def hold_clock(guest):
-    """The guest's clock at the fixture's 09:41, its time service off, so
-    its desktop's clock reads the same every run."""
+    """The guest's desktop held still: its clock at the fixture's 09:41, its
+    time service off, so it reads the same every run. On Windows the
+    taskbar is hidden as well (auto-hide): its tray's icons come and go from
+    one lease to the next (the notification bell, with or without its "do
+    not disturb" mark), which no setting held still."""
     if guest["OSS_PLATFORM"] == "windows":
-        command = "powershell -NoProfile -Command \"Stop-Service w32time; Set-Date -Date '2026-11-01 09:41:00' | Out-Null\""
+        script = "\n".join([
+            "$ProgressPreference = 'SilentlyContinue'",
+            "Stop-Service w32time",
+            "Set-Date -Date '2026-11-01 09:41:00' | Out-Null",
+            # StuckRects3's byte 8: 3 hides the taskbar until the pointer reaches it.
+            "$key = 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StuckRects3'",
+            "$settings = (Get-ItemProperty -Path $key).Settings",
+            "$settings[8] = 3",
+            "Set-ItemProperty -Path $key -Name Settings -Value $settings",
+            # Explorer starts again by itself, taking it up.
+            "Stop-Process -Name explorer -Force",
+            "Start-Sleep -Seconds 5",
+        ])
+        # Encoded, so no shell between here and PowerShell reads its quotes.
+        command = "powershell -NoProfile -EncodedCommand " + base64.b64encode(script.encode("utf-16-le")).decode()
     else:
         command = "sudo timedatectl set-ntp false && sudo timedatectl set-time '2026-11-01 09:41:00'"
     sh(shlex.split(guest["OSS_SSH"]) + ["-o", "BatchMode=yes", command])
