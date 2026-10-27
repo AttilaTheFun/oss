@@ -17,14 +17,17 @@ linux --exports > file`, kept mode 600: it holds the VNC password, which goes
 to the VM on standard input), its clock held at 09:41 first (no time
 service). Each screen is cut
 from the VM's screenshot by the frames the app writes
-(~/oss-fixture-windows.json). The run is <dir>/review-macos/manifest.json
+(~/oss-fixture-windows.json), its rounded corners and outer pixel cut away
+(Pillow): the window's edge blends with its shadow and what is behind it. The run is <dir>/review-macos/manifest.json
 (the review store's schema 1, app "oss"); --publish copies it to the
 review store on that host (~/ReleaseReview/runs/oss/<version>/macos, the
 app's icon beside its versions), where Reviews shows it against the last
 approved run. The lease is released however the run ends (a held one is
 left).
 """
-import argparse, json, os, shlex, subprocess, sys, tempfile, time
+import argparse, base64, json, os, shlex, subprocess, sys, tempfile, time
+
+from PIL import Image, ImageDraw
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP = os.path.join(ROOT, "App")
@@ -34,6 +37,10 @@ SCREENS = [  # (item, arguments: AppKit's -key value pairs)
     ("setup", ["-fixture", "YES", "-setup", "YES"]),
 ]
 APPEARANCES = ["light", "dark"]
+# The window each screen is cut from, by its title: never "the largest", which
+# was a window left from the launch before (the panel, restored) when the
+# screen's own hadn't come up.
+TITLES = {"window": "OS Server", "panel": "OS Server menu", "setup": "Set Up OS Server"}
 
 
 def sh(command, check=True, **kwargs):
@@ -87,6 +94,14 @@ def main():
 
         sh(["oss", "machine", "upload", lease_id, zip_path, "/Users/runner/OS-Server.zip"])
         ssh("rm -rf ~/Applications/'OS Server.app' && mkdir -p ~/Applications && ditto -x -k ~/OS-Server.zip ~/Applications")
+        # Scroll bars as overlays, shown only while scrolling: "Automatic" (the
+        # default) chooses by the pointing devices the VM has, and Isomer's
+        # proof saw it draw legacy scroll bars in one lease and not another.
+        # Set by runner itself, before the app opens.
+        ssh("defaults write -g AppleShowScrollBars -string WhenScrolling")
+        shown = ssh("defaults read -g AppleShowScrollBars", check=False).stdout.strip()
+        if shown != "WhenScrolling":
+            sys.exit(f"AppleShowScrollBars is {shown!r}, not WhenScrolling")
         # This Mac, as the VM reaches it (its NAT's gateway): the guests' relays.
         gateway = ssh("route -n get default | awk '/gateway/ {print $2}'").stdout.strip()
         screens = list(SCREENS) + [
@@ -102,29 +117,40 @@ def main():
                     hold_clock(guest)
                     sh(["oss", "machine", "ssh", lease_id, "--", "umask 077; cat > ~/oss-fixture-vnc-password"],
                        input=guest["OSS_VNC_PASSWORD"] + "\n")
-                # Without the window sizes the last launch kept.
-                ssh("pkill -x 'OS Server'; defaults delete com.LoganShire.OSS; rm -f ~/oss-fixture-windows.json", check=False)
-                time.sleep(1)
-                launch = arguments + ["-appearance", appearance]
-                ssh("sudo launchctl asuser $(id -u runner) open -n ~/Applications/'OS Server.app' --args " + " ".join(launch))
-                # The app writes its windows' frames as they settle (at 2,
-                # 4, 6 and 8 s): the last is read.
-                for _ in range(30):
+                title = TITLES.get(item) or arguments[arguments.index("-guestScreenName") + 1]
+                window = None
+                for attempt in range(2):
+                    # Nothing of the launch before: its process gone, its
+                    # settings (window sizes) and its saved windows, which
+                    # macOS would otherwise restore (the app is killed, not
+                    # quit), and restoration off for this launch.
+                    ssh("pkill -x 'OS Server'; for i in 1 2 3 4 5 6 7 8 9 10; do pgrep -x 'OS Server' >/dev/null || break; sleep 0.5; done; "
+                        "defaults delete com.LoganShire.OSS; rm -rf ~/Library/'Saved Application State'/com.LoganShire.OSS.savedState; "
+                        "rm -f ~/oss-fixture-windows.json", check=False)
                     time.sleep(1)
-                    if ssh("test -s ~/oss-fixture-windows.json", check=False).returncode == 0:
+                    launch = arguments + ["-appearance", appearance, "-ApplePersistenceIgnoreState", "YES"]
+                    ssh("sudo launchctl asuser $(id -u runner) open -n ~/Applications/'OS Server.app' --args " + " ".join(launch))
+                    # The app writes its windows' frames as they settle (at 2,
+                    # 4, 6 and 8 s): the last is read.
+                    for _ in range(30):
+                        time.sleep(1)
+                        if ssh("test -s ~/oss-fixture-windows.json", check=False).returncode == 0:
+                            break
+                    time.sleep(7)
+                    text = ssh("cat ~/oss-fixture-windows.json 2>/dev/null", check=False).stdout
+                    frames = json.loads(text) if text.strip() else None
+                    window = next((w for w in (frames or {}).get("windows", []) if w.get("title") == title), None)
+                    if window:
                         break
-                time.sleep(7)
-                text = ssh("cat ~/oss-fixture-windows.json 2>/dev/null", check=False).stdout
-                frames = json.loads(text) if text.strip() else None
-                if not frames or not frames["windows"]:
-                    print(f"{item} ({appearance}): no window")
+                    print(f"{item} ({appearance}): no window titled {title!r} (try {attempt + 1} of 2)")
+                if not window:
                     continue
                 time.sleep(1)
                 screen = os.path.join(work, f"{item}-{appearance}-screen.png")
                 sh(["oss", "machine", "screenshot", lease_id, screen])
-                window = max(frames["windows"], key=lambda w: w["width"] * w["height"])
                 capture = f"{item}-{appearance}.png"
                 crop(screen, os.path.join(out, capture), window["x"], window["y"], window["width"], window["height"])
+                cut_corners(os.path.join(out, capture))
                 items.append({"name": f"{item} ({appearance})", "status": "new", "capture": capture})
                 if item == "window":
                     # The app's menu bar item (its icon and lease count), with
@@ -167,10 +193,48 @@ CANNED = {"linux": "a90c3e17", "windows": "7b1e04d2"}
 
 
 def hold_clock(guest):
-    """The guest's clock at the fixture's 09:41, its time service off, so
-    its desktop's clock reads the same every run."""
+    """The guest's desktop held still: its clock at the fixture's 09:41, its
+    time service off, so it reads the same every run. On Windows the
+    taskbar is hidden as well (auto-hide): its tray's icons come and go from
+    one lease to the next (the notification bell, with or without its "do
+    not disturb" mark), which no setting held still."""
     if guest["OSS_PLATFORM"] == "windows":
-        command = "powershell -NoProfile -Command \"Stop-Service w32time; Set-Date -Date '2026-11-01 09:41:00' | Out-Null\""
+        script = "\n".join([
+            "$ProgressPreference = 'SilentlyContinue'",
+            "Stop-Service w32time",
+            "Set-Date -Date '2026-11-01 09:41:00' | Out-Null",
+            # StuckRects3's byte 8: 3 hides the taskbar until the pointer reaches it.
+            "$key = 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StuckRects3'",
+            "$settings = (Get-ItemProperty -Path $key).Settings",
+            "$settings[8] = 3",
+            "Set-ItemProperty -Path $key -Name Settings -Value $settings",
+            # Explorer starts again by itself, taking it up.
+            "Stop-Process -Name explorer -Force",
+            "Start-Sleep -Seconds 5",
+            # A click in the middle of the desktop, in runner's own session (an
+            # interactive task: SSH's session has no desktop): an auto-hidden
+            # taskbar stays up while it has the focus, which it took after
+            # Explorer started again in one lease of three.
+            "$click = @'",
+            "Add-Type @\"",
+            "using System; using System.Runtime.InteropServices;",
+            "public static class Desk {",
+            "  [DllImport(\"user32.dll\")] public static extern int GetSystemMetrics(int index);",
+            "  [DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int x, int y);",
+            "  [DllImport(\"user32.dll\")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);",
+            "}",
+            "\"@",
+            "[Desk]::SetCursorPos([Desk]::GetSystemMetrics(0) / 2, [Desk]::GetSystemMetrics(1) / 2) | Out-Null",
+            "[Desk]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)",
+            "[Desk]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)",
+            "'@",
+            "Set-Content -Path \"$env:TEMP\\oss-proof-click.ps1\" -Value $click",
+            "schtasks /create /f /tn OSSProofClick /tr \"powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $env:TEMP\\oss-proof-click.ps1\" /sc once /st 23:59 /ru runner /it | Out-Null",
+            "schtasks /run /tn OSSProofClick | Out-Null",
+            "Start-Sleep -Seconds 5",
+        ])
+        # Encoded, so no shell between here and PowerShell reads its quotes.
+        command = "powershell -NoProfile -EncodedCommand " + base64.b64encode(script.encode("utf-16-le")).decode()
     else:
         command = "sudo timedatectl set-ntp false && sudo timedatectl set-time '2026-11-01 09:41:00'"
     sh(shlex.split(guest["OSS_SSH"]) + ["-o", "BatchMode=yes", command])
@@ -178,6 +242,23 @@ def hold_clock(guest):
 
 def crop(source, destination, x, y, width, height):
     sh(["sips", "-c", str(height), str(width), "--cropOffset", str(y), str(x), source, "--out", destination])
+
+
+# A window's corners in the VM's screenshots (macOS 27, at 1x): the curve is
+# 14 pixels in from its outer pixel; two more for a darker shadow.
+CORNER_RADIUS = 16
+
+
+def cut_corners(path):
+    """A window's shot without what isn't the window's: its outer pixel and
+    the curve of its corners, where its edge blends with its shadow and
+    whatever is behind (a run's edge came out 15-20 levels darker than the
+    last's, the window's own pixels the same), made transparent."""
+    image = Image.open(path).convert("RGBA")
+    image = image.crop((1, 1, image.width - 1, image.height - 1))
+    mask = Image.new("L", image.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, image.width - 1, image.height - 1), radius=CORNER_RADIUS, fill=255)
+    Image.composite(image, Image.new("RGBA", image.size, (0, 0, 0, 0)), mask).save(path)
 
 
 if __name__ == "__main__":

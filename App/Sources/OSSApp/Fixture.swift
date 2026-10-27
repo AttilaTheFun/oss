@@ -135,7 +135,9 @@ enum Fixture {
                                   memoryFraction: 0.31 + 0.02 * sin(t / 17))
         }
         monitor.pretend(
-            capabilities: Capabilities(version: OSS.version, api: OSS.apiLevel, features: ["machines", "screenshots", "input", "usage", "cache"],
+            // A version of the fixture's own, not the build's: the proof's
+            // screens are the same from one release to the next.
+            capabilities: Capabilities(version: "1.0.0", api: OSS.apiLevel, features: ["machines", "screenshots", "input", "usage", "cache"],
                                        platforms: Platform.allCases),
             status: Status(server: "Mac Studio", bases: bases, capacity: capacity, leases: leases),
             usage: usage,
