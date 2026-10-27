@@ -1,6 +1,6 @@
 # Changelog
 
-## Next
+## 0.12.0
 
 - `oss machine run container … --inside -- <command>` runs the command in
   the leased container, in this folder (mounted at its own path), and
