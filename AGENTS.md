@@ -34,6 +34,8 @@ oss machine list                                 # every lease: kind, holder, ti
 oss machine ssh <id> -- <command>                # VMs: as runner; sudo needs no password
 oss machine simctl <id> install ./My.app         # iOS: local paths uploaded first
 oss machine simctl <id> launch <bundle id> | openurl <url> | terminate … | listapps
+oss machine xctest <id> --tests=<Tests.zip> [--host=<App.ipa>] [--ui] [--junit=out.xml] [--result=out.xcresult.zip]
+                                                 # iOS: rules_apple's tests on its simulator (built here or on Linux)
 oss machine adb <id> install ./app.apk | shell … | logcat -d   # Android
 oss machine screenshot <id> /tmp/screen.png      # any lease
 oss machine tap <id> <x> <y>                     # any lease, in the screenshot's pixels
@@ -49,6 +51,14 @@ oss machine release <id>
 `renew`, `release` and the others take the lease's id, or its platform
 when you hold just one lease of it. On Android you can also use your own
 adb: `adb connect <host>:<adbPort>` (printed with the lease).
+
+iOS tests built where they can't run (a Linux container, with
+rules_applecross) run on an `ios` lease: `oss machine xctest` takes what
+`bazel build` of an `ios_unit_test` or `ios_ui_test` leaves (the bundle's
+`<name>.zip`, the host's `.ipa`; `--ui` for a UI test), runs them as `bazel
+test` would on a Mac, streams xcodebuild's output and exits with its
+status; `--junit` and `--result` fetch the run's JUnit and result bundle.
+One run at a time a lease.
 
 Say who a lease is for: everyone watching the server (`oss status`, OS
 Server's window, OS Monitor) sees each lease's kind and label. An agent
@@ -101,7 +111,8 @@ deleted once no lease holds them: `rm` what you're done with. A holder may
 keep 20 GB. In a container without the token, your session hands you a
 grant's URL instead (`oss grant <verb> …` on its side): `oss storage put
 <file> --url=<grant>`, `oss storage get --url=<grant>`, `oss machine
-install --url=<grant> <object>`, and for a container lease of yours `oss
+install --url=<grant> <object>`, `oss machine xctest --url=<grant>
+--tests=<object> …` (its bundles put first), and for a container lease of yours `oss
 machine exec --url=<grant> -- <command>`, `oss machine upload --url=<grant>
 <file> <path>`, `oss machine download --url=<grant> <path> <file>`. A
 grant is a secret for a few minutes: don't paste it anywhere else.

@@ -132,17 +132,18 @@ extension OSSGrantClient {
     }
 }
 
-/// An exec through the server: the request (its `ExecRequest` the body)
-/// and the server's answer, then, upgraded, the exec socket's frames.
-enum OSSExecUpgrade {
-    static func run(over stream: any OSSByteStream, url: URL, headers: [String: String], _ request: ExecRequest,
-                    input: AsyncStream<ExecFrame>, output: @escaping @Sendable (ExecFrame) -> Void) async throws -> Int32 {
-        defer { stream.close() }
+/// A request the server upgrades to `oss-exec` (a container's exec, an
+/// iOS lease's xctest): its head and JSON body sent, the server's answer
+/// read; past `101 Switching Protocols`, the connection carries frames.
+enum OSSUpgrade {
+    /// The 101's fields (by lowercased name) and what came after its head
+    /// (the first frames); a refusal thrown with the server's message.
+    static func open(_ stream: any OSSByteStream, url: URL, headers: [String: String], body: Data,
+                     what: String) async throws -> (headers: [String: String], rest: Data) {
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let path = (components?.percentEncodedPath).flatMap { $0.isEmpty ? nil : $0 } ?? "/"
         let target = path + (components?.percentEncodedQuery.map { "?\($0)" } ?? "")
         let host = (url.host ?? "127.0.0.1") + (url.port.map { ":\($0)" } ?? "")
-        let body = try JSONEncoder().encode(request)
         var head = "POST \(target) HTTP/1.1\r\nHost: \(host)\r\n"
         for (name, value) in headers.sorted(by: { $0.key < $1.key }) { head += "\(name): \(value)\r\n" }
         head += "Connection: Upgrade\r\nUpgrade: \(OSSExecProtocol.name)\r\nContent-Type: application/json\r\n"
@@ -154,23 +155,36 @@ enum OSSExecUpgrade {
         let blank = Data("\r\n\r\n".utf8)
         while buffer.range(of: blank) == nil {
             guard buffer.count < 64 << 10, let more = try await stream.read() else {
-                throw OSSError(status: 0, message: "\(url.host ?? ""): no answer to the exec")
+                throw OSSError(status: 0, message: "\(url.host ?? ""): no answer to the \(what)")
             }
             buffer.append(more)
         }
         let end = buffer.range(of: blank)!
         let lines = String(decoding: buffer[..<end.lowerBound], as: UTF8.self).components(separatedBy: "\r\n")
         buffer = Data(buffer[end.upperBound...])
+        var fields: [String: String] = [:]
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            fields[line[..<colon].lowercased()] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        }
         let status = lines.first.flatMap { line in line.split(separator: " ").dropFirst().first.flatMap { Int($0) } } ?? 0
         if status != 101 {
-            var length: Int?
-            for line in lines.dropFirst() where line.lowercased().hasPrefix("content-length:") {
-                length = Int(line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces))
-            }
+            let length = fields["content-length"].flatMap { Int($0) }
             while buffer.count < (length ?? Int.max), let more = try await stream.read() { buffer.append(more) }
             let refusal = try? JSONDecoder.oss.decode(APIError.self, from: buffer)
             throw OSSError(status: status, message: refusal?.error ?? String(decoding: buffer, as: UTF8.self), code: refusal?.code)
         }
+        return (fields, buffer)
+    }
+}
+
+/// An exec through the server: the request (its `ExecRequest` the body)
+/// and the server's answer, then, upgraded, the exec socket's frames.
+enum OSSExecUpgrade {
+    static func run(over stream: any OSSByteStream, url: URL, headers: [String: String], _ request: ExecRequest,
+                    input: AsyncStream<ExecFrame>, output: @escaping @Sendable (ExecFrame) -> Void) async throws -> Int32 {
+        defer { stream.close() }
+        var buffer = try await OSSUpgrade.open(stream, url: url, headers: headers, body: try JSONEncoder().encode(request), what: "exec").rest
 
         // Upgraded: the client's frames as they come, the container's until its exit.
         let pump = Task {

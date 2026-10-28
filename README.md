@@ -34,7 +34,7 @@ server's HTTP API, which programs can call too: Swift ones through the
 | `macos` | OS Server's own VM (Apple Virtualization) | ~15 s | SSH and VNC (Screen Sharing), forwarded |
 | `linux` | a UTM VM (QEMU) | ~30 s | SSH and VNC (QEMU's), forwarded |
 | `windows` | a UTM VM (QEMU) | ~40 s | SSH (PowerShell) and VNC (QEMU's), forwarded |
-| `ios` | a simulator on the server's Mac | ~7 s | `oss machine simctl` (install, launch, openurl, …), screenshots |
+| `ios` | a simulator on the server's Mac | ~7 s | `oss machine simctl` (install, launch, openurl, …), screenshots, `oss machine xctest` |
 | `android` | an emulator on the server's Mac | ~6 s | `adb connect <server>:<port>`, or `oss machine adb` |
 
 Default capacity: two of each VM platform (16 GB each), four simulators
@@ -82,6 +82,7 @@ oss machine ssh <id> [-- command…]             # VMs
 oss machine vnc <id> --open                    # VMs: VNC address and the lease's password
 oss machine simctl <id> install ./My.app       # iOS: local paths are uploaded first
 oss machine simctl <id> launch com.example.app
+oss machine xctest <id> --tests=Tests.zip      # iOS: rules_apple's tests on its simulator (below)
 oss machine adb <id> install ./app.apk         # Android (or: adb connect <host>:<adbPort>)
 oss machine screenshot <id> screen.png         # any lease
 oss machine tap <id> 120 480                   # any lease: in the screenshot's pixels
@@ -248,19 +249,71 @@ oss grant storage.put --name=My.ipa --object-ttl=2h   # prints the URL
 oss storage put build/My.ipa --url=<the URL>           # in the container: no token
 oss grant storage.get My.ipa                           # then: oss storage get --url=<the URL> ./My.ipa
 oss grant machine.install <ios lease>                  # then: oss machine install --url=<the URL> My.ipa
+oss grant machine.xctest <ios lease>                   # then: oss machine xctest --url=<the URL> --tests=Tests.zip …
 oss grant machine.exec <container lease>               # then: oss machine exec --url=<the URL> -- make test
 oss grant machine.upload <container lease>             # then: oss machine upload --url=<the URL> ./app /srv/app
 oss grant machine.download <container lease>           # then: oss machine download --url=<the URL> /srv/log ./log
 ```
 
 A container's files have a verb each way, as the store's do: a grant that
-puts files in a container reads none out of it.
+puts files in a container reads none out of it. `machine.xctest` runs
+tests on its iOS lease and reads what they leave (a run's JUnit and result
+bundle).
 
 A grant's URL is the route it opens with `?grant=…`: its claims (the verb,
 the lease or object, the holder, when it expires; for a put, the name and
 TTL its lease will get) and an HMAC-SHA256 of them under a key only the
 server has. It works any number of times until it expires, on that route
-alone; anything else gets the same 403, whatever was wrong.
+alone (an xctest's, and its runs' results below it); anything else gets the
+same 403, whatever was wrong.
+
+### iOS tests
+
+A Linux container builds rules_apple's iOS targets (with
+[rules_applecross](https://github.com/AttilaTheFun/rules_applecross), as
+rules_apple builds them on a Mac) but can't run them. An `ios` lease runs
+them on its simulator, as `bazel test` runs them on a Mac (rules_apple's
+`ios_xctestrun_runner`), since API 10:
+
+```sh
+oss machine lease ios
+oss machine xctest <id> --tests=bazel-bin/app/HelloWorldTests.zip                      # a logic test
+oss machine xctest <id> --tests=bazel-bin/app/HelloWorldAppTests.zip --host=bazel-bin/app/HelloWorld.ipa
+oss machine xctest <id> --tests=bazel-bin/app/HelloWorldUITests.zip --host=bazel-bin/app/HelloWorld.ipa --ui \
+    --only-testing=HelloWorldUITests/testLaunch --junit=test.xml --result=HelloWorldUITests.xcresult.zip
+```
+
+- **What it takes**: what `bazel build` of an `ios_unit_test` or
+  `ios_ui_test` leaves, on a Mac or on Linux: the test bundle's
+  `<name>.zip` (holding `<name>.xctest`; or a `.xctest` folder zipped),
+  and the test host's `.ipa` (or a zipped `.app`), which a hosted unit test
+  and a UI test need and a logic test doesn't. A file is put in your
+  storage first (by its file's name); anything else names an object you
+  have there (by sha256 or name). On a Mac, a `.xctest` or `.app` folder is
+  zipped first.
+- **On the server**, as rules_apple's runner does on a Mac: the bundles
+  unpacked into a folder of the run's own in the lease's (xcodebuild's
+  `__TESTROOT__`), made writable; for a UI test, `<bundle>-Runner.app`
+  made from Xcode's XCTRunner.app (the bundle in its PlugIns, XCTest's
+  frameworks in its Frameworks, its Info.plist naming it; unsigned, as a
+  simulator needs); the .xctestrun from rules_apple's template, as its
+  runner fills it in; then `xcodebuild test-without-building` against the
+  lease's simulator, `-only-testing` for each `--only-testing` (under the
+  bundle's name unless it has it), the result bundle and derived data in the
+  run's folder.
+- **What comes back**: xcodebuild's output as it comes, and its exit
+  status, which is `oss`'s (0 passed, 65 a test failed). The run's result
+  bundle (`--result`, zipped) and its JUnit (`--junit`: each bundle a
+  suite, each test a case under its suites, with its failures' messages or
+  why it was skipped, from `xcresulttool`'s report of the result bundle)
+  are kept as long as the lease, by the run's id.
+- **One run at a time a lease**: another is refused (409, `busy`). `oss
+  machine xctest` ending (Ctrl-C) ends its run: the server stops
+  xcodebuild.
+- **From a container** without the token: `oss grant machine.xctest
+  <lease>` on the session's side, then `oss machine xctest --url=<grant>
+  --tests=<object> …`, the bundles already in storage (put with a
+  `storage.put` grant).
 
 ### Self-hosted CI
 
@@ -415,6 +468,15 @@ let grant = try await client.grant(GrantRequest(verb: "machine.install", lease: 
 let installed = try await OSSGrantClient(url: grant.url).install(object: "My.ipa")           // no token
 ```
 
+An iOS lease's tests (API 10), from bundles in storage:
+
+```swift
+let run = try await client.xctest(lease.id, holder: lease.holder, XCTestRequest(tests: "HelloWorldUITests.zip", host: "HelloWorld.ipa", ui: true)) { frame in
+    if case .stdout(let data) = frame { FileHandle.standardOutput.write(data) }   // xcodebuild's output
+}
+let junit = try await client.xctestJUnit(lease.id, holder: lease.holder, run: run.id)   // run.status: xcodebuild's
+```
+
 `OSSPool` leases from several servers as one: from the nearest (this
 computer, then the LAN, then the tailnet) that has a base for the machine
 and room for it, a container with mounts only from this computer's own. It
@@ -449,7 +511,8 @@ the cache's read token) and refused for everything else. A grant's URL
 was made for. A storage request names its holder in an `OSS-Holder`
 header (a grant's is its own); a holder sees and changes only its own
 leases, and another's are 404. So does a request for a container's exec or
-files with the token (API 9): the lease must be that holder's.
+files with the token (API 9), and for an iOS lease's tests and their
+results (API 10): the lease must be that holder's.
 Bodies are JSON; errors are `{"error": "…", "code"?}`. A client says the API level
 it speaks in an `OSS-API` header (OSSClient does): one below 6 is shown no
 containers, which it couldn't read.
@@ -478,11 +541,13 @@ containers, which it couldn't read.
 | `GET /v1/storage/leases` | the holder's leases (`id`, `holder`, `sha256`, `size`, `name`, `created`, `expires`) |
 | `POST /v1/storage/leases/<id>/renew?ttl=…` | its time set again: `ttl` from now |
 | `DELETE /v1/storage/leases/<id>` | released; its object goes at the next sweep unless another lease holds it |
-| `POST /v1/grants` `{"verb", "lease"?, "object"?, "ttl"?, "name"?, "objectTTL"?}` | 201 `{"verb", "url", "path", "expires"}`: a grant in the holder's name, where the plain API would let it: `storage.put` (with the `name` and `objectTTL` its lease gets), `storage.get` (an object it holds, by sha256 or name), `machine.install` (an iOS lease it holds); from API 8 `machine.exec`, `machine.upload` and `machine.download` (a container lease it holds). `ttl` 5m unless given, at most 15m. `url` is the server as the asker reached it; `path` is the same for another address. Only with the API's token |
+| `POST /v1/grants` `{"verb", "lease"?, "object"?, "ttl"?, "name"?, "objectTTL"?}` | 201 `{"verb", "url", "path", "expires"}`: a grant in the holder's name, where the plain API would let it: `storage.put` (with the `name` and `objectTTL` its lease gets), `storage.get` (an object it holds, by sha256 or name), `machine.install` (an iOS lease it holds); from API 8 `machine.exec`, `machine.upload` and `machine.download` (a container lease it holds); from API 10 `machine.xctest` (an iOS lease it holds: its tests run, and their results read). `ttl` 5m unless given, at most 15m. `url` is the server as the asker reached it; `path` is the same for another address. Only with the API's token |
 | `POST /v1/machines/<id>/install` `{"object"}` | an .ipa or a zipped .app the lease's holder holds (by sha256 or name) installed on its simulator: `{"object", "app", "bundleIdentifier"}` |
 | `POST /v1/machines/<id>/exec` (`Connection: Upgrade`, `Upgrade: oss-exec`; body an `ExecRequest`, with its `Content-Length`) | a command in a container lease, from anywhere (API 8): `101 Switching Protocols`, then the exec socket's frames both ways (below), the server starting the command with the request and relaying the rest; a refusal is an answer as any other (404 another holder's lease, 409 `notReady`, 426 `upgrade` without the upgrade). The token with `OSS-Holder`, or a `machine.exec` grant |
 | `PUT /v1/machines/<id>/files?path=…&mode=…` (raw body) | a file put in a container lease (API 9), streamed: at `path` (relative to its working directory, `~/` its home), its folders made, written beside it and moved into place once all of it has come; `mode` octal (else the container's umask's). 201 `{"path", "size"}`, the path absolute. The token with `OSS-Holder`, or a `machine.upload` grant |
 | `GET /v1/machines/<id>/files?path=…` | a container lease's file, streamed (its length first); 404 `noFile` if there's none. The token with `OSS-Holder`, or a `machine.download` grant |
+| `POST /v1/machines/<id>/xctest` (`Connection: Upgrade`, `Upgrade: oss-exec`; body an `XCTestRequest` `{"tests", "host"?, "ui"?, "onlyTesting"?}`, with its `Content-Length`) | tests on an iOS lease's simulator (API 10): `tests` (the test bundle's zip) and `host` (an .ipa or a zipped .app) are objects the lease's holder holds, by sha256 or name; `ui` a UI test (it needs `host`); `onlyTesting` xcodebuild's `-only-testing`. Made ready first, so a refusal is an answer as any other (400 a bundle that isn't one, 404 an object the holder hasn't got, 409 `busy` while the lease runs another); then `101 Switching Protocols` with the run's id (`OSS-XCTest-Run`), then the exec socket's frames (below): `stdout` xcodebuild's output, `stderr` the server's own notes, last `exit` xcodebuild's status. The connection closing first ends the run (xcodebuild stopped). The token with `OSS-Holder`, or a `machine.xctest` grant |
+| `GET /v1/machines/<id>/xctest/<run>/junit`, `…/result` | a run's JUnit (XML, from its result bundle), or its result bundle zipped (`result.xcresult` inside; streamed); 409 `notReady` while it runs, 404 `noFile` if it made none; kept as long as the lease. The token with `OSS-Holder`, or the lease's `machine.xctest` grant |
 
 The two object routes and a container's files stream (an object can be
 gigabytes); a put that says `Expect: 100-continue` hears whether it's
@@ -521,6 +586,12 @@ both ways, but `start`: the server starts the command with the request's
 body, then relays the client's `stdin`, `closeStdin`, `resize` and `signal`
 and the container's `stdout`, `stderr` and `exit` as they come. The
 connection closing before `exit` ends the command, as the socket's does.
+
+An iOS lease's xctest (API 10) is upgraded the same way, its body an
+`XCTestRequest`: its `101` carries `OSS-XCTest-Run: <run>`, and then only
+the server sends frames (xcodebuild's output as `stdout`, its own notes as
+`stderr`, xcodebuild's status as `exit`); the client sends none, and its
+connection closing before `exit` ends the run.
 
 The Bazel cache is on a port of its own (7490): `GET`, `HEAD` and `PUT` of
 `/ac/<sha256>` and `/cas/<sha256>`, with the read or the write token as
@@ -802,6 +873,13 @@ snapshot.
   memory each process's physical footprint, as Activity Monitor counts it
   (resident sizes count shared libraries once a process, and a simulator's
   hundred processes added up to six times its memory).
+- **A read-only folder can't move to another** on macOS (moving it writes
+  its `..`): Bazel leaves its outputs read-only and a zip keeps their modes,
+  so an xctest's bundles are made writable before they're moved into place
+  (rules_apple's runner `chmod`s them too, for xcodebuild, which writes
+  into them).
+- **xcresulttool makes no JUnit**: an xctest's comes from its report of the
+  result bundle (`xcresulttool get test-results tests`).
 - **Emulators** use oss's own adb server port (5137) so they never meet
   another adb on the Mac, and keep running when the server restarts
   (launchd's job leaves its process group alone).

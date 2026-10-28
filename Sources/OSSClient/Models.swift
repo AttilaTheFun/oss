@@ -775,7 +775,10 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
     /// for an object the store hasn't got: 404) and `quota` (past the
     /// holder's or the store's cap: 413); from API 9 `notReady` (a
     /// container lease not running yet, or not running again yet: 409) and
-    /// `noFile` (a container's file that isn't there: 404).
+    /// `noFile` (a container's file that isn't there: 404); from API 10
+    /// `busy` also for an xctest on a lease running one, `notReady` for a
+    /// run's results while it runs, `noFile` for a run's JUnit or result
+    /// bundle that wasn't made.
     public var code: String?
     public var description: String { error }
     public init(error: String, code: String? = nil) {
@@ -798,6 +801,11 @@ public enum OSS {
     /// /v1/machines/<id>/files?path=…`), its ports forwarded
     /// (`ContainerSpec.ports`, `Lease.ports`), and grants for each
     /// (`machine.exec`, `machine.upload`, `machine.download`).
+    /// 10 from 0.13.0: iOS tests on a lease's simulator
+    /// (`POST /v1/machines/<id>/xctest`, upgraded to `oss-exec` like an
+    /// exec: rules_apple's test bundle and host from storage, run by
+    /// xcodebuild; `GET …/xctest/<run>/junit` and `/result`), and their
+    /// grant (`machine.xctest`).
     /// 7 from 0.13.0: storage (`/v1/storage/…`: objects by their SHA-256,
     /// kept while a holder's lease on them lasts), grants (`/v1/grants`: a
     /// URL that does one thing without the token), an iOS lease's app
@@ -818,7 +826,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 9
+    public static let apiLevel = 10
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
 }

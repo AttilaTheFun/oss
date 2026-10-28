@@ -2,10 +2,6 @@
 
 ## Storage
 
-- **xctest from storage**: `oss machine xctest <ios lease> <object>`, a
-  zipped test bundle (or an `.xctestrun` with its products) from the store
-  run on the lease's simulator, its result bundle put back in the store;
-  and its grant, `machine.xctest` (reserved: `GrantKey.later`).
 - **A VM's files through the server**: `machine.upload` and
   `machine.download` (and their routes) take container leases; a VM's go by
   scp, which needs its SSH port and the holder's key.
@@ -42,6 +38,26 @@
   through exec, which needs `tar` in the image. The files route could take
   an archive and unpack it.
 - **UDP ports**: `--port` forwards TCP alone, as VMs' forwards do.
+
+## iOS tests
+
+- **Swift Testing's filters in the .xctestrun**: `--only-testing` is
+  xcodebuild's `-only-testing`. rules_apple writes its `--test_filter` into
+  the .xctestrun instead (`OnlyTestIdentifiers`, and from Xcode 26.4
+  `OnlyTestingIdentifiers`, which it says Swift Testing's tests are filtered
+  by); if xcodebuild's flag misses Swift Testing's tests, write the filter
+  there as rules_apple does.
+- **What rules_apple's runner takes and xctest doesn't**: a test's
+  environment (`env`) and arguments (`command_line_args`), random order,
+  coverage, a screen capture format, and attachments' lifetime: the
+  runner's default, `keepNever`, so a failing UI test's screenshots aren't
+  in its result bundle. An `XCTestRequest` could carry each.
+- **Runs held by the lease alone**: a run's folder (its bundles, result
+  bundle and derived data) stays until its lease ends, counted against no
+  cap; a lease running many large UI tests fills the disk with them.
+- **macOS tests**: `macos_unit_test` bundles could run on a macOS lease the
+  same way, xcodebuild in the VM.
+- **`oss mcp`**: an xctest tool.
 
 ## Tools in Swift, not Python
 
