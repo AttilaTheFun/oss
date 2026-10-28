@@ -35,7 +35,8 @@ let usage = """
                                                             left, right, pageup, pagedown, home, back; on a VM cmd+a…
       oss machine upload <id> <local> <remote>              macOS, Linux, Windows (scp; a directory too)
       oss machine download <id> <remote> <local>
-      oss machine run <platform> [--config=NAME] [--minutes=N] -- command…
+      oss machine run <platform> [--config=NAME] [--minutes=N] -- command…   (a 5-minute lease renewed while it runs;
+                                                            SIGTERM releases it at once)
       oss machine run container --image=REF [lease options…] --inside [--cache=HOST] [--netrc=HOST]… [--env=…] -- command…
                                                             the command in the container, in this folder (mount it
                                                             at its own path), the lease released after (CI); --cache:
@@ -378,14 +379,35 @@ public enum OSSCommand {
                     print(arguments.positional[3])
                 case "run":
                     guard !arguments.rest.isEmpty else { fail("oss machine run <platform> [options] -- command…") }
-                    let lease = try await client.leaseForTerminal(leaseRequest(arguments, platformArgument: target), waitForCapacity: true)
-                    let minutes = arguments.options["minutes"].flatMap(Int.init)
+                    // A short lease, renewed while the command runs: when this
+                    // process is killed outright (a CI runner's SIGKILL, after its
+                    // SIGINT and SIGTERM), the lease ends within minutes, and its
+                    // volumes are free again, not at the hour.
+                    var request = leaseRequest(arguments, platformArgument: target)
+                    let minutes = request.minutes ?? 5
+                    request.minutes = minutes
+                    let lease = try await client.leaseForTerminal(request, waitForCapacity: true)
                     let renewing = Task {
                         while !Task.isCancelled {
-                            try await Task.sleep(for: .seconds(600))
+                            try await Task.sleep(for: .seconds(min(600, max(30, minutes * 12))))
                             _ = try? await client.renew(lease.id, minutes: minutes)
                         }
                     }
+                    // SIGTERM releases the lease and exits at once, the container's
+                    // command with it: a runner cancelling a job sends SIGINT
+                    // (forwarded into the container), then SIGTERM, then SIGKILL
+                    // within seconds, before Bazel has stopped.
+                    signal(SIGTERM, SIG_IGN)
+                    let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+                    terminate.setEventHandler {
+                        Task {
+                            renewing.cancel()
+                            try? await client.release(lease.id)
+                            FileHandle.standardError.write(Data("oss: lease \(lease.id) released (SIGTERM)\n".utf8))
+                            exit(143)
+                        }
+                    }
+                    terminate.resume()
                     let status: Int32
                     if arguments.flags.contains("inside") {
                         // In the container, in this folder (mounted at its own path), as `exec` runs it.
