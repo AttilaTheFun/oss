@@ -18,8 +18,14 @@ those run on the host Mac today. In 0.14 each GUI platform gets a
     screenshot its window, run macOS xctest bundles.
   - Simulators and unit tests run side by side; macOS UI tests and anything
     that needs the screen wait their turn (one desktop).
-  - A lease's apps, simulators and processes go when it is released; the
-    primary is rebuilt from its base on a schedule, so nothing accumulates.
+  - A lease's apps, simulators and processes go when it is released.
+- **Health and renewal**: OS Server checks each primary's health (its agent
+  answering, free memory and disk, the simulator service and Xcode
+  responding, a canary run) and wipes and restarts it, a fresh clone of its
+  base: on a schedule, so nothing accumulates, and whenever a check fails.
+  It drains first: no new work goes to it, the running leases' work
+  finishes (or moves, for simulators), then it is replaced; leases waiting
+  meanwhile queue rather than fail.
 - **The secondary** is lent whole as `macos` leases are now, queued
   (`--wait`); AGENTS.md tells agents it is a last resort, for what needs a
   whole OS.
