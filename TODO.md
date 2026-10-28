@@ -1,5 +1,61 @@
 # TODO
 
+## 0.14: a primary VM per GUI platform
+
+Apple's licence allows two macOS VMs per Mac, so lending both whole leaves
+nothing for the many small jobs (a simulator, an app, a test bundle), and
+those run on the host Mac today. In 0.14 each GUI platform gets a
+**primary** VM that OS Server keeps for itself and never lends whole, and a
+**secondary** that is lent whole only when a lease really needs a whole OS.
+
+- **The macOS primary**: large (on a 512 GB Mac Studio, 128 to 256 GB and
+  most of the cores), Xcode installed, a small agent inside it that OS
+  Server drives. It does the work leases ask for:
+  - `ios` leases are simulators inside it, one per lease, not on the host;
+    `xctest`, `install`, screenshots and input go there as they go to the
+    host's simulators today.
+  - A `macos-app` lease is a slot on it: install a `.app`, launch it,
+    screenshot its window, run macOS xctest bundles.
+  - Simulators and unit tests run side by side; macOS UI tests and anything
+    that needs the screen wait their turn (one desktop).
+  - A lease's apps, simulators and processes go when it is released.
+- **Health and renewal**: OS Server checks each primary's health (its agent
+  answering, free memory and disk, the simulator service and Xcode
+  responding, a canary run) and wipes and restarts it, a fresh clone of its
+  base: on a schedule, so nothing accumulates, and whenever a check fails.
+  It drains first: no new work goes to it, the running leases' work
+  finishes (or moves, for simulators), then it is replaced; leases waiting
+  meanwhile queue rather than fail.
+- **Interrupted work is retried, not lost**: a primary's leases are slots,
+  so they outlive its restart; only the work running then fails, with a
+  retryable `primaryRestarted` (and when to try again) that `oss` commands
+  retry themselves and CI retries as a step. `GET /v1/events` streams a
+  lease's "draining", "restarting" and "ready again" to whoever holds it
+  (Visor shows its session why).
+- **A leak ends one lease's work, not the VM**: macOS caps no process's
+  memory, so OS Server watches. It knows each lease's processes (the
+  simulator's tree, the app it launched, the xcodebuild run), samples their
+  memory every few seconds against the lease's budget, and past it ends that
+  tree alone (a simulator shut down and erased, an app or a run killed), the
+  work failing with `memoryLimit`. The VM restarts only when the primary
+  itself is unwell (the simulator service or the window server stuck, memory
+  short with no lease to blame), besides the reset when idle.
+- **CI's Mac work on the primary**: CI's runners become containers of their
+  own, one a job (no `ci` user on the Mac), and their Mac steps use the
+  primary's slots, not a whole VM: test bundles built on Linux, run with
+  `oss machine xctest`, their snapshot pictures brought back as attachments
+  or through a files call. Not runners inside the primary: a job runs a pull
+  request's code, and the primary, shared by every lease, runs only what OS
+  Server asks of it.
+- **The secondary** is lent whole as `macos` leases are now, queued
+  (`--wait`); AGENTS.md tells agents it is a last resort, for what needs a
+  whole OS.
+- **Linux and Windows** follow the same pattern: Linux can give each lease a
+  display of its own, so its GUI leases run side by side; Windows has one
+  desktop, so its GUI work takes turns as the Mac's does.
+- Order: the macOS primary with `ios` leases and xctest moved into it, then
+  `macos-app` slots, then the secondaries' queue, then Linux and Windows.
+
 ## Storage
 
 - **A VM's files through the server**: `machine.upload` and
