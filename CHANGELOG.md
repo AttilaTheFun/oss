@@ -9,6 +9,41 @@
   for up to an hour, and the next job was refused the volume.
 - The README's CI example keeps its volume (`:keep`): without it the
   volume, Bazel's tree, went with each lease, so every job built cold.
+- **Storage** (API 7): files kept on the server by their SHA-256 while a
+  lease holds them. `oss storage put <file> [--name=N] [--ttl=24h]`, `get
+  <sha256 | name> [out]`, `ls`, `renew <id | name> [--ttl]`, `rm <id |
+  name>`; `PUT`/`HEAD`/`GET /v1/storage/objects…` and `/v1/storage/leases…`,
+  the holder in an `OSS-Holder` header (a holder's leases are its own:
+  another's are 404). A lease lasts 24 hours unless asked otherwise, at
+  most 7 days; bytes put twice are kept once (a put sends its SHA-256
+  first and no bytes if the server has them); a name moves to the object
+  last put with it; an object no lease holds is swept within a minute,
+  never one being read or written. 20 GB a holder and 100 GB in all
+  (`"storage"` in server.json), a put past either refused before its bytes
+  are read (413). Objects and their uploads stream: neither the server nor
+  `oss` holds one in memory.
+- **The files served by their SHA-256 are storage's too**: in the same
+  folder, each held for good by the server's own lease (its entry beside
+  it). Only a file with an entry is served on the cache's port, so a
+  holder's object never is; `oss files remove` ends the server's lease, and
+  the bytes go at the next sweep unless a holder's lease holds them. A
+  server's first start gives any file without an entry one.
+- **Grants**: `POST /v1/grants` (`oss grant <verb> [lease | object]
+  [--ttl=5m]`), with the API's token, makes a URL that does one thing in a
+  holder's name without the token: `storage.put` (with the name and TTL its
+  lease will get), `storage.get` or `machine.install`, on a lease or object
+  the holder has, for 5 minutes unless asked otherwise (at most 15), as
+  often as it's used until then. It carries its claims and an HMAC-SHA256
+  under a key only the server keeps (`grant-key`); any other use is the same
+  403. `oss storage put|get` and `oss machine install` take `--url=<grant>`
+  in place of the token: what an agent in a container holds, its session's
+  Visor keeping the token.
+- `oss machine install <ios lease> <sha256 | name>` (`POST
+  /v1/machines/<id>/install`): an .ipa or a zipped .app from storage, one
+  the lease's holder holds, installed on its simulator; it answers the
+  app's bundle identifier.
+- `oss status` shows the store's use (`Status.storage`): its objects and
+  bytes against its caps, its leases, the served files.
 
 ## 0.12.1
 

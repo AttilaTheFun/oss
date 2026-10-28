@@ -18,6 +18,9 @@ for automation, for anything that needs a machine of its own for a while:
   after each merge), and the server's VMs, its containers and the Mac
   itself read it, so a fresh machine downloads what was built instead of
   building it again.
+- **Storage**: files kept by their SHA-256 while a lease of their holder's
+  lasts (a build to install on a simulator, a test's output), and URLs
+  that do one thing with them without the server's token (grants).
 
 **OS Server**, a Mac app, is the server: the API, the machines and the
 cache run in its own process, and its window (or its menu bar item) shows
@@ -154,6 +157,54 @@ oss volume delete app-build
   lease's over them, and by default a process that waits (`--command`
   names another): the work is done with exec.
 
+### Storage
+
+Files kept on the server for a while, by their content's SHA-256: a build
+to install on a simulator, a test's output to look at later. Each is held
+by a **lease** of its holder's (`OSS_HOLDER`, else user@host; a Visor
+session's is `visor:<session>`), for 24 hours unless asked otherwise (at
+most 7 days), renewed or released as a machine's is. An object no lease
+holds is deleted within a minute.
+
+```sh
+oss storage put build/My.ipa --name=My.ipa --ttl=2h   # its bytes go only if the server hasn't got them
+oss storage ls                                        # your leases: id, sha256, size, name, until when
+oss storage get My.ipa ./My.ipa                       # by name or sha256
+oss storage renew My.ipa --ttl=24h
+oss storage rm My.ipa
+oss machine install <ios lease> My.ipa                # an .ipa or a zipped .app of yours, on its simulator
+```
+
+- **Kept once.** Bytes put twice, by anyone, are one file. A put asks first,
+  by the hash, whether the server has them, and sends none if it has.
+- **Names** are the holder's own: a put with a name already used moves it
+  to the new object (the lease that had it is released).
+- **Caps**: 20 GB a holder and 100 GB in all (`"storage"` in its settings,
+  below). A put past either is refused before its bytes are sent (413,
+  `quota`).
+- **Beside the served files** (below), in `Files/sha256/` in OS Server's
+  folder: a served file is held by the server itself, for good, and a
+  holder's object isn't served on the cache's port. The holders' leases are
+  `State/storage-leases.json`.
+
+**Grants.** Whoever holds the API's token (Visor) can hand out a URL that
+does one thing, on one lease or object of a holder's, for a few minutes (5
+unless asked otherwise, at most 15), with no token: what an agent in a
+container gets from its session, which keeps the token.
+
+```sh
+oss grant storage.put --name=My.ipa --object-ttl=2h   # prints the URL
+oss storage put build/My.ipa --url=<the URL>           # in the container: no token
+oss grant storage.get My.ipa                           # then: oss storage get --url=<the URL> ./My.ipa
+oss grant machine.install <ios lease>                  # then: oss machine install --url=<the URL> My.ipa
+```
+
+A grant's URL is the route it opens with `?grant=…`: its claims (the verb,
+the lease or object, the holder, when it expires; for a put, the name and
+TTL its lease will get) and an HMAC-SHA256 of them under a key only the
+server has. It works any number of times until it expires, on that route
+alone; anything else gets the same 403, whatever was wrong.
+
 ### Self-hosted CI
 
 ```yaml
@@ -230,8 +281,12 @@ them. They're added on the server's Mac only, and never evicted:
 ```sh
 oss files add ~/Downloads/apple-sdks-27.0.tar.gz   # hashed, kept (an APFS clone); prints its URL
 oss files list
-oss files remove <sha256>
+oss files remove <sha256>                          # no longer served; its bytes go unless a storage lease holds them
 ```
+
+They share their folder with storage's objects (above): each is held by a
+lease of the server's own, its entry beside it (`<sha256>.json`), which
+never expires and no holder sees among its own.
 
 A dependency lists each server's URL, its own Mac's first (by tailnet name:
 this Mac's VMs and containers reach it that way too), and Bazel takes the
@@ -281,6 +336,15 @@ let status = try await client.exec(lease, ExecRequest(arguments: ["make", "test"
 alone: no server or token, for a process that runs a long command in a
 container (an agent's host) and should go on whatever the server does.
 
+Storage takes the holder with each call; a grant's URL needs no client
+of the server's:
+
+```swift
+let put = try await client.putObject(file: ipa, holder: "visor:\(session)", name: "My.ipa")   // HEAD first: no bytes if it's there
+let grant = try await client.grant(GrantRequest(verb: "machine.install", lease: lease.id), holder: lease.holder)
+let installed = try await OSSGrantClient(url: grant.url).install(object: "My.ipa")           // no token
+```
+
 `OSSPool` leases from several servers as one: from the nearest (this
 computer, then the LAN, then the tailnet) that has a base for the machine
 and room for it, a container only from this computer's own. It returns the
@@ -293,7 +357,9 @@ let (client, lease) = try await pool.lease(LeaseRequest(platform: .ios), waitFor
 ```
 
 Requests go through URLSession; pass another `OSSTransport` (one
-method: a request in, status, headers and body out) where that can't
+method: a request in, status, headers and body out; a second, for an
+object's body or answer as a file, reads and writes it whole unless the
+transport streams it) where that can't
 reach the server, or to fake the server in tests (macOS lets only Apple's
 own tools reach the LAN without the user's leave, so the CLI goes through
 `curl`). The token can be a closure, asked on every request
@@ -307,8 +373,12 @@ Every request but `/v1/hello` and `/v1/capabilities` carries
 `Authorization: Bearer <token>`: the server's. The monitor token (OS
 Monitor's, from its connection code) is accepted for `GET /v1/status`,
 `/v1/usage`, `/v1/usage/history`, `/v1/volumes` and `/v1/cache` (without
-the cache's read token) and refused for everything else.
-Bodies are JSON; errors are `{"error": "…"}`. A client says the API level
+the cache's read token) and refused for everything else. A grant's URL
+(`?grant=…`, from `POST /v1/grants`) needs no token, on the one route it
+was made for. A storage request names its holder in an `OSS-Holder`
+header (a grant's is its own); a holder sees and changes only its own
+leases, and another's are 404.
+Bodies are JSON; errors are `{"error": "…", "code"?}`. A client says the API level
 it speaks in an `OSS-API` header (OSSClient does): one below 6 is shown no
 containers, which it couldn't read.
 
@@ -330,6 +400,19 @@ containers, which it couldn't read.
 | `GET /v1/usage/history` | the last day of the server's Mac, a sample a minute: CPU, memory and disk, OS Server's and everyone else's |
 | `GET /v1/volumes`, `DELETE /v1/volumes/<name>` | containers' volumes (size, disk taken, the lease using one); a kept one deleted (from the server's Mac) |
 | `GET /v1/cache` | the Bazel cache's port and read token, its size and how many lookups it answered (404 without one) |
+| `HEAD /v1/storage/objects/<sha256>` | 200 with its `Content-Length` if the store has it, else 404 |
+| `PUT /v1/storage/objects?name=…&ttl=…` (raw body; `OSS-SHA256`?) | the body streamed to a file, hashed as it comes, checked against `OSS-SHA256` if given, kept once; then the holder's lease (`ttl` `90s`, `30m`, `24h`, `7d` or seconds: 24h unless given, at most 7d; `name`: the lease of the holder's that had it is released). 201 `{"object": {"sha256", "size"}, "lease", "existed"}`. With `OSS-SHA256` and no body, a lease on what the store has (404 `noObject` if it hasn't). Past a cap (its length counted as new bytes unless `OSS-SHA256` names what the store has), 413 `quota`, before the body is read |
+| `GET /v1/storage/objects/<sha256>` | its bytes, streamed: for a holder with a lease on it, or a served file from where the cache serves them |
+| `GET /v1/storage/leases` | the holder's leases (`id`, `holder`, `sha256`, `size`, `name`, `created`, `expires`) |
+| `POST /v1/storage/leases/<id>/renew?ttl=…` | its time set again: `ttl` from now |
+| `DELETE /v1/storage/leases/<id>` | released; its object goes at the next sweep unless another lease holds it |
+| `POST /v1/grants` `{"verb", "lease"?, "object"?, "ttl"?, "name"?, "objectTTL"?}` | 201 `{"verb", "url", "path", "expires"}`: a grant in the holder's name, where the plain API would let it: `storage.put` (with the `name` and `objectTTL` its lease gets), `storage.get` (an object it holds, by sha256 or name), `machine.install` (an iOS lease it holds). `ttl` 5m unless given, at most 15m. `url` is the server as the asker reached it; `path` is the same for another address. Only with the API's token |
+| `POST /v1/machines/<id>/install` `{"object"}` | an .ipa or a zipped .app the lease's holder holds (by sha256 or name) installed on its simulator: `{"object", "app", "bundleIdentifier"}` |
+
+The two object routes stream (an object can be gigabytes); a put that says
+`Expect: 100-continue` hears whether it's refused before it sends a byte.
+`Status` carries the store's use (`storage`: its objects and bytes against
+its caps, the leases, and the served files).
 
 A container lease's commands go to its Unix socket (`execSocket`), a
 stream of frames each way: a kind byte, the payload's length (four bytes,
@@ -426,6 +509,12 @@ A Bazel cache (off without `"cache"`; `{}` for these defaults):
 ```json
 {"cache": {"port": 7490, "directory": "<OS Server's folder>/State/bazel-cache", "maxGigabytes": 20,
            "minFreeGigabytes": 30, "lanReads": false, "tailnetReads": true}}
+```
+
+Storage's caps (the store is kept without them, at these):
+
+```json
+{"storage": {"maxGigabytes": 100, "maxGigabytesPerHolder": 20}}
 ```
 
 `"lends": ["macos"]` lends only those platforms, and leaves every other

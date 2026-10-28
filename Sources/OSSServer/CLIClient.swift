@@ -9,6 +9,12 @@ struct CurlTransport: OSSTransport {
     static let curl: String = FileManager.default.isExecutableFile(atPath: "/usr/bin/curl") ? "/usr/bin/curl" : "curl"
 
     func send(_ request: OSSHTTPRequest) async throws -> OSSHTTPResponse {
+        try await send(request, bodyFile: nil, responseFile: nil)
+    }
+
+    /// A file's body goes by `-T` (read as it's sent), an answer to a file
+    /// by `-o`: a stored object needn't fit in memory.
+    func send(_ request: OSSHTTPRequest, bodyFile: URL?, responseFile: URL?) async throws -> OSSHTTPResponse {
         let configFile = NSTemporaryDirectory() + "oss-curl-\(Random.hex(6))"
         let headerFile = configFile + "-headers"
         defer {
@@ -17,10 +23,17 @@ struct CurlTransport: OSSTransport {
         }
         let headers = request.headers.sorted { $0.key < $1.key }.map { "header = \"\($0.key): \($0.value)\"\n" }.joined()
         FileManager.default.createFile(atPath: configFile, contents: Data(headers.utf8), attributes: [.posixPermissions: 0o600])
-        var arguments = ["-sS", "-K", configFile, "-X", request.method, "--connect-timeout", "5",
+        var arguments = ["-sS", "-K", configFile, "--connect-timeout", "5",
                          "--max-time", String(Int(request.timeout.rounded(.up))), "-w", "\n%{http_code}", "-D", headerFile]
-        if request.body != nil { arguments += ["--data-binary", "@-"] }
-        let result = try await Shell.run(Self.curl, arguments + [request.url.absoluteString], input: request.body)
+        // HEAD by its own option: told `-X HEAD`, curl waits for a body that never comes.
+        arguments += request.method == "HEAD" ? ["-I", "-o", "/dev/null"] : ["-X", request.method]
+        if let bodyFile {
+            arguments += ["-T", bodyFile.path]
+        } else if request.body != nil {
+            arguments += ["--data-binary", "@-"]
+        }
+        if let responseFile { arguments += ["-o", responseFile.path] }
+        let result = try await Shell.run(Self.curl, arguments + [request.url.absoluteString], input: bodyFile == nil ? request.body : nil)
         guard result.ok else {
             throw OSSError(status: 0, message: "\(request.url.host ?? ""): \(result.error.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
@@ -32,12 +45,25 @@ struct CurlTransport: OSSTransport {
         let status = Int(String(decoding: result.data[result.data.index(after: newline)...], as: UTF8.self)) ?? 0
         var responseHeaders: [String: String] = [:]
         let head = FileManager.default.contents(atPath: headerFile).map { String(decoding: $0, as: UTF8.self) } ?? ""
-        for line in head.components(separatedBy: "\r\n") {
+        // A 100 Continue before the answer (a put's): the answer's fields are the last block's.
+        for line in head.components(separatedBy: "\r\n\r\n").last(where: { !$0.isEmpty })?.components(separatedBy: "\r\n") ?? [] {
             guard let colon = line.firstIndex(of: ":") else { continue }
             responseHeaders[line[..<colon].lowercased()] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         }
-        return OSSHTTPResponse(status: status, headers: responseHeaders, body: Data(result.data[..<newline]))
+        var body = Data(result.data[..<newline])
+        if let responseFile, !(200..<300).contains(status) {
+            // A refusal's message, not the object.
+            body = FileManager.default.contents(atPath: responseFile.path) ?? Data()
+            try? FileManager.default.removeItem(at: responseFile)
+        }
+        return OSSHTTPResponse(status: status, headers: responseHeaders, body: body)
     }
+}
+
+/// The CLI's transport: curl, or with OSS_TRANSPORT=urlsession the
+/// library's own (where macOS lets this binary reach the server).
+func cliTransport() -> any OSSTransport {
+    ProcessInfo.processInfo.environment["OSS_TRANSPORT"] == "urlsession" ? URLSessionTransport() : CurlTransport()
 }
 
 extension OSSClient {
@@ -48,10 +74,7 @@ extension OSSClient {
             throw OSSError(status: 0, message: "no token: put the server's in \(Paths.clientToken) (or OSS_TOKEN)")
         }
         let servers = ClientConfig.load().servers.compactMap(URL.init(string:))
-        // OSS_TRANSPORT=urlsession: the library's own transport (where macOS lets this binary reach the server).
-        let transport: any OSSTransport = ProcessInfo.processInfo.environment["OSS_TRANSPORT"] == "urlsession"
-            ? URLSessionTransport() : CurlTransport()
-        return try await connect(servers: servers, token: token, transport: transport)
+        return try await connect(servers: servers, token: token, transport: cliTransport())
     }
 
     /// A lease waited on, telling the terminal how it goes.

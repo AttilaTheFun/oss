@@ -48,8 +48,13 @@ enum Paths {
     /// The containers' kernel, images and root filesystems
     /// (Containerization's store).
     static let containers = "\(share)/Containers"
-    /// Files served by their SHA-256 (ServedFiles: `oss files add`).
+    /// Files served by their SHA-256 (ServedFiles: `oss files add`), and
+    /// the store's objects beside them (StorageStore), in `sha256/`.
     static let files = "\(share)/Files"
+    /// The holders' leases on the store's objects.
+    static let storageLeases = "\(state)/storage-leases.json"
+    /// The key grants are signed with (Grants), made the first time.
+    static let grantKey = "\(config)/grant-key"
 
     /// OS Server's own SSH key, which its bases trust (made the first time
     /// it's needed). A server set up before 0.9 keeps using the user's
@@ -164,6 +169,8 @@ struct ServerConfig: Codable, Sendable {
     var androidAVDHome: String = "\(Paths.share)/avd"
     /// A Bazel cache (Cache.swift), when set.
     var cache: CacheConfig?
+    /// The store's caps (Storage.swift); the store is kept without it too.
+    var storage: StorageConfig?
     /// AXe, for a simulator's input, where it isn't Homebrew's.
     var axePath: String?
     /// VMs run without UTM's windows (UTM.makeHeadless): their screens are
@@ -200,6 +207,7 @@ struct ServerConfig: Codable, Sendable {
         androidSDK = try c.decodeIfPresent(String.self, forKey: .androidSDK) ?? d.androidSDK
         androidAVDHome = try c.decodeIfPresent(String.self, forKey: .androidAVDHome) ?? d.androidAVDHome
         cache = try c.decodeIfPresent(CacheConfig.self, forKey: .cache)
+        storage = try c.decodeIfPresent(StorageConfig.self, forKey: .storage)
         axePath = try c.decodeIfPresent(String.self, forKey: .axePath)
         headlessVMs = try c.decodeIfPresent(Bool.self, forKey: .headlessVMs) ?? d.headlessVMs
         lends = try c.decodeIfPresent([Platform].self, forKey: .lends)

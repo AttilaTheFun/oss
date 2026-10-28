@@ -21,11 +21,27 @@ let usage = """
                                                             a container: the command run in it, streamed, signals passed on
                                                             (--socket: the lease's execSocket, no server or token needed)
       oss volume list | delete <name>                       containers' volumes, kept ones too
+    Storage (files kept on the server by their SHA-256 while a lease of yours holds them, 24h unless --ttl, at most 7d):
+      oss storage put <file> [--name=N] [--ttl=24h] [--json]
+                                                            kept once however often it's put; its bytes go only if the
+                                                            server hasn't got them; a name of yours moves to it
+      oss storage get <sha256 | name> [out]                 to out (else its name, or its sha256)
+      oss storage ls [--json]                               your leases: object, size, name, until when
+      oss storage renew <id | name> [--ttl=24h]             its time set again
+      oss storage rm <id | name>                            released; the object goes once no lease holds it
+      oss storage put <file> --url=GRANT                    with a storage.put grant, no token (its name and TTL)
+      oss storage get --url=GRANT [out]                     with a storage.get grant, no token
+    Grants (a URL that does one thing, on a lease or object of yours, for 5 minutes unless --ttl, at most 15):
+      oss grant storage.put [--name=N] [--object-ttl=24h] [--ttl=5m] [--json]
+      oss grant storage.get <sha256 | name> [--ttl=5m] [--json]
+      oss grant machine.install <id | ios> [--ttl=5m] [--json]
     What this Mac lends (on the server's Mac; the app's Settings › Components):
       oss component list                                    each component: installed, or not, or why not here
       oss component install <id> [--file=PATH]              macos, linux, windows (--file= its ISO), android, ios
       oss component remove <id>                             what it installed deleted (refused while a lease uses it)
       oss machine simctl <id> <simctl arguments…>          iOS: install ./My.app, launch <bundle id>, openurl …
+      oss machine install <id> <sha256 | name>              iOS: an .ipa or zipped .app of yours from storage installed
+      oss machine install --url=GRANT <sha256 | name>       the same with a machine.install grant, no token
       oss machine adb <id> <adb arguments…>                 Android: install ./app.apk, shell …, logcat -d …
       oss machine screenshot <id> <file.png>                any lease
       oss machine tap <id> <x> <y>                          any lease, in its screenshot's pixels
@@ -165,6 +181,24 @@ func describe(_ lease: Lease, _ client: OSSClient) -> String {
     return lines.joined(separator: "\n")
 }
 
+func printInstalled(_ result: InstallResult) {
+    print("installed \(result.app)" + (result.bundleIdentifier.map { " (\($0))" } ?? "") + " from \(result.object)")
+}
+
+/// A storage lease of the holder's, by its id or its name (the newest with it).
+func resolveStorageLease(_ argument: String?, _ client: OSSClient, holder: String) async throws -> StorageLease {
+    guard let argument else { fail("which lease? its id or its name (oss storage ls)") }
+    let mine = try await client.storageLeases(holder: holder)
+    guard let lease = mine.first(where: { $0.id == argument }) ?? mine.last(where: { $0.name == argument }) else {
+        fail("\(holder) holds no storage lease \(argument) (oss storage ls)")
+    }
+    return lease
+}
+
+func describe(_ lease: StorageLease) -> String {
+    "\(lease.id)  \(lease.sha256)  \(ByteCountFormatter.string(fromByteCount: lease.size, countStyle: .file))  \(lease.name ?? "-")  until \(iso(lease.expires))"
+}
+
 /// A secret goes to a file or a pipe, never to the screen.
 func refuseTerminal(_ message: String) {
     if isatty(STDOUT_FILENO) != 0 { fail(message) }
@@ -269,7 +303,8 @@ public enum OSSCommand {
         let arguments = Arguments(Array(commandLine.dropFirst()),
                                   valued: ["config", "minutes", "key", "holder", "identity", "from", "script", "vm", "device", "runtime",
                                            "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "volume", "env", "env-file", "workdir",
-                                           "command", "socket", "iso", "edition", "file", "netrc", "cache"])
+                                           "command", "socket", "iso", "edition", "file", "netrc", "cache", "name", "ttl", "url",
+                                           "object-ttl"])
         let command = arguments.positional.first ?? "help"
         let sub = arguments.positional.count > 1 ? arguments.positional[1] : nil
         let target = arguments.positional.count > 2 ? arguments.positional[2] : nil
@@ -290,8 +325,18 @@ public enum OSSCommand {
                     exit(try await ExecCommand.run(socket: socket, arguments))
                 }
                 #endif
+                // A grant's URL given: it is the credential (and names the lease).
+                if sub == "install", let url = arguments.options["url"] {
+                    guard let grant = URL(string: url), let object = target else { fail("oss machine install --url=GRANT <sha256 | name>") }
+                    printInstalled(try await OSSGrantClient(url: grant, transport: cliTransport()).install(object: object))
+                    exit(0)
+                }
                 let client = try await OSSClient.connect()
                 switch sub {
+                case "install":
+                    guard arguments.positional.count >= 4 else { fail("oss machine install <id> <sha256 | name>") }
+                    let lease = try await resolveLease(target, client)
+                    printInstalled(try await client.install(lease.id, object: arguments.positional[3]))
                 case "lease":
                     let lease = try await client.leaseForTerminal(leaseRequest(arguments, platformArgument: target),
                                                                  waitForCapacity: arguments.flags.contains("wait"))
@@ -506,10 +551,92 @@ public enum OSSCommand {
                 case "remove":
                     guard let target else { fail("oss files remove <sha256>") }
                     try ServedFiles.remove(target)
-                    print("removed \(target)")
+                    print("\(target) is no longer served; the server's sweep deletes it unless a storage lease holds it")
                 default:
                     print(usage)
                 }
+
+            case "storage":
+                let holder = arguments.options["holder"] ?? holderName()
+                // A grant's URL given: it is the credential, and says the holder, the object, the name and the TTL.
+                if let url = arguments.options["url"] {
+                    guard let grantURL = URL(string: url) else { fail("--url=<a grant's URL>") }
+                    let grant = OSSGrantClient(url: grantURL, transport: cliTransport())
+                    switch sub {
+                    case "put":
+                        guard let file = target, FileManager.default.fileExists(atPath: file) else { fail("oss storage put <file> --url=GRANT") }
+                        let put = try await grant.put(file: URL(fileURLWithPath: file))
+                        if arguments.flags.contains("json") { try printJSON(put) } else { print(describe(put.lease)) }
+                    case "get":
+                        let out = target ?? grantURL.lastPathComponent
+                        try await grant.get(to: URL(fileURLWithPath: out))
+                        print(out)
+                    default:
+                        fail("with --url: oss storage put <file> | get [out]")
+                    }
+                    exit(0)
+                }
+                let client = try await OSSClient.connect()
+                switch sub {
+                case "put":
+                    var isDirectory: ObjCBool = false
+                    guard let file = target, FileManager.default.fileExists(atPath: file, isDirectory: &isDirectory), !isDirectory.boolValue else {
+                        fail("oss storage put <file> [--name=N] [--ttl=24h] (a directory: zip it first)")
+                    }
+                    let put = try await client.putObject(file: URL(fileURLWithPath: file), holder: holder, name: arguments.options["name"],
+                                                         ttl: arguments.options["ttl"])
+                    if arguments.flags.contains("json") {
+                        try printJSON(put)
+                    } else {
+                        print(describe(put.lease) + (put.existed ? "  (the server had it)" : ""))
+                    }
+                case "get":
+                    guard let target else { fail("oss storage get <sha256 | name> [out]") }
+                    let mine = try await client.storageLeases(holder: holder)
+                    let lease = mine.first { $0.sha256 == target.lowercased() } ?? mine.last { $0.name == target }
+                    let hash = lease?.sha256 ?? target.lowercased()
+                    let out = arguments.positional.count > 3 ? arguments.positional[3]
+                        : lease?.name.map { URL(fileURLWithPath: $0).lastPathComponent } ?? hash
+                    try await client.downloadObject(hash, holder: holder, to: URL(fileURLWithPath: out))
+                    print(out)
+                case "ls", "list":
+                    let mine = try await client.storageLeases(holder: holder)
+                    if arguments.flags.contains("json") {
+                        try printJSON(mine)
+                    } else {
+                        for lease in mine { print(describe(lease)) }
+                    }
+                case "renew":
+                    let lease = try await resolveStorageLease(target, client, holder: holder)
+                    print(describe(try await client.renewStorageLease(lease.id, holder: holder, ttl: arguments.options["ttl"])))
+                case "rm", "release":
+                    let lease = try await resolveStorageLease(target, client, holder: holder)
+                    try await client.releaseStorageLease(lease.id, holder: holder)
+                    print("lease \(lease.id) released: \(lease.sha256) goes once no lease holds it")
+                default:
+                    print(usage)
+                }
+
+            case "grant":
+                // oss grant <verb> [<lease | object>]: a URL that does it, in this holder's name, without the token.
+                let client = try await OSSClient.connect()
+                let holder = arguments.options["holder"] ?? holderName()
+                let ttl = arguments.options["ttl"]
+                let request: GrantRequest
+                switch sub {
+                case "storage.put":
+                    request = GrantRequest(verb: "storage.put", ttl: ttl, name: arguments.options["name"], objectTTL: arguments.options["object-ttl"])
+                case "storage.get":
+                    guard let target else { fail("oss grant storage.get <sha256 | name>") }
+                    request = GrantRequest(verb: "storage.get", object: target, ttl: ttl)
+                case "machine.install":
+                    let lease = try await resolveLease(target, client)
+                    request = GrantRequest(verb: "machine.install", lease: lease.id, ttl: ttl)
+                default:
+                    fail("oss grant storage.put | storage.get <sha256 | name> | machine.install <id>")
+                }
+                let grant = try await client.grant(request, holder: holder)
+                if arguments.flags.contains("json") { try printJSON(grant) } else { print(grant.url.absoluteString) }
 
             case "volume":
                 let client = try await OSSClient.connect()
@@ -544,6 +671,11 @@ public enum OSSCommand {
                     }
                     for lease in status.leases {
                         print("    \(lease.id)  \(lease.platform.rawValue)/\(lease.config)  \(lease.state.rawValue)  \(lease.holder)  until \(iso(lease.expires))")
+                    }
+                    if let storage = status.storage {
+                        print("  storage: \(storage.objects) objects, \(gigabytes(storage.bytes)) of \(gigabytes(storage.maxBytes)) "
+                              + "(\(gigabytes(storage.maxBytesPerHolder)) a holder), \(storage.leases) leases; "
+                              + "\(storage.servedFiles) served files, \(gigabytes(storage.servedBytes))")
                     }
                 }
 

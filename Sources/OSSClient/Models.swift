@@ -358,12 +358,15 @@ public struct Status: Codable, Sendable {
     public var bases: [Base]
     public var capacity: [Capacity]
     public var leases: [Lease]
+    /// The store's use (API 7; nil from an older server).
+    public var storage: StorageInfo?
 
-    public init(server: String, bases: [Base], capacity: [Capacity], leases: [Lease]) {
+    public init(server: String, bases: [Base], capacity: [Capacity], leases: [Lease], storage: StorageInfo? = nil) {
         self.server = server
         self.bases = bases
         self.capacity = capacity
         self.leases = leases
+        self.storage = storage
     }
 }
 
@@ -633,7 +636,10 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
     /// What kind of refusal, for a program to tell them apart (API 6):
     /// `busy` (no room: 409), `notLocal` (a container for a client on
     /// another computer: 403), `noContainers` (this server runs none),
-    /// `volumeInUse`.
+    /// `volumeInUse`; from API 7 `notFound` (no such lease or object of
+    /// the holder's: 404), `noObject` (a put with no body for an object the
+    /// store hasn't got: 404) and `quota` (past the holder's or the store's
+    /// cap: 413).
     public var code: String?
     public var description: String { error }
     public init(error: String, code: String? = nil) {
@@ -645,6 +651,11 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
 public enum OSS {
     /// This build's version, and the API level it speaks.
     public static let version = "0.12.1"
+    /// 7 from 0.13.0: storage (`/v1/storage/…`: objects by their SHA-256,
+    /// kept while a holder's lease on them lasts), grants (`/v1/grants`: a
+    /// URL that does one thing without the token), an iOS lease's app
+    /// installed from the store (`/v1/machines/<id>/install`), and the
+    /// store's use in `Status.storage`.
     /// 6 from 0.9.0: container leases (`platform: container`, a
     /// `ContainerSpec`, commands over `Lease.execSocket`), their volumes
     /// (`/v1/volumes`), a lease's disk (`MachineUsage.diskBytes`), a day of
@@ -660,9 +671,9 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 6
+    public static let apiLevel = 7
     /// What every server does; one that keeps a Bazel cache adds `cache`.
-    public static let features = ["machines", "screenshots", "input", "usage"]
+    public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
 }
 
 extension JSONEncoder {

@@ -72,6 +72,22 @@ For scripts and CI: `oss machine lease linux --exports` prints `export
 OSS_ID=… OSS_SSH=… OSS_HOST=… …`; `oss machine run linux -- ./script.sh`
 gives a script those in its environment.
 
+## Storage
+
+```sh
+oss storage put build/My.ipa --name=My.ipa [--ttl=24h]   # kept while your lease lasts (at most 7d)
+oss machine install <ios lease> My.ipa                    # an .ipa or zipped .app of yours, on its simulator
+oss storage ls | get <sha256 | name> [out] | renew <id | name> | rm <id | name>
+```
+
+Files you put are yours (your holder: `OSS_HOLDER`, else user@host) and
+deleted once no lease holds them: `rm` what you're done with. A holder may
+keep 20 GB. In a container without the token, your session hands you a
+grant's URL instead (`oss grant <verb> …` on its side): `oss storage put
+<file> --url=<grant>`, `oss storage get --url=<grant>`, `oss machine
+install --url=<grant> <object>`. A grant is a secret for a few minutes:
+don't paste it anywhere else.
+
 ## The Bazel cache
 
 A server may keep a Bazel cache (`oss cache status` says). A VM lease
@@ -95,7 +111,8 @@ SSH, VNC and adb too. With no `client.json` it tries `127.0.0.1` only.
 - The server is OS Server, the app (since 0.7: in the app's own process,
   `App/`). Its files are `~/Library/Application Support/OS Server`
   (server.json, the token, `State/leases.json`, the macOS bases in
-  `Machines/`); its log `~/Library/Logs/OS Server.log`. Every lease's
+  `Machines/`, served and stored files in `Files/sha256/` with storage's
+  leases in `State/storage-leases.json`); its log `~/Library/Logs/OS Server.log`. Every lease's
   machine runs outside its process (since 0.10): macOS VMs and containers
   in `oss-machine` helpers (launchd jobs `oss.machine.<name>`,
   `oss.container.<name>`), Linux and Windows VMs in QEMU processes (or
