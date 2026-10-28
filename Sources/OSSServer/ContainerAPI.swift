@@ -54,25 +54,11 @@ enum ContainerAPI {
         }
     }
 
-    /// The container lease a request may use: a grant's holder's (the grant
-    /// names the lease), or with the token the holder `OSS-Holder` names.
-    /// Another holder's is 404, as storage's are.
+    /// The container lease a request may use: its holder's
+    /// (`Server.holdersLease`), ready.
     static func lease(_ id: String, access: Access, request: HTTPRequest, api: API) async throws -> Lease {
-        let holder: String
-        switch access {
-        case .grant(let claims):
-            holder = claims.holder
-        case .token:
-            guard let named = request.header(OSSHeaders.holder), !named.isEmpty else {
-                throw APIError(error: "a container's exec and files are its holder's: name the holder in \(OSSHeaders.holder)")
-            }
-            holder = named
-        default:
-            throw APIError(error: "OS Monitor's token only reads", code: "forbidden")
-        }
-        guard let lease = await api.machines.lease(id), lease.holder == holder, lease.state == .creating || lease.state == .ready else {
-            throw APIError(error: "no lease \(id) of \(holder)'s", code: "notFound")
-        }
+        let lease = try await Server.holdersLease(id, access: access, request: request, api: api,
+                                                  what: "a container's exec and files are")
         guard lease.platform == .container else {
             throw APIError(error: "exec and files through the server are a container lease's: a VM takes SSH (oss machine ssh, upload, "
                                 + "download), a simulator simctl, an emulator adb")
@@ -263,6 +249,31 @@ enum ContainerAPI {
         guard let reading else { return }
         try? await reading.write(.closeStdin)
         _ = await reading.finish()
+    }
+}
+
+extension Server {
+    /// The lease a request may use as its holder: a grant's holder's (the
+    /// grant names the lease), or with the token the holder `OSS-Holder`
+    /// names (`what`: what is the holder's, for the refusal without one).
+    /// Another holder's is 404, as storage's are.
+    static func holdersLease(_ id: String, access: Access, request: HTTPRequest, api: API, what: String) async throws -> Lease {
+        let holder: String
+        switch access {
+        case .grant(let claims):
+            holder = claims.holder
+        case .token:
+            guard let named = request.header(OSSHeaders.holder), !named.isEmpty else {
+                throw APIError(error: "\(what) its holder's: name the holder in \(OSSHeaders.holder)")
+            }
+            holder = named
+        default:
+            throw APIError(error: "OS Monitor's token only reads", code: "forbidden")
+        }
+        guard let lease = await api.machines.lease(id), lease.holder == holder, lease.state == .creating || lease.state == .ready else {
+            throw APIError(error: "no lease \(id) of \(holder)'s", code: "notFound")
+        }
+        return lease
     }
 }
 

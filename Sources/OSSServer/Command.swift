@@ -42,7 +42,9 @@ let usage = """
     Grants (a URL that does one thing, on a lease or object of yours, for 5 minutes unless --ttl, at most 15):
       oss grant storage.put [--name=N] [--object-ttl=24h] [--ttl=5m] [--json]
       oss grant storage.get <sha256 | name> [--ttl=5m] [--json]
-      oss grant machine.install <id | ios> [--ttl=5m] [--json]
+      oss grant machine.install | machine.xctest <id | ios> [--ttl=5m] [--json]
+                                                            an app installed on its simulator; tests run there, and their
+                                                            results read
       oss grant machine.exec | machine.upload | machine.download <id | container> [--ttl=5m] [--json]
                                                             a container's commands, files put in it, files read from it
     What this Mac lends (on the server's Mac; the app's Settings › Components):
@@ -52,6 +54,14 @@ let usage = """
       oss machine simctl <id> <simctl arguments…>          iOS: install ./My.app, launch <bundle id>, openurl …
       oss machine install <id> <sha256 | name>              iOS: an .ipa or zipped .app of yours from storage installed
       oss machine install --url=GRANT <sha256 | name>       the same with a machine.install grant, no token
+      oss machine xctest <id> --tests=<object | file> [--host=<object | file>] [--ui] [--only-testing=Class[/method]]…
+                         [--result=out.xcresult.zip] [--junit=out.xml]
+                                                            iOS: rules_apple's test bundle (<name>.zip) and its host (an
+                                                            .ipa) run on the simulator by xcodebuild, as bazel test runs
+                                                            them on a Mac (files put in storage first); its output
+                                                            streamed, its exit status xcodebuild's; the result bundle and
+                                                            JUnit fetched where asked
+      oss machine xctest --url=GRANT --tests=<object> …     the same with a machine.xctest grant, no token (objects only)
       oss machine adb <id> <adb arguments…>                 Android: install ./app.apk, shell …, logcat -d …
       oss machine screenshot <id> <file.png>                any lease
       oss machine tap <id> <x> <y>                          any lease, in its screenshot's pixels
@@ -184,6 +194,7 @@ func describe(_ lease: Lease, _ client: OSSClient) -> String {
     case .ios:
         lines.append("  simulator \(lease.udid ?? "") on \(client.host)")
         lines.append("  oss machine simctl \(lease.id) install ./My.app | launch <bundle id> | openurl <url> | ...")
+        lines.append("  oss machine xctest \(lease.id) --tests=<Tests.zip> [--host=<App.ipa>] [--ui]")
         if client.host == "127.0.0.1" { lines.append("  (on this Mac: xcrun simctl … \(lease.udid ?? ""))") }
     case .android:
         lines.append("  adb connect \(env["OSS_ADB"]!)   (then adb -s \(env["OSS_ADB"]!) …)")
@@ -350,6 +361,71 @@ func containerTransfer(_ sub: String, _ from: String, _ to: String, mode: String
     }
 }
 
+/// `oss machine xctest`: the test bundle and its host, as objects in
+/// storage (a file here put there first by `put`, a folder zipped first on
+/// a Mac; with a grant there's no `put`, and they must be objects already),
+/// run by `run`, xcodebuild's output this process's; then the run's JUnit
+/// and result bundle where asked. Its exit status is xcodebuild's (1 if a
+/// passing run's results couldn't be fetched).
+func xctestCommand(_ arguments: Arguments, put: ((URL) async throws -> String)?,
+                   run: (XCTestRequest, @escaping @Sendable (ExecFrame) -> Void) async throws -> XCTestRun,
+                   junit: (String) async throws -> Data, result: (String, URL) async throws -> Void) async throws -> Int32 {
+    guard let tests = arguments.options["tests"] else {
+        fail("oss machine xctest <id> --tests=<object | file> [--host=<object | file>] [--ui] [--only-testing=Class[/method]]… "
+             + "[--result=out.xcresult.zip] [--junit=out.xml]")
+    }
+    guard !arguments.flags.contains("ui") || arguments.options["host"] != nil else { fail("a UI test needs its host: --host=<App.ipa>") }
+    /// What the server takes: an object as named, or a file's (or folder's) SHA-256 once it's put.
+    func object(_ given: String) async throws -> String {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: given, isDirectory: &isDirectory) else { return given }
+        guard let put else {
+            fail("with --url, --tests and --host name objects in storage: put \(given) first (oss storage put \(given) --url=<a storage.put grant>)")
+        }
+        guard isDirectory.boolValue else { return try await put(URL(fileURLWithPath: given)) }
+        #if os(macOS)
+        // A .xctest or .app folder: zipped with its folder, as rules_apple's zips hold it.
+        let folder = NSTemporaryDirectory() + "oss-xctest-\(Random.hex(4))"
+        try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: folder) }
+        let zip = "\(folder)/\(URL(fileURLWithPath: given).lastPathComponent).zip"
+        let ditto = try await Shell.run("/usr/bin/ditto", ["-c", "-k", "--keepParent", given, zip], timeout: 900)
+        guard ditto.ok else { throw OSSError(status: 0, message: "zipping \(given): \(ditto.error)") }
+        return try await put(URL(fileURLWithPath: zip))
+        #else
+        fail("\(given) is a folder: zip it with its folder first (rules_apple's <name>.zip holds <name>.xctest)")
+        #endif
+    }
+    var host: String?
+    if let given = arguments.options["host"] { host = try await object(given) }
+    let request = XCTestRequest(tests: try await object(tests), host: host, ui: arguments.flags.contains("ui"),
+                                onlyTesting: arguments.all["only-testing"])
+    let outcome = try await run(request) { frame in
+        switch frame {
+        case .stdout(let data): FileHandle.standardOutput.write(data)
+        case .stderr(let data): FileHandle.standardError.write(data)
+        default: break
+        }
+    }
+    FileHandle.standardError.write(Data("oss: xctest run \(outcome.id) exited \(outcome.status)\n".utf8))
+    var status = outcome.status
+    func fetched(_ what: String, _ fetch: () async throws -> Void) async {
+        do {
+            try await fetch()
+        } catch {
+            FileHandle.standardError.write(Data("oss: run \(outcome.id)'s \(what): \(error)\n".utf8))
+            if status == 0 { status = 1 }
+        }
+    }
+    if let path = arguments.options["junit"] {
+        await fetched("JUnit") { try await junit(outcome.id).write(to: URL(fileURLWithPath: path)) }
+    }
+    if let path = arguments.options["result"] {
+        await fetched("result bundle") { try await result(outcome.id, URL(fileURLWithPath: path)) }
+    }
+    return status
+}
+
 /// A lease named by its id, or by its platform when the caller holds just one of it.
 func resolveLease(_ argument: String?, _ client: OSSClient) async throws -> Lease {
     guard let argument else { fail("which lease? its id, or a platform you hold one lease of") }
@@ -398,7 +474,8 @@ public enum OSSCommand {
                                   valued: ["config", "minutes", "key", "holder", "identity", "from", "script", "vm", "device", "runtime",
                                            "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "volume", "env", "env-file", "workdir",
                                            "command", "socket", "iso", "edition", "file", "netrc", "cache", "name", "ttl", "url",
-                                           "object-ttl", "kind", "label", "link", "port", "mode"])
+                                           "object-ttl", "kind", "label", "link", "port", "mode", "tests", "host", "only-testing",
+                                           "result", "junit"])
         let command = arguments.positional.first ?? "help"
         let sub = arguments.positional.count > 1 ? arguments.positional[1] : nil
         let target = arguments.positional.count > 2 ? arguments.positional[2] : nil
@@ -425,6 +502,13 @@ public enum OSSCommand {
                     printInstalled(try await OSSGrantClient(url: grant, transport: cliTransport()).install(object: object))
                     exit(0)
                 }
+                if sub == "xctest", let url = arguments.options["url"] {
+                    guard let grant = URL(string: url) else { fail("oss machine xctest --url=GRANT --tests=<object> …") }
+                    let client = OSSGrantClient(url: grant, transport: cliTransport())
+                    exit(try await xctestCommand(arguments, put: nil, run: { try await client.xctest($0, output: $1) },
+                                                 junit: { try await client.xctestJUnit(run: $0) },
+                                                 result: { try await client.downloadXCTestResult(run: $0, to: $1) }))
+                }
                 if sub == "exec", let url = arguments.options["url"] {
                     guard let grant = URL(string: url) else { fail("oss machine exec --url=GRANT -- command…") }
                     let client = OSSGrantClient(url: grant, transport: cliTransport())
@@ -448,6 +532,18 @@ public enum OSSCommand {
                     guard arguments.positional.count >= 4 else { fail("oss machine install <id> <sha256 | name>") }
                     let lease = try await resolveLease(target, client)
                     printInstalled(try await client.install(lease.id, object: arguments.positional[3]))
+                case "xctest":
+                    let lease = try await resolveLease(target, client)
+                    guard lease.platform == .ios else { fail("xctest is for an iOS lease (oss machine lease ios)") }
+                    // In the holder's name: its files put in its storage, its lease's tests run.
+                    let holder = arguments.options["holder"] ?? holderName()
+                    exit(try await xctestCommand(arguments, put: { file in
+                        let put = try await client.putObject(file: file, holder: holder, name: file.lastPathComponent)
+                        FileHandle.standardError.write(Data("oss: \(file.lastPathComponent) \(put.existed ? "was in storage already" : "put in storage")\n".utf8))
+                        return put.object.sha256
+                    }, run: { try await client.xctest(lease.id, holder: holder, $0, output: $1) },
+                       junit: { try await client.xctestJUnit(lease.id, holder: holder, run: $0) },
+                       result: { try await client.downloadXCTestResult(lease.id, holder: holder, run: $0, to: $1) }))
                 case "lease":
                     let lease = try await client.leaseForTerminal(leaseRequest(arguments, platformArgument: target),
                                                                  waitForCapacity: arguments.flags.contains("wait"))
@@ -752,11 +848,11 @@ public enum OSSCommand {
                 case "storage.get":
                     guard let target else { fail("oss grant storage.get <sha256 | name>") }
                     request = GrantRequest(verb: "storage.get", object: target, ttl: ttl)
-                case "machine.install", "machine.exec", "machine.upload", "machine.download":
+                case "machine.install", "machine.xctest", "machine.exec", "machine.upload", "machine.download":
                     let lease = try await resolveLease(target, client)
                     request = GrantRequest(verb: sub!, lease: lease.id, ttl: ttl)
                 default:
-                    fail("oss grant storage.put | storage.get <sha256 | name> | machine.install <id> | "
+                    fail("oss grant storage.put | storage.get <sha256 | name> | machine.install | machine.xctest <id> | "
                          + "machine.exec | machine.upload | machine.download <id>")
                 }
                 let grant = try await client.grant(request, holder: holder)

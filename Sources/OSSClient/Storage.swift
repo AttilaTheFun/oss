@@ -93,11 +93,13 @@ public struct StorageInfo: Codable, Sendable {
 public struct GrantRequest: Codable, Sendable {
     /// What it allows: `storage.put`, `storage.get` or `machine.install`;
     /// from API 9 `machine.exec`, `machine.upload` and `machine.download`
-    /// (a container lease's commands, and its files either way).
+    /// (a container lease's commands, and its files either way); from API
+    /// 10 `machine.xctest` (tests run on an iOS lease's simulator, and
+    /// their results read).
     public var verb: String
-    /// `machine.install`: the iOS lease it installs on (the holder's own);
-    /// `machine.exec`, `machine.upload`, `machine.download`: the container
-    /// lease (the holder's own).
+    /// `machine.install`, `machine.xctest`: the iOS lease (the holder's
+    /// own); `machine.exec`, `machine.upload`, `machine.download`: the
+    /// container lease (the holder's own).
     public var lease: String?
     /// `storage.get`: the object, by its SHA-256 or a name of the holder's.
     public var object: String?
@@ -161,6 +163,9 @@ public enum OSSHeaders {
     /// A put's SHA-256 as the client counted it: checked, and with an empty
     /// body, enough when the store has the object already.
     public static let sha256 = "OSS-SHA256"
+    /// An xctest's run (API 10), in its `101 Switching Protocols`: the id
+    /// its JUnit and result bundle are read by.
+    public static let xctestRun = "OSS-XCTest-Run"
 }
 
 extension OSSClient {
@@ -284,14 +289,20 @@ public struct OSSGrantClient: Sendable {
         self.transport = transport
     }
 
-    /// A request to the grant's URL, with `query` beside its own (a file's path).
-    func send(_ method: String, query: [String: String] = [:], body: Data? = nil, headers: [String: String] = [:], bodyFile: URL? = nil,
-              responseFile: URL? = nil, timeout: TimeInterval = OSSClient.transferTimeout) async throws -> OSSHTTPResponse {
+    /// A request to the grant's URL, with `query` beside its own (a file's
+    /// path), or to a path below its own (`below`: an xctest run's
+    /// `<run>/junit`), its grant kept.
+    func send(_ method: String, below: String? = nil, query: [String: String] = [:], body: Data? = nil, headers: [String: String] = [:],
+              bodyFile: URL? = nil, responseFile: URL? = nil, timeout: TimeInterval = OSSClient.transferTimeout) async throws -> OSSHTTPResponse {
         var headers = headers.merging(["OSS-API": "\(OSS.apiLevel)"]) { $1 }
         if body != nil || bodyFile != nil { headers["Content-Type"] = method == "POST" ? "application/json" : "application/octet-stream" }
         var target = url
-        if !query.isEmpty, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
-            components.queryItems = (components.queryItems ?? []) + query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+        if !query.isEmpty || below != nil, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            if let below { components.percentEncodedPath += "/" + OSSClient.encode(below) }
+            if !query.isEmpty {
+                components.queryItems = (components.queryItems ?? [])
+                    + query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+            }
             target = components.url ?? url
         }
         let request = OSSHTTPRequest(method: method, url: target, headers: headers, body: body, timeout: timeout)

@@ -119,18 +119,20 @@ extension Server {
 
     /// The requests whose bodies or answers are streamed, not held: an
     /// object's put and its get; a container's exec (its connection
-    /// upgraded) and its files' puts and gets.
+    /// upgraded) and its files' puts and gets; an iOS lease's xctest (its
+    /// connection upgraded) and its results.
     static func streams(_ method: String, _ path: String) -> Bool {
         let parts = (path.split(separator: "?").first ?? "").split(separator: "/").map(String.init)
         return (method == "PUT" && parts == ["v1", "storage", "objects"])
             || (method == "GET" && parts.count == 4 && Array(parts[0...2]) == ["v1", "storage", "objects"])
-            || ContainerAPI.streams(method, parts)
+            || ContainerAPI.streams(method, parts) || XCTestAPI.streams(method, parts)
     }
 
     /// A streamed request, on its connection.
     static func stream(_ request: HTTPRequest, _ peer: CachePeer, api: API) async {
         let parts = (request.path.split(separator: "?").first ?? "").split(separator: "/").map(String.init)
         if ContainerAPI.streams(request.method, parts) { return await ContainerAPI.serve(request, peer, api: api) }
+        if XCTestAPI.streams(request.method, parts) { return await XCTestAPI.serve(request, peer, api: api) }
         switch await streamed(request, body: PeerBody(peer: peer, request: request), api: api) {
         case .response(let response):
             _ = await peer.send(response)

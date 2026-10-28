@@ -28,11 +28,14 @@ struct GrantKey: Sendable {
     /// Grants last this long unless asked otherwise, and at most so long.
     static let defaultTTL: TimeInterval = 5 * 60
     static let maxTTL: TimeInterval = 15 * 60
-    /// The verbs there are grants for; `machine.xctest` is to come. A
-    /// container lease's files go each way by a verb of their own, as the
-    /// store's do: a grant that puts files in reads none out.
-    static let verbs = ["storage.put", "storage.get", "machine.install", "machine.exec", "machine.upload", "machine.download"]
-    static let later = ["machine.xctest"]
+    /// The verbs there are grants for. A container lease's files go each
+    /// way by a verb of their own, as the store's do: a grant that puts
+    /// files in reads none out. `machine.xctest` runs an iOS lease's tests
+    /// and reads their results (a run's results are no use without it).
+    static let verbs = ["storage.put", "storage.get", "machine.install", "machine.exec", "machine.upload", "machine.download",
+                        "machine.xctest"]
+    /// The verbs whose lease is an iOS lease's.
+    static let iosVerbs = ["machine.install", "machine.xctest"]
     /// The verbs whose lease is a container's.
     static let containerVerbs = ["machine.exec", "machine.upload", "machine.download"]
 
@@ -78,14 +81,19 @@ struct GrantKey: Sendable {
         if method == "POST", parts.count == 4, parts[1] == "machines", parts[3] == "exec" { return ("machine.exec", "machines/\(parts[2])") }
         if method == "PUT", parts.count == 4, parts[1] == "machines", parts[3] == "files" { return ("machine.upload", "machines/\(parts[2])") }
         if method == "GET", parts.count == 4, parts[1] == "machines", parts[3] == "files" { return ("machine.download", "machines/\(parts[2])") }
+        if method == "POST", parts.count == 4, parts[1] == "machines", parts[3] == "xctest" { return ("machine.xctest", "machines/\(parts[2])") }
+        if method == "GET", parts.count == 6, parts[1] == "machines", parts[3] == "xctest", ["junit", "result"].contains(parts[5]) {
+            return ("machine.xctest", "machines/\(parts[2])")
+        }
         return nil
     }
 
     /// A grant in `holder`'s name, where the plain API would let the holder
     /// do the same: a put; a get of an object it has a lease on (or a
-    /// served file, where `readsServedFiles`); an install on an iOS lease it
-    /// holds; a command in, or files to or from, a container lease it holds
-    /// (`lease`: the one the request names, as the server has it).
+    /// served file, where `readsServedFiles`); an install on, or tests run
+    /// on, an iOS lease it holds; a command in, or files to or from, a
+    /// container lease it holds (`lease`: the one the request names, as the
+    /// server has it).
     /// `base`: the server's address as the asker reached it.
     func issue(_ request: GrantRequest, holder: String, lease: Lease?, storage: StorageStore, readsServedFiles: Bool,
                base: String, now: Date = Date()) async throws -> Grant {
@@ -110,14 +118,16 @@ struct GrantKey: Sendable {
             }
             claims.resource = "storage/objects/\(hash)"
             path = "/v1/storage/objects/\(hash)"
-        case "machine.install":
-            guard let id = request.lease, !id.isEmpty else { throw APIError(error: "a machine.install grant names its lease") }
+        case let verb where Self.iosVerbs.contains(verb):
+            guard let id = request.lease, !id.isEmpty else { throw APIError(error: "a \(verb) grant names its lease") }
             guard let lease, lease.id == id, lease.holder == holder, lease.state == .creating || lease.state == .ready else {
                 throw APIError(error: "no lease \(id) of \(holder)'s", code: "notFound")
             }
-            guard lease.platform == .ios else { throw APIError(error: "install is for an iOS lease (a simulator)") }
+            guard lease.platform == .ios else {
+                throw APIError(error: "\(verb == "machine.install" ? "install" : "xctest") is for an iOS lease (a simulator)")
+            }
             claims.resource = "machines/\(id)"
-            path = "/v1/machines/\(id)/install"
+            path = "/v1/machines/\(id)/" + (verb == "machine.install" ? "install" : "xctest")
         case let verb where Self.containerVerbs.contains(verb):
             guard let id = request.lease, !id.isEmpty else { throw APIError(error: "a \(verb) grant names its lease") }
             guard let lease, lease.id == id, lease.holder == holder, lease.state == .creating || lease.state == .ready else {
@@ -128,8 +138,6 @@ struct GrantKey: Sendable {
             }
             claims.resource = "machines/\(id)"
             path = "/v1/machines/\(id)/" + (verb == "machine.exec" ? "exec" : "files")
-        case let verb where Self.later.contains(verb):
-            throw APIError(error: "no \(verb) grants yet (there are \(Self.verbs.joined(separator: ", ")))")
         default:
             throw APIError(error: "no verb \(request.verb) (there are \(Self.verbs.joined(separator: ", ")))")
         }

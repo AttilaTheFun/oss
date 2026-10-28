@@ -2,6 +2,45 @@
 
 ## 0.13.0 (unreleased)
 
+- **iOS tests on a lease's simulator** (API 10): `oss machine xctest <ios
+  lease> --tests=<object | file> [--host=<object | file>] [--ui]
+  [--only-testing=X]… [--result=out.xcresult.zip] [--junit=out.xml]` runs
+  what `bazel build` of rules_apple's `ios_unit_test` or `ios_ui_test`
+  leaves, on a Mac or in a Linux container (rules_applecross): the test
+  bundle's `<name>.zip` (or a `.xctest` folder zipped) and its host's
+  `.ipa` (or a zipped `.app`), files put in storage first, objects by
+  sha256 or name. The server does what rules_apple's
+  `ios_xctestrun_runner` does on a Mac: the bundles unpacked into a
+  folder of the run's own in the lease's (`__TESTROOT__`) and made
+  writable; for a UI test, `<bundle>-Runner.app` made from Xcode's
+  XCTRunner.app (the bundle in its PlugIns, XCTest's frameworks in its
+  Frameworks, its Info.plist naming it, unsigned for the simulator); the
+  .xctestrun from rules_apple's template as its runner fills it in; then
+  `xcodebuild test-without-building` against the lease's simulator
+  (without test diagnostics: xcodebuild's `simctl diagnose` of a failing
+  or interrupted run took its whole ten minutes in a VM, and outlived it),
+  the result bundle and derived data in the run's folder, and JUnit made
+  from `xcresulttool`'s report of the result bundle. xcodebuild's output
+  is streamed and its status is `oss`'s (1 if it passed with no test run,
+  as rules_apple's runner fails it). `--only-testing` filters Swift
+  Testing's tests too (`Suite/function()`).
+- `POST /v1/machines/<id>/xctest`, upgraded to `oss-exec` as an exec is:
+  its body an `XCTestRequest` (`tests`, `host`, `ui`, `onlyTesting`), made
+  ready before the answer (so a bundle that isn't one is a 400, an object
+  the holder hasn't got a 404), then `101` with the run's id
+  (`OSS-XCTest-Run`) and frames: xcodebuild's output (`stdout`), the
+  server's notes (`stderr`), xcodebuild's status (`exit`). One run at a
+  time a lease (409 `busy`; one asked for while the last is being stopped,
+  its client gone, waits for it); the client's connection closing ends its
+  run, xcodebuild stopped (SIGINT, then SIGKILL ten seconds on for it and
+  everything it started). `GET …/xctest/<run>/junit` and `…/result` (the
+  result bundle zipped,
+  streamed) read a run's results, kept as long as the lease. With the
+  token in the lease's holder's name, or a `machine.xctest` grant (`oss
+  grant machine.xctest <lease>`; it was reserved), which runs the lease's
+  tests and reads their results, for `--url=<grant>`. OSSClient's
+  `xctest`, `xctestJUnit` and `downloadXCTestResult`, and
+  `OSSGrantClient`'s.
 - **A container from anywhere** (API 9): a container is lent to a client
   on another Mac or in a container itself (an agent running a server under
   test in a container of its own, so a crash takes out the server, not the

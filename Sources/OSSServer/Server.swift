@@ -66,13 +66,17 @@ actor MachineManager {
     /// Where the leases are kept across restarts (`State/leases.json`; a
     /// test's own elsewhere).
     private let leasesPath: String
+    /// iOS leases' test runs (`oss machine xctest`): one at a time a lease,
+    /// their files in the lease's folder until it ends.
+    let xctests: XCTestRuns
 
     init(config: ServerConfig, bazelCache: (port: Int, readToken: String)? = nil, containers: ContainerBackend? = nil,
-         leasesPath: String = Paths.leases) {
+         leasesPath: String = Paths.leases, xctests: XCTestRuns = XCTestRuns()) {
         self.config = config
         self.bazelCache = bazelCache
         self.containers = containers
         self.leasesPath = leasesPath
+        self.xctests = xctests
     }
 
     // MARK: Status
@@ -152,6 +156,14 @@ actor MachineManager {
     func all() -> [Lease] { leases.values.sorted { $0.created < $1.created } }
     func held(_ platform: Platform) -> Int { leases.values.filter { $0.platform == platform && $0.state != .failed }.count }
     func lease(_ id: String) -> Lease? { leases[id] }
+
+    /// A lease taken as it is, its machine already there: a test's, whose
+    /// simulator is a fake (simulators have no backend to fake, as
+    /// containers have).
+    func adopt(_ lease: Lease) {
+        leases[lease.id] = lease
+        save()
+    }
 
     // MARK: Leasing
 
@@ -653,6 +665,8 @@ actor MachineManager {
                 log("lease \(id): deleting \(lease.name) failed: \(error)")
             }
         case .ios:
+            // Its tests stopped first (their simulator is going), their files deleted.
+            await xctests.forget(id)
             if let udid = lease.udid { await Simulators.release(udid: udid) }
         case .android:
             await Emulators.release(name: lease.name, port: lease.consolePort, pid: lease.emulatorPID)
