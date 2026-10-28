@@ -28,3 +28,13 @@
 The two proofs (`tools/proof.py`, `tools/monitor_proof.py`) and the QEMU
 bundler (`tools/bundle_qemu.py`) are Python; each can be an executable
 target of the package. (#30 meant to add this note.)
+
+## A macOS lease's window server
+
+A Mac app's snapshot test in a macOS lease draws a sidebar's list blank
+(an `NSSplitView` sidebar, captured with `cacheDisplay`), where a Mac's own
+login session draws its rows: over SSH and from a launch agent in the
+user's session alike, so a VM's display, not the session, seems to be why.
+Until a lease draws them, a repository records its Mac pictures on CI's
+Mac. Find what the window server lacks (a display attached, its scale, the
+compositor) and give macOS leases it.
