@@ -60,11 +60,12 @@ extension Server {
     static func response(for error: APIError) -> HTTPResponse {
         let status: Int
         switch error.code {
-        case "busy": status = 409
-        case "notLocal": status = 403
-        case "notFound", "noObject": status = 404
+        case "busy", "notReady": status = 409
+        case "notLocal", "forbidden": status = 403
+        case "notFound", "noObject", "noFile": status = 404
         case "quota": status = 413
         case "length": status = 411
+        case "upgrade": status = 426
         default: status = error.error.hasPrefix("busy") ? 409 : 400
         }
         return HTTPResponse(status: status, body: (try? JSONEncoder.oss.encode(error)) ?? Data())
@@ -117,15 +118,19 @@ extension Server {
     // MARK: Streamed
 
     /// The requests whose bodies or answers are streamed, not held: an
-    /// object's put and its get.
+    /// object's put and its get; a container's exec (its connection
+    /// upgraded) and its files' puts and gets.
     static func streams(_ method: String, _ path: String) -> Bool {
         let parts = (path.split(separator: "?").first ?? "").split(separator: "/").map(String.init)
         return (method == "PUT" && parts == ["v1", "storage", "objects"])
             || (method == "GET" && parts.count == 4 && Array(parts[0...2]) == ["v1", "storage", "objects"])
+            || ContainerAPI.streams(method, parts)
     }
 
     /// A streamed request, on its connection.
     static func stream(_ request: HTTPRequest, _ peer: CachePeer, api: API) async {
+        let parts = (request.path.split(separator: "?").first ?? "").split(separator: "/").map(String.init)
+        if ContainerAPI.streams(request.method, parts) { return await ContainerAPI.serve(request, peer, api: api) }
         switch await streamed(request, body: PeerBody(peer: peer, request: request), api: api) {
         case .response(let response):
             _ = await peer.send(response)

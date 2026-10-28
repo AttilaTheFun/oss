@@ -40,7 +40,7 @@ oss machine tap <id> <x> <y>                     # any lease, in the screenshot'
 oss machine swipe <id> <x> <y> <to x> <to y> [--ms=300]
 oss machine type <id> <text…>
 oss machine key <id> return                      # names; on a VM cmd+a…
-oss machine upload|download <id> <from> <to>     # VMs (scp)
+oss machine upload|download <id> <from> <to>     # VMs (scp); containers (a file, through the server)
 oss machine vnc <id>                             # VMs: vnc://host:port and its password
 oss machine renew <id> --minutes=60
 oss machine release <id>
@@ -70,13 +70,19 @@ PowerShell 5.1, already elevated. A desktop session is logged in on all
 three. On macOS, run GUI work in it with `sudo launchctl asuser $(id -u
 runner) …`.
 
-Containers (on the server's own Mac only, OS Server's app on macOS 26):
-`oss machine lease container --image=REF [--mount=…] [--volume=…]`, then
-`oss machine exec <id> -- <command>`. They need no SSH or screen: a
-command's streams, exit status and signals go straight through. Prefer one
-to a Linux VM for headless Linux work; release it when done, as any lease
-(`--minutes=0`, held until released, is for an agent's own session
-container, which its program releases).
+Containers (OS Server's app on macOS 26; from any computer, a container
+too): `oss machine lease container --image=REF [--volume=…] [--port=N]…`,
+then `oss machine exec <id> -- <command>` and `oss machine upload|download
+<id> <from> <to>` (a file; a folder as a tar through exec). They need no
+SSH or screen: a command's streams, exit status and signals go straight
+through (by the container's socket on the server's Mac, through the server
+anywhere else). `--port` forwards a container's port to one of the
+server's (`oss machine list` says which): a server under test in a
+container of its own can't take you down with it. `--mount` shares the
+server Mac's own folders, so only a client on that Mac may ask for one.
+Prefer a container to a Linux VM for headless Linux work; release it when
+done, as any lease (`--minutes=0`, held until released, is for an agent's
+own session container, which its program releases).
 
 For scripts and CI: `oss machine lease linux --exports` prints `export
 OSS_ID=… OSS_SSH=… OSS_HOST=… …`; `oss machine run linux -- ./script.sh`
@@ -95,8 +101,10 @@ deleted once no lease holds them: `rm` what you're done with. A holder may
 keep 20 GB. In a container without the token, your session hands you a
 grant's URL instead (`oss grant <verb> …` on its side): `oss storage put
 <file> --url=<grant>`, `oss storage get --url=<grant>`, `oss machine
-install --url=<grant> <object>`. A grant is a secret for a few minutes:
-don't paste it anywhere else.
+install --url=<grant> <object>`, and for a container lease of yours `oss
+machine exec --url=<grant> -- <command>`, `oss machine upload --url=<grant>
+<file> <path>`, `oss machine download --url=<grant> <path> <file>`. A
+grant is a secret for a few minutes: don't paste it anywhere else.
 
 ## The Bazel cache
 

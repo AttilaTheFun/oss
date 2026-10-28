@@ -75,15 +75,32 @@ func status(_ platform: Platform, limit: Int, leased: Int) -> Status {
     #expect(client.server.host == "192.168.1.4")
 }
 
-@Test func poolLendsContainersOnlyFromThisComputer() async throws {
+@Test func poolLendsContainersWithMountsOnlyFromThisComputer() async throws {
     let fake = FakeServers(hosts: ["192.168.1.3": ("mini", status(.container, limit: 1, leased: 0)),
                                    "127.0.0.1": (OSSPool.thisHost, status(.container, limit: 1, leased: 0))])
+    let mounted = LeaseRequest(platform: .container,
+                               container: ContainerSpec(image: "alpine", mounts: [ContainerMount(source: "/src", destination: "/src")]))
     let elsewhere = OSSPool(entries: [OSSServerEntry(name: "mini", servers: [URL(string: "http://192.168.1.3:7480")!], token: { "t" })],
                             transport: fake)
-    await #expect(throws: OSSError.self) { try await elsewhere.lease(LeaseRequest(platform: .container)) }
+    await #expect(throws: OSSError.self) { try await elsewhere.lease(mounted) }
+    // Without mounts, from another computer's server too (API 8).
+    let (anywhere, _) = try await elsewhere.lease(LeaseRequest(platform: .container, container: ContainerSpec(image: "alpine")))
+    #expect(anywhere.server.host == "192.168.1.3")
     let both = OSSPool(entries: [OSSServerEntry(name: "mini", servers: [URL(string: "http://192.168.1.3:7480")!], token: { "t" }),
                                  OSSServerEntry(name: "here", servers: [URL(string: "http://127.0.0.1:7480")!], token: { "t" })],
                        transport: fake)
-    let (client, _) = try await both.lease(LeaseRequest(platform: .container))
+    let (client, _) = try await both.lease(mounted)
     #expect(client.server.host == "127.0.0.1")
+}
+
+@Test func containerSpecsFromBeforePortsStillRead() throws {
+    // A spec an older client sent, or a lease an older server saved: no ports.
+    let spec = try JSONDecoder.oss.decode(ContainerSpec.self, from: Data(#"{"image": "alpine:3.20"}"#.utf8))
+    #expect(spec.ports.isEmpty)
+    let lease = try JSONDecoder.oss.decode(Lease.self, from: Data(#"""
+        {"id": "a1", "platform": "container", "config": "linux", "name": "oss-lease-container-a1", "holder": "h",
+         "state": "ready", "created": "2026-10-27T00:00:00Z", "expires": "2026-10-27T01:00:00Z"}
+        """#.utf8))
+    #expect(lease.ports == nil)
+    #expect(ForwardedPort(port: 8080, host: "server.local", hostPort: 47512).description == "8080 → server.local:47512")
 }

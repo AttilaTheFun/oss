@@ -58,7 +58,67 @@ struct CurlTransport: OSSTransport {
         }
         return OSSHTTPResponse(status: status, headers: responseHeaders, body: body)
     }
+
+    /// An upgraded request's connection (a container's exec): on a Mac,
+    /// to another computer through Apple's own `nc`, as curl for the rest;
+    /// to this one, and off a Mac, a socket of this process's.
+    func connect(host: String, port: Int) async throws -> any OSSByteStream {
+        #if os(macOS)
+        let loopback = host == "localhost" || host == "::1" || host.hasPrefix("127.")
+        if !loopback { return try NetcatStream(host: host, port: port) }
+        #endif
+        return try await OSSSocketStream.connect(host: host, port: port)
+    }
 }
+
+#if os(macOS)
+/// A TCP connection carried by Apple's `/usr/bin/nc`, which macOS's local
+/// network privacy lets reach the LAN: this process writes to its stdin and
+/// reads its stdout, each on a queue of its own (both block).
+final class NetcatStream: OSSByteStream, @unchecked Sendable {
+    private let process = Process()
+    private let toServer = Pipe()
+    private let fromServer = Pipe()
+    private let writes = DispatchQueue(label: "oss.nc.write")
+    private let reads = DispatchQueue(label: "oss.nc.read")
+
+    init(host: String, port: Int) throws {
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
+        process.arguments = ["-G", "10", host, String(port)]
+        process.standardInput = toServer
+        process.standardOutput = fromServer
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+    }
+
+    func write(_ data: Data) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            writes.async { [self] in
+                do {
+                    try toServer.fileHandleForWriting.write(contentsOf: data)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: OSSError(status: 0, message: "the connection (nc) closed"))
+                }
+            }
+        }
+    }
+
+    func read() async throws -> Data? {
+        await withCheckedContinuation { continuation in
+            reads.async { [self] in
+                let data = fromServer.fileHandleForReading.availableData
+                continuation.resume(returning: data.isEmpty ? nil : data)
+            }
+        }
+    }
+
+    func close() {
+        try? toServer.fileHandleForWriting.close()
+        if process.isRunning { process.terminate() }
+    }
+}
+#endif
 
 /// The CLI's transport: curl, or with OSS_TRANSPORT=urlsession the
 /// library's own (where macOS lets this binary reach the server).
@@ -142,6 +202,8 @@ extension OSSClient {
             env["OSS_ADB"] = "\(host):\(lease.adbPort ?? 0)"
             env["OSS_ADB_PORT"] = String(lease.adbPort ?? 0)
         }
+        // A container's forwarded ports: OSS_PORT_8080=<host>:<port>.
+        for port in lease.ports ?? [] { env["OSS_PORT_\(port.port)"] = "\(port.host ?? host):\(port.hostPort)" }
         return env
     }
 }

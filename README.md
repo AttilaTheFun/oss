@@ -130,17 +130,25 @@ holder's are `manual`.
 OS Server's app also lends Linux containers (API 6, macOS 26 or later):
 each a lightweight VM of its own on Apple's
 [Containerization](https://github.com/apple/containerization), from an
-image in a registry. A container is lent only to a client on the server's
-own Mac, since it shares that Mac's folders.
+image in a registry. Since API 9 a container is lent to a client anywhere:
+on the server's Mac, on another Mac, or in a container itself (an agent
+that runs a server under test in a container of its own, so a crash takes
+out the server and not the agent). Only a client on the server's own Mac
+may share that Mac's folders into it (`--mount`).
 
 ```sh
 oss machine lease container --image=ghcr.io/owner/agent:1.2 --cpus=6 --memory=16 \
     --mount=$HOME/Developer/app:$HOME/Developer/app --mount=/Applications/Xcode.app:/Applications/Xcode.app:ro \
     --volume=app-build:/var/cache/bazel:128:keep --rosetta --minutes=0
+oss machine lease container --image=postgres:17 --port=5432 --env=POSTGRES_PASSWORD=test   # from anywhere
 oss machine exec <id> -- uname -a                     # streamed; its exit status is exec's
 oss machine exec <id> --workdir=/src --env-file=agent.env -- ./agent --stdio
 oss machine exec <id> --tty -- bash                    # a terminal
 oss machine exec --socket=<execSocket> -- make         # by the lease's socket: no server or token needed
+oss machine upload <id> build/server /usr/local/bin/server   # a file, its mode kept (--mode=755 for another)
+oss machine download <id> /var/log/server.log ./server.log
+tar -c -C ./src . | oss machine exec <id> -- sh -c 'mkdir -p /src && tar -x -C /src'   # a folder
+oss machine list                                       # a container's ports: 5432 → <host>:47512
 oss volume list                                         # volumes, kept ones too
 oss volume delete app-build
 ```
@@ -150,11 +158,23 @@ oss volume delete app-build
   cloned for each container, so a second container of an image starts in
   about a second. An unpacked image no container has been made from in two
   weeks is deleted.
-- **Mounts** share a folder of the Mac's, read-only with `:ro`.
+- **Mounts** share a folder of the Mac's, read-only with `:ro`: for a
+  client on the server's Mac only. From anywhere else a lease with one is
+  refused (403, `notLocal`); put files in with `oss machine upload` (or
+  exec, as an archive), or keep them on a volume.
 - **Volumes** are disks of their own by name (ext4, allocated as they
   fill): one already there at the size asked for is used again. A volume
   is deleted with its lease unless it is kept (`:keep`); `oss volume delete`
-  removes a kept one, once no lease is using it.
+  removes a kept one, once no lease is using it, from the server's Mac.
+- **Ports** (`--port=N`, as many as 16, TCP): each of the container's is
+  forwarded from a port of the server's Mac, taken from the range VMs'
+  SSH and VNC come from (`firstPort`…`lastPort`), so a VM's and a
+  container's never meet. Reached on every interface: this Mac, the LAN,
+  the tailnet. The lease says where (`Lease.ports`: the container's port,
+  the server's host as the asker reached it, the Mac's port), `oss machine
+  lease` and `list` show `5432 → <host>:47512`, `--exports` gives
+  `OSS_PORT_5432=<host>:47512`. They're the lease's until it ends, and
+  follow the container when it starts again.
 - **Rosetta** (`--rosetta`) runs x86_64 Linux programs, where the Mac has
   Rosetta.
 - **The network** is NAT (vmnet's shared mode): the container reaches the
@@ -168,12 +188,22 @@ oss volume delete app-build
   it, running; OS Server takes it up again when it starts. After the Mac's
   restart, or if its helper ends, OS Server starts it again from its own
   disk.
-- **exec** goes to the container directly, over its Unix socket on the
-  server's Mac (`Lease.execSocket`), not through the server. stdin goes in
-  with its end; stdout and stderr come back apart; TERM, INT, HUP, QUIT,
-  USR1 and USR2 sent to `oss machine exec` go on to the command, and if
-  `oss machine exec` ends first, so does the command (TERM, then KILL ten
-  seconds on). `--env-file` keeps secrets out of the command line.
+- **exec** goes to the container directly on the server's Mac, over its
+  Unix socket (`Lease.execSocket`), not through the server. From anywhere
+  else it goes through the server (`POST /v1/machines/<id>/exec`, below),
+  which relays the same frames, and waits for a container that is starting
+  again. stdin goes in with its end; stdout and stderr come back apart;
+  TERM, INT, HUP, QUIT, USR1 and USR2 sent to `oss machine exec` go on to
+  the command, and if `oss machine exec` ends first, so does the command
+  (TERM, then KILL ten seconds on). `--env-file` keeps secrets out of the
+  command line.
+- **Files** go through the server, from this Mac too: `oss machine upload`
+  puts a file at a path in the container (relative to its working
+  directory, `~/` its home; its folders made; written beside it and moved
+  into place only once all of it has come), `download` reads one back. A
+  folder goes as an archive through exec. They go through the container's
+  `/bin/sh` (`cat`, `wc`, `mkdir`, `mv`, `chmod`), which an image without a
+  shell hasn't got.
 - What it runs: the image's own environment and working directory, the
   lease's over them, and by default a process that waits (`--command`
   names another): the work is done with exec.
@@ -218,7 +248,13 @@ oss grant storage.put --name=My.ipa --object-ttl=2h   # prints the URL
 oss storage put build/My.ipa --url=<the URL>           # in the container: no token
 oss grant storage.get My.ipa                           # then: oss storage get --url=<the URL> ./My.ipa
 oss grant machine.install <ios lease>                  # then: oss machine install --url=<the URL> My.ipa
+oss grant machine.exec <container lease>               # then: oss machine exec --url=<the URL> -- make test
+oss grant machine.upload <container lease>             # then: oss machine upload --url=<the URL> ./app /srv/app
+oss grant machine.download <container lease>           # then: oss machine download --url=<the URL> /srv/log ./log
 ```
+
+A container's files have a verb each way, as the store's do: a grant that
+puts files in a container reads none out of it.
 
 A grant's URL is the route it opens with `?grant=…`: its claims (the verb,
 the lease or object, the holder, when it expires; for a put, the name and
@@ -237,8 +273,8 @@ in later steps and `oss machine release "$OSS_ID"` in an `if: always()`
 step. Either lease is shown as the job's (kind `ci`, its repository,
 workflow, run and job, a link to the run) unless `--kind` says otherwise.
 
-A job in a container, on the runner's own Mac (containers are lent there
-only): `--inside` runs the command in the container, in the runner's
+A job in a container, on the runner's own Mac (where its folder can be
+mounted): `--inside` runs the command in the container, in the runner's
 folder (mounted at its own path), its output and exit status passed
 through, and the lease released however it ends: a signal goes on to the
 command, and SIGTERM (a runner cancelling the job: SIGINT, then SIGTERM,
@@ -352,18 +388,23 @@ Visor does for a session's container and its agents' machines:
 let lease = try await client.lease(LeaseRequest(platform: .macos, holder: "visor:\(session)", kind: .agent, label: title))
 ```
 
-A container's commands (`exec`) go straight to it, over its Unix socket:
+A container's commands (`exec`) go straight to it over its Unix socket
+where that is on this computer (the server's Mac), and through the server
+from anywhere else:
 
 ```swift
 let (input, feed) = AsyncStream<ExecFrame>.makeStream()   // .stdin(data), .closeStdin, .signal(15), .resize(...)
 let status = try await client.exec(lease, ExecRequest(arguments: ["make", "test"], workingDirectory: "/src"), input: input) { frame in
     if case .stdout(let data) = frame { FileHandle.standardOutput.write(data) }
 }
+let file = try await client.uploadFile(lease.id, holder: lease.holder, file: binary, to: "/usr/local/bin/server", mode: "755")
+try await client.downloadFile(lease.id, holder: lease.holder, path: "/var/log/server.log", to: log)
 ```
 
 `OSSClient.exec(socket:…)` does the same with the lease's `execSocket`
 alone: no server or token, for a process that runs a long command in a
 container (an agent's host) and should go on whatever the server does.
+`exec(_:holder:…)` always goes through the server.
 
 Storage takes the holder with each call; a grant's URL needs no client
 of the server's:
@@ -376,8 +417,8 @@ let installed = try await OSSGrantClient(url: grant.url).install(object: "My.ipa
 
 `OSSPool` leases from several servers as one: from the nearest (this
 computer, then the LAN, then the tailnet) that has a base for the machine
-and room for it, a container only from this computer's own. It returns the
-lease and the client of the server that lent it:
+and room for it, a container with mounts only from this computer's own. It
+returns the lease and the client of the server that lent it:
 
 ```swift
 let pool = OSSPool(entries: [OSSServerEntry(name: "MacBook Pro", servers: [here], token: { ... }),
@@ -388,10 +429,11 @@ let (client, lease) = try await pool.lease(LeaseRequest(platform: .ios), waitFor
 Requests go through URLSession; pass another `OSSTransport` (one
 method: a request in, status, headers and body out; a second, for an
 object's body or answer as a file, reads and writes it whole unless the
-transport streams it) where that can't
+transport streams it; a third, for an exec's connection, a socket of the
+process's own unless the transport makes it) where that can't
 reach the server, or to fake the server in tests (macOS lets only Apple's
 own tools reach the LAN without the user's leave, so the CLI goes through
-`curl`). The token can be a closure, asked on every request
+`curl`, and an exec to another computer through `nc`). The token can be a closure, asked on every request
 (`OSSClient(server:token: { try await secrets.ossToken() })`), and
 `timeout` bounds every request but a long poll (its wait and a minute
 more). Errors are `OSSError`, with the server's own message.
@@ -406,7 +448,8 @@ the cache's read token) and refused for everything else. A grant's URL
 (`?grant=…`, from `POST /v1/grants`) needs no token, on the one route it
 was made for. A storage request names its holder in an `OSS-Holder`
 header (a grant's is its own); a holder sees and changes only its own
-leases, and another's are 404.
+leases, and another's are 404. So does a request for a container's exec or
+files with the token (API 9): the lease must be that holder's.
 Bodies are JSON; errors are `{"error": "…", "code"?}`. A client says the API level
 it speaks in an `OSS-API` header (OSSClient does): one below 6 is shown no
 containers, which it couldn't read.
@@ -418,7 +461,7 @@ containers, which it couldn't read.
 | `GET /v1/status` | bases, capacity, leases |
 | `GET /v1/doctor` | whether the server can drive UTM, simulators and emulators |
 | `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?, "container"?, "kind"?, "label"?, "link"?}` | a lease (state `creating`; poll it until `ready`). A container's `container` is a `ContainerSpec` (`image`, `cpus`, `memoryBytes`, `diskBytes`, `mounts`, `volumes`, `rosetta`, `environment`, `workingDirectory`, `command`); `minutes: 0` holds it until released; only a client on the server's Mac gets one. `kind` is `ci`, `session`, `agent` or `manual` (one a server doesn't know reads as `manual`; without one, the holder's: a `visor:` holder's container `session`, its other machines `agent`, anyone else's `manual`); `label` is kept to one line of at most 200 characters; `link` must be http or https (400 otherwise) |
-| `GET /v1/machines`, `GET /v1/machines/<id>` | leases (each with its `kind`, `label` and `link`); one lease: ports, VNC password, UDID, adb port… |
+| `GET /v1/machines`, `GET /v1/machines/<id>` | leases (each with its `kind`, `label` and `link`); one lease: ports, VNC password, UDID, adb port…; a container's forwarded ports (`ports`: `{"port", "host", "hostPort"}`, `host` the server as the asker reached it) |
 | `POST /v1/machines/<id>/renew` `{"minutes"?}` | its time set again |
 | `DELETE /v1/machines/<id>` | released |
 | `PUT /v1/machines/<id>/files/<name>` (raw body) | a file for its commands, as `@<name>` (a `.zip` is unpacked: an `.app`) |
@@ -435,11 +478,15 @@ containers, which it couldn't read.
 | `GET /v1/storage/leases` | the holder's leases (`id`, `holder`, `sha256`, `size`, `name`, `created`, `expires`) |
 | `POST /v1/storage/leases/<id>/renew?ttl=…` | its time set again: `ttl` from now |
 | `DELETE /v1/storage/leases/<id>` | released; its object goes at the next sweep unless another lease holds it |
-| `POST /v1/grants` `{"verb", "lease"?, "object"?, "ttl"?, "name"?, "objectTTL"?}` | 201 `{"verb", "url", "path", "expires"}`: a grant in the holder's name, where the plain API would let it: `storage.put` (with the `name` and `objectTTL` its lease gets), `storage.get` (an object it holds, by sha256 or name), `machine.install` (an iOS lease it holds). `ttl` 5m unless given, at most 15m. `url` is the server as the asker reached it; `path` is the same for another address. Only with the API's token |
+| `POST /v1/grants` `{"verb", "lease"?, "object"?, "ttl"?, "name"?, "objectTTL"?}` | 201 `{"verb", "url", "path", "expires"}`: a grant in the holder's name, where the plain API would let it: `storage.put` (with the `name` and `objectTTL` its lease gets), `storage.get` (an object it holds, by sha256 or name), `machine.install` (an iOS lease it holds); from API 8 `machine.exec`, `machine.upload` and `machine.download` (a container lease it holds). `ttl` 5m unless given, at most 15m. `url` is the server as the asker reached it; `path` is the same for another address. Only with the API's token |
 | `POST /v1/machines/<id>/install` `{"object"}` | an .ipa or a zipped .app the lease's holder holds (by sha256 or name) installed on its simulator: `{"object", "app", "bundleIdentifier"}` |
+| `POST /v1/machines/<id>/exec` (`Connection: Upgrade`, `Upgrade: oss-exec`; body an `ExecRequest`, with its `Content-Length`) | a command in a container lease, from anywhere (API 8): `101 Switching Protocols`, then the exec socket's frames both ways (below), the server starting the command with the request and relaying the rest; a refusal is an answer as any other (404 another holder's lease, 409 `notReady`, 426 `upgrade` without the upgrade). The token with `OSS-Holder`, or a `machine.exec` grant |
+| `PUT /v1/machines/<id>/files?path=…&mode=…` (raw body) | a file put in a container lease (API 9), streamed: at `path` (relative to its working directory, `~/` its home), its folders made, written beside it and moved into place once all of it has come; `mode` octal (else the container's umask's). 201 `{"path", "size"}`, the path absolute. The token with `OSS-Holder`, or a `machine.upload` grant |
+| `GET /v1/machines/<id>/files?path=…` | a container lease's file, streamed (its length first); 404 `noFile` if there's none. The token with `OSS-Holder`, or a `machine.download` grant |
 
-The two object routes stream (an object can be gigabytes); a put that says
-`Expect: 100-continue` hears whether it's refused before it sends a byte.
+The two object routes and a container's files stream (an object can be
+gigabytes); a put that says `Expect: 100-continue` hears whether it's
+refused before it sends a byte.
 `Status` carries the store's use (`storage`: its objects and bytes against
 its caps, the leases, and the served files).
 
@@ -451,6 +498,29 @@ big-endian), the payload. The client's first is `start` (7, an
 `resize` (2, columns and rows as four bytes each), `signal` (6, Linux's
 number); the container's are `stdout` (3), `stderr` (4) and last `exit`
 (5, the status as four bytes).
+
+From anywhere else (API 9), the same through the server:
+
+```
+POST /v1/machines/<id>/exec HTTP/1.1
+Host: <server>:7480
+Authorization: Bearer <token>          (or ?grant=… in the path, a machine.exec grant's)
+OSS-Holder: <the lease's holder>       (with the token)
+OSS-API: 8
+Connection: Upgrade
+Upgrade: oss-exec
+Content-Type: application/json
+Content-Length: <n>
+
+{"arguments": ["make", "test"], "tty": false, "environment": {"A": "b"}, "workingDirectory": "/src"}
+```
+
+answered `HTTP/1.1 101 Switching Protocols` (`Connection: Upgrade`,
+`Upgrade: oss-exec`), after which the connection carries the frames above
+both ways, but `start`: the server starts the command with the request's
+body, then relays the client's `stdin`, `closeStdin`, `resize` and `signal`
+and the container's `stdout`, `stderr` and `exit` as they come. The
+connection closing before `exit` ends the command, as the socket's does.
 
 The Bazel cache is on a port of its own (7490): `GET`, `HEAD` and `PUT` of
 `/ac/<sha256>` and `/cas/<sha256>`, with the read or the write token as

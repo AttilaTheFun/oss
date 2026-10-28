@@ -2,6 +2,51 @@
 
 ## 0.13.0 (unreleased)
 
+- **A container from anywhere** (API 9): a container is lent to a client
+  on another Mac or in a container itself (an agent running a server under
+  test in a container of its own, so a crash takes out the server, not the
+  agent). Everything `oss machine lease container` takes works over the
+  API (image, CPUs, memory, disk, volumes and `:keep`, environment,
+  working directory, command, Rosetta, ports) but mounts, which share the
+  server Mac's folders: from elsewhere a lease with one is refused (403
+  `notLocal`), saying so. `OSSPool` leases a container without mounts from
+  the nearest server with room.
+- **Exec through the server**: `POST /v1/machines/<id>/exec`, an HTTP/1.1
+  upgrade (`Upgrade: oss-exec`) whose body is the `ExecRequest`; after `101
+  Switching Protocols` the connection carries the exec socket's frames, the
+  server starting the command and relaying the rest, and waiting while a
+  container starts again. With the token in its holder's name
+  (`OSS-Holder`; another holder's lease is 404) or a `machine.exec` grant.
+  `oss machine exec` goes this way from anywhere but the server's Mac
+  (where the socket is quicker and outlives the server's restarts), and
+  with `--url=<grant>` and no token; so does `run --inside`. On a Mac,
+  `oss` reaches another computer for it through Apple's `nc`, as curl for
+  the rest; off a Mac (in a container), exec builds now. In OSSClient,
+  `exec(_:_:…)` picks the same way, `exec(_:holder:…)` always goes through
+  the server, and `OSSGrantClient.exec`; `OSSTransport.connect` makes the
+  connection (a socket of the process's own unless the transport makes it).
+- **A container's files**: `PUT /v1/machines/<id>/files?path=…&mode=…`
+  streams a file into it (relative to its working directory, `~/` its
+  home; its folders made; written beside its path and moved into place
+  only once all of it has come), `GET` streams one out; through its
+  `/bin/sh`. `oss machine upload|download` take a container (a file, its
+  mode kept; a folder goes as an archive through exec), from this Mac too,
+  and `--url=<grant>`: `machine.upload` and `machine.download` grants, a
+  verb each way as the store's are. OSSClient's `uploadFile` and
+  `downloadFile`, and `OSSGrantClient`'s.
+- **A container's ports**: `--port=N` (repeatable, TCP, at most 16;
+  `ContainerSpec.ports`) forwards the container's port from one of the
+  server Mac's, out of the range VMs' SSH and VNC come from, on the LAN
+  and the tailnet as theirs are, until the lease ends; after the
+  container starts again they follow it. `Lease.ports` says where
+  (`{"port", "host", "hostPort"}`, the host as the asker reached the
+  server); `oss machine lease` and `oss machine list` (and its new
+  `--json`) show `8080 → <host>:47512`, `--exports` `OSS_PORT_8080`. A new
+  forward now passes over every port a lease has, forwarded at the moment
+  or not (a VM's, an emulator's adb, a container's), as well as those
+  listening. The container's helper writes its address beside its spec,
+  where OS Server forwards to.
+
 - `oss machine run` holds a five-minute lease, renewed each minute while
   its command runs, and SIGTERM releases it at once. A CI runner cancelling
   a job sends SIGINT, SIGTERM, then SIGKILL within seconds, before Bazel

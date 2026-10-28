@@ -3,23 +3,13 @@ import Foundation
 import Network
 
 extension OSSClient {
-    /// A command run in a container lease: `input` sent as it comes (stdin,
-    /// its end, a terminal's new size, signals), what the command writes
-    /// handed to `output` (`.stdout`, `.stderr`); returns its exit status.
-    /// Straight to the container over its Unix socket on the server's Mac
-    /// (`Lease.execSocket`), not through the server: a command outlives the
-    /// server's restarts. Ending the task (or the process) ends the command.
-    public func exec(_ lease: Lease, _ request: ExecRequest, input: AsyncStream<ExecFrame>,
-                     output: @escaping @Sendable (ExecFrame) -> Void) async throws -> Int32 {
-        guard let socket = lease.execSocket else {
-            throw OSSError(status: 0, message: "lease \(lease.id) takes no commands (a container's, once it is ready)")
-        }
-        return try await Self.exec(socket: socket, request, input: input, output: output)
-    }
-
-    /// The same, given the container's socket alone (`Lease.execSocket`,
-    /// kept by whoever leased it): no server, no token. What a process that
-    /// runs a long command in a container (an agent's host) uses.
+    /// A command run in a container lease, given its socket alone
+    /// (`Lease.execSocket`, kept by whoever leased it, on the server's Mac):
+    /// straight to the container, not through the server, so it outlives
+    /// the server's restarts; no server, no token. What a process that runs
+    /// a long command in a container (an agent's host) uses.
+    /// `exec(_:_:input:output:)` takes it where it can, and the server's
+    /// route where it can't.
     ///
     /// A container that isn't running (the Mac restarted, its helper
     /// ended) is started again by its server within seconds: until

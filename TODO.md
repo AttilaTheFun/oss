@@ -6,8 +6,9 @@
   zipped test bundle (or an `.xctestrun` with its products) from the store
   run on the lease's simulator, its result bundle put back in the store;
   and its grant, `machine.xctest` (reserved: `GrantKey.later`).
-- **`machine.exec` and `machine.upload` grants** (reserved too): a
-  container's exec and a VM's upload through a grant's URL.
+- **A VM's files through the server**: `machine.upload` and
+  `machine.download` (and their routes) take container leases; a VM's go by
+  scp, which needs its SSH port and the holder's key.
 - **Android installs from the store**: `oss machine install` takes iOS
   leases only; an emulator's would be `adb install` of an `.apk` object.
 - **OS Server's window and OS Monitor show storage's use**: `Status.storage`
@@ -27,6 +28,20 @@
   bytes that a holder's lease has just let go can race the sweep that
   deletes them. Adding and removing through the server (a route for its own
   Mac only) would close that.
+
+## Containers from anywhere
+
+- **A kept volume deleted from anywhere**: `DELETE /v1/volumes/<name>` is
+  still the server's Mac's only, so an agent elsewhere that kept one can't
+  delete it; volumes would need holders, as leases have.
+- **A container's stdin held back**: the helper takes stdin frames into an
+  unbounded stream, so a fast upload (or exec's stdin) into a container
+  slower to read it is held in the helper's memory; its writes to the
+  command should wait as its output's do.
+- **Folders through the server**: a file at a time; a folder goes as a tar
+  through exec, which needs `tar` in the image. The files route could take
+  an archive and unpack it.
+- **UDP ports**: `--port` forwards TCP alone, as VMs' forwards do.
 
 ## Tools in Swift, not Python
 

@@ -7,23 +7,28 @@ let usage = """
     Machines (a VM, a simulator, an emulator or a container of your own until you release it or its time runs out):
       oss machine lease <macos|ios|android|linux|windows> [--config=NAME] [--minutes=N] [--wait] [--json | --exports]
       oss machine lease container --image=REF [--cpus=N] [--memory=GB] [--disk=GB] [--mount=/mac/path:/path[:ro]]…
-                                  [--volume=NAME:/path:GB[:keep]]… [--rosetta] [--env=NAME=VALUE]… [--workdir=DIR]
-                                  [--command="…"] [--minutes=0]
-                                                            a container on the server's Mac, for a client on that Mac
-                                                            (--minutes=0: held until released); it outlives the server's
-                                                            restarts, and after the Mac's starts again from its own disk
+                                  [--volume=NAME:/path:GB[:keep]]… [--port=N]… [--rosetta] [--env=NAME=VALUE]…
+                                  [--workdir=DIR] [--command="…"] [--minutes=0]
+                                                            a container on the server's Mac, for a client anywhere
+                                                            (--mount: a client on that Mac only; --port: its TCP port
+                                                            forwarded on the Mac's LAN and tailnet; --minutes=0: held
+                                                            until released); it outlives the server's restarts, and
+                                                            after the Mac's starts again from its own disk
       oss machine lease … [--kind=ci|session|agent|manual] [--label="…"] [--link=URL]
                                                             who it's for, shown wherever it is; with no --kind in GitHub
                                                             Actions: ci, labelled with the job, linked to its run
       oss machine renew <id | platform> [--minutes=N]       its time set to N minutes from now (default 60, at most 480)
       oss machine release <id | platform>                   given back: the clone is deleted
-      oss machine list [--json]                             every lease: its kind, holder, time and label
+      oss machine list [--json]                             every lease: its kind, holder, time and label; a container's
+                                                            ports (8080 → host:47512)
       oss machine ssh <id> [-- command…]                    macOS, Linux, Windows
       oss machine vnc <id> [--open]                         macOS, Linux, Windows: its VNC address and password
-      oss machine exec <id | --socket=PATH> [--tty] [--env=NAME=VALUE]… [--env-file=F] [--workdir=DIR] -- command…
-                                                            a container: the command run in it, streamed, signals passed on
-                                                            (--socket: the lease's execSocket, no server or token needed)
-      oss volume list [--json] | delete <name>              containers' volumes, kept ones too
+      oss machine exec <id | --socket=PATH | --url=GRANT> [--tty] [--env=NAME=VALUE]… [--env-file=F] [--workdir=DIR] -- command…
+                                                            a container: the command run in it, streamed, signals passed
+                                                            on; by its socket on the server's Mac, else through the server
+                                                            (--socket: the lease's execSocket, no server or token needed;
+                                                            --url: a machine.exec grant's, no token)
+      oss volume list [--json] | delete <name>                       containers' volumes, kept ones too
     Storage (files kept on the server by their SHA-256 while a lease of yours holds them, 24h unless --ttl, at most 7d):
       oss storage put <file> [--name=N] [--ttl=24h] [--json]
                                                             kept once however often it's put; its bytes go only if the
@@ -38,6 +43,8 @@ let usage = """
       oss grant storage.put [--name=N] [--object-ttl=24h] [--ttl=5m] [--json]
       oss grant storage.get <sha256 | name> [--ttl=5m] [--json]
       oss grant machine.install <id | ios> [--ttl=5m] [--json]
+      oss grant machine.exec | machine.upload | machine.download <id | container> [--ttl=5m] [--json]
+                                                            a container's commands, files put in it, files read from it
     What this Mac lends (on the server's Mac; the app's Settings › Components):
       oss component list                                    each component: installed, or not, or why not here
       oss component install <id> [--file=PATH]              macos, linux, windows (--file= its ISO), android, ios
@@ -52,16 +59,21 @@ let usage = """
       oss machine type <id> <text…>                         typed into what has focus
       oss machine key <id> <key>                            return, tab, escape, backspace, delete, space, up, down,
                                                             left, right, pageup, pagedown, home, back; on a VM cmd+a…
-      oss machine upload <id> <local> <remote>              macOS, Linux, Windows (scp; a directory too)
+      oss machine upload <id> <local> <remote> [--mode=755] macOS, Linux, Windows (scp; a directory too); a container (a
+                                                            file, through the server; its mode the local file's unless
+                                                            --mode; remote/ puts it in that folder)
       oss machine download <id> <remote> <local>
+      oss machine upload --url=GRANT <local> <remote>       a container's, with a machine.upload grant, no token
+      oss machine download --url=GRANT <remote> <local>     a container's, with a machine.download grant, no token
       oss machine run <platform> [--config=NAME] [--minutes=N] -- command…   (a 5-minute lease renewed while it runs;
                                                             SIGTERM releases it at once; --kind, --label and --link as
                                                             lease's)
       oss machine run container --image=REF [lease options…] --inside [--cache=HOST] [--netrc=HOST]… [--env=…] -- command…
                                                             the command in the container, in this folder (mount it
-                                                            at its own path), the lease released after (CI); --cache:
-                                                            its Bazel reads this server's cache at HOST (~/.bazelrc,
-                                                            the read token in ~/.netrc); --netrc: the token for HOST
+                                                            at its own path, on the server's Mac), the lease released
+                                                            after (CI); --cache: its Bazel reads this server's cache
+                                                            at HOST (~/.bazelrc, the read token in ~/.netrc); --netrc:
+                                                            the token for HOST
                                                             lease, run the command with OSS_* set, release
     The server and its bases (on the server's Mac):
       oss serve | status | capabilities | doctor
@@ -179,6 +191,10 @@ func describe(_ lease: Lease, _ client: OSSClient) -> String {
     case .container:
         lines.append("  \(lease.container?.image ?? "a container") on \(client.host)")
         lines.append("  oss machine exec \(lease.id) [--tty] -- <command>")
+        lines.append("  oss machine upload \(lease.id) <file> <path> | download \(lease.id) <path> <file>")
+        if let ports = lease.ports, !ports.isEmpty {
+            lines.append("  ports: \(describePorts(lease, client))")
+        }
     }
     lines.append("  screenshot: oss machine screenshot \(lease.id) screen.png")
     lines.append("  renew: oss machine renew \(lease.id)    release: oss machine release \(lease.id)")
@@ -286,11 +302,52 @@ func containerSpec(_ args: Arguments) -> ContainerSpec {
         guard parts.count == 2 else { fail("--env=NAME=VALUE") }
         environment[parts[0]] = parts[1]
     }
+    let ports = (args.all["port"] ?? []).map { value -> Int in
+        guard let port = Int(value), (1...65535).contains(port) else { fail("--port=N: a TCP port of the container's, 1 to 65535") }
+        return port
+    }
     return ContainerSpec(image: image, cpus: args.options["cpus"].flatMap(Int.init), memoryBytes: gigabytes("memory"),
                          diskBytes: gigabytes("disk"), mounts: mounts, volumes: volumes, rosetta: args.flags.contains("rosetta"),
                          environment: environment,
                          workingDirectory: args.options["workdir"],
-                         command: args.options["command"].map { $0.split(separator: " ").map(String.init) })
+                         command: args.options["command"].map { $0.split(separator: " ").map(String.init) }, ports: ports)
+}
+
+/// A lease's forwarded ports for a line: `8080 → host:47512, …`.
+func describePorts(_ lease: Lease, _ client: OSSClient) -> String {
+    (lease.ports ?? []).map { ForwardedPort(port: $0.port, host: $0.host ?? client.host, hostPort: $0.hostPort).description }
+        .joined(separator: ", ")
+}
+
+/// A file's permissions as octal (`755`), for its copy in a container.
+func octalMode(_ path: String) -> String? {
+    let value = (try? FileManager.default.attributesOfItem(atPath: path))?[.posixPermissions]
+    guard let permissions = (value as? NSNumber)?.intValue ?? (value as? Int) else { return nil }
+    return String(permissions & 0o777, radix: 8)
+}
+
+/// `oss machine upload|download` for a container, through the server:
+/// `put` and `get` the token's way or a grant's. A folder isn't a file:
+/// it goes as an archive through exec.
+func containerTransfer(_ sub: String, _ from: String, _ to: String, mode: String?, id: String,
+                       put: (URL, String, String?) async throws -> MachineFile, get: (String, URL) async throws -> Void) async throws {
+    if sub == "upload" {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: from, isDirectory: &isDirectory) else { fail("no file \(from)") }
+        guard !isDirectory.boolValue else {
+            fail("a container takes a file at a time; a folder goes as an archive: tar -c -C \(from) . | oss machine exec \(id) -- "
+                 + "sh -c 'mkdir -p \(to) && tar -x -C \(to)'")
+        }
+        let remote = to.hasSuffix("/") ? to + URL(fileURLWithPath: from).lastPathComponent : to
+        let file = try await put(URL(fileURLWithPath: from), remote, mode ?? octalMode(from))
+        print("\(file.path) (\(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file)))")
+    } else {
+        var isDirectory: ObjCBool = false
+        let local = FileManager.default.fileExists(atPath: to, isDirectory: &isDirectory) && isDirectory.boolValue
+            ? "\(to)/\((from as NSString).lastPathComponent)" : to
+        try await get(from, URL(fileURLWithPath: local))
+        print(local)
+    }
 }
 
 /// A lease named by its id, or by its platform when the caller holds just one of it.
@@ -310,13 +367,13 @@ func resolveLease(_ argument: String?, _ client: OSSClient) async throws -> Leas
 /// this and nothing else; the OS Server app hosts the server itself
 /// (`ServerHost`) and ships this beside it as its command line.
 public enum OSSCommand {
-    #if canImport(Network)
     /// A container's home made ready for this server's cache, through its
-    /// exec socket: the read token in ~/.netrc, a line for each host its
-    /// builds name the server by (Bazel's downloader and HTTP cache read
-    /// credentials there; never on a command line), and with `cacheHost`,
-    /// ~/.bazelrc reading the cache there read-only, as a VM lease's has.
-    static func prepareHome(socket: String, netrcHosts: [String], cacheHost: String?, client: OSSClient) async throws {
+    /// exec (its socket, or the server's route): the read token in ~/.netrc,
+    /// a line for each host its builds name the server by (Bazel's
+    /// downloader and HTTP cache read credentials there; never on a command
+    /// line), and with `cacheHost`, ~/.bazelrc reading the cache there
+    /// read-only, as a VM lease's has.
+    static func prepareHome(_ exec: ExecCommand.Path, netrcHosts: [String], cacheHost: String?, client: OSSClient) async throws {
         let cache = try await client.cache()
         guard !cache.readToken.isEmpty else { throw OSSError(status: 0, message: "this server keeps no cache: no token for --netrc or --cache") }
         func append(_ text: String, to file: String) async throws {
@@ -325,7 +382,7 @@ public enum OSSCommand {
             continuation.yield(.closeStdin)
             continuation.finish()
             let request = ExecRequest(arguments: ["sh", "-c", "umask 077 && cat >> \"$HOME/\(file)\""])
-            let status = try await OSSClient.exec(socket: socket, request, input: input) { _ in }
+            let status = try await exec(request, input) { _ in }
             guard status == 0 else { throw OSSError(status: 0, message: "couldn't write the container's ~/\(file) (\(status))") }
         }
         try await append(netrcHosts.map { CacheClientFiles.netrcEntry(host: $0, token: cache.readToken) + "\n" }.joined(), to: ".netrc")
@@ -333,7 +390,6 @@ public enum OSSCommand {
             try await append("build --remote_cache=http://\(cacheHost):\(cache.port) --noremote_upload_local_results\n", to: ".bazelrc")
         }
     }
-    #endif
 
     public static func run(_ commandLine: [String]) async -> Never {
         // A closed pipe or socket is an error to handle, not the end of `oss`.
@@ -342,7 +398,7 @@ public enum OSSCommand {
                                   valued: ["config", "minutes", "key", "holder", "identity", "from", "script", "vm", "device", "runtime",
                                            "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "volume", "env", "env-file", "workdir",
                                            "command", "socket", "iso", "edition", "file", "netrc", "cache", "name", "ttl", "url",
-                                           "object-ttl", "kind", "label", "link"])
+                                           "object-ttl", "kind", "label", "link", "port", "mode"])
         let command = arguments.positional.first ?? "help"
         let sub = arguments.positional.count > 1 ? arguments.positional[1] : nil
         let target = arguments.positional.count > 2 ? arguments.positional[2] : nil
@@ -367,6 +423,23 @@ public enum OSSCommand {
                 if sub == "install", let url = arguments.options["url"] {
                     guard let grant = URL(string: url), let object = target else { fail("oss machine install --url=GRANT <sha256 | name>") }
                     printInstalled(try await OSSGrantClient(url: grant, transport: cliTransport()).install(object: object))
+                    exit(0)
+                }
+                if sub == "exec", let url = arguments.options["url"] {
+                    guard let grant = URL(string: url) else { fail("oss machine exec --url=GRANT -- command…") }
+                    let client = OSSGrantClient(url: grant, transport: cliTransport())
+                    exit(try await ExecCommand.run(arguments) { request, input, output in
+                        try await client.exec(request, input: input, output: output)
+                    })
+                }
+                if sub == "upload" || sub == "download", let url = arguments.options["url"] {
+                    guard let grant = URL(string: url), arguments.positional.count >= 4 else {
+                        fail("oss machine upload --url=GRANT <local> <remote> | download --url=GRANT <remote> <local>")
+                    }
+                    let client = OSSGrantClient(url: grant, transport: cliTransport())
+                    try await containerTransfer(sub!, arguments.positional[2], arguments.positional[3], mode: arguments.options["mode"],
+                                                id: "<id>", put: { try await client.uploadFile($0, to: $1, mode: $2) },
+                                                get: { try await client.downloadFile($0, to: $1) })
                     exit(0)
                 }
                 let client = try await OSSClient.connect()
@@ -398,21 +471,22 @@ public enum OSSCommand {
                     if arguments.flags.contains("json") {
                         try printJSON(leases)
                     } else {
-                        for lease in leases { print(leaseLine(lease)) }
+                        for lease in leases {
+                            let ports = lease.ports.map { $0.isEmpty ? "" : "  ports \(describePorts(lease, client))" } ?? ""
+                            print(leaseLine(lease) + ports)
+                        }
                     }
                 case "ssh":
                     let lease = try await resolveLease(target, client)
                     exit(try Shell.passthrough("/usr/bin/ssh", client.sshArguments(lease, identity: arguments.options["identity"]) + arguments.rest))
                 case "exec":
-                    #if canImport(Network)
                     let lease = try await resolveLease(target, client)
-                    guard lease.platform == .container, let socket = lease.execSocket else {
+                    guard lease.platform == .container, lease.state == .ready else {
                         fail("exec is for a ready container lease: a VM takes ssh, a simulator simctl, an emulator adb")
                     }
-                    exit(try await ExecCommand.run(socket: socket, arguments))
-                    #else
-                    fail("exec runs on the container's Mac")
-                    #endif
+                    // Its socket on the server's Mac; through the server from anywhere else, in the holder's name.
+                    exit(try await ExecCommand.run(arguments, through: ExecCommand.path(lease, client: client,
+                                                                                        holder: arguments.options["holder"] ?? holderName())))
                 case "vnc":
                     let lease = try await resolveLease(target, client)
                     let url = "vnc://\(client.host):\(lease.vncPort ?? 0)"
@@ -449,7 +523,18 @@ public enum OSSCommand {
                 case "upload", "download":
                     guard arguments.positional.count >= 5 else { fail("oss machine \(sub!) <id> <from> <to>") }
                     let lease = try await resolveLease(target, client)
-                    guard lease.platform.isVM else { fail("upload and download are for VMs: a simulator takes simctl, an emulator adb push") }
+                    if lease.platform == .container {
+                        // A file, through the server (from this Mac too), in the holder's name.
+                        let holder = arguments.options["holder"] ?? holderName()
+                        try await containerTransfer(sub!, arguments.positional[3], arguments.positional[4], mode: arguments.options["mode"],
+                                                    id: lease.id,
+                                                    put: { try await client.uploadFile(lease.id, holder: holder, file: $0, to: $1, mode: $2) },
+                                                    get: { try await client.downloadFile(lease.id, holder: holder, path: $0, to: $1) })
+                        exit(0)
+                    }
+                    guard lease.platform.isVM else {
+                        fail("upload and download are for VMs and containers: a simulator takes simctl, an emulator adb push")
+                    }
                     let remote = "\(lease.sshUser ?? "runner")@\(client.host):"
                     let (from, to) = sub == "upload"
                         ? (arguments.positional[3], remote + arguments.positional[4])
@@ -497,28 +582,25 @@ public enum OSSCommand {
                     let status: Int32
                     if arguments.flags.contains("inside") {
                         // In the container, in this folder (mounted at its own path), as `exec` runs it.
-                        #if canImport(Network)
-                        guard lease.platform == .container, let socket = lease.execSocket else {
+                        guard lease.platform == .container else {
                             renewing.cancel()
                             try? await client.release(lease.id)
                             fail("--inside is for a container lease")
                         }
+                        let exec = ExecCommand.path(lease, client: client, holder: lease.holder)
                         do {
                             let cacheHost = arguments.options["cache"]
                             let hosts = (cacheHost.map { [$0] } ?? []) + (arguments.all["netrc"] ?? [])
                             if !hosts.isEmpty {
-                                try await Self.prepareHome(socket: socket, netrcHosts: hosts, cacheHost: cacheHost, client: client)
+                                try await Self.prepareHome(exec, netrcHosts: hosts, cacheHost: cacheHost, client: client)
                             }
                             var inside = arguments
                             inside.options["workdir"] = arguments.options["workdir"] ?? FileManager.default.currentDirectoryPath
-                            status = try await ExecCommand.run(socket: socket, inside)
+                            status = try await ExecCommand.run(inside, through: exec)
                         } catch {
                             status = 127
                             FileHandle.standardError.write(Data("oss: \(error)\n".utf8))
                         }
-                        #else
-                        fail("--inside runs on the container's Mac")
-                        #endif
                     } else {
                         let environment = ProcessInfo.processInfo.environment.merging(client.environment(lease)) { $1 }
                         do { status = try Shell.passthrough("/usr/bin/env", arguments.rest, environment: environment) } catch {
@@ -670,11 +752,12 @@ public enum OSSCommand {
                 case "storage.get":
                     guard let target else { fail("oss grant storage.get <sha256 | name>") }
                     request = GrantRequest(verb: "storage.get", object: target, ttl: ttl)
-                case "machine.install":
+                case "machine.install", "machine.exec", "machine.upload", "machine.download":
                     let lease = try await resolveLease(target, client)
-                    request = GrantRequest(verb: "machine.install", lease: lease.id, ttl: ttl)
+                    request = GrantRequest(verb: sub!, lease: lease.id, ttl: ttl)
                 default:
-                    fail("oss grant storage.put | storage.get <sha256 | name> | machine.install <id>")
+                    fail("oss grant storage.put | storage.get <sha256 | name> | machine.install <id> | "
+                         + "machine.exec | machine.upload | machine.download <id>")
                 }
                 let grant = try await client.grant(request, holder: holder)
                 if arguments.flags.contains("json") { try printJSON(grant) } else { print(grant.url.absoluteString) }
@@ -722,7 +805,8 @@ public enum OSSCommand {
                         print("  leases: \(counts.joined(separator: ", "))")
                     }
                     for lease in status.leases {
-                        print("    \(leaseLine(lease))")
+                        let ports = lease.ports.map { $0.isEmpty ? "" : "  ports \(describePorts(lease, client))" } ?? ""
+                        print("    \(leaseLine(lease))\(ports)")
                     }
                     if let storage = status.storage {
                         print("  storage: \(storage.objects) objects, \(gigabytes(storage.bytes)) of \(gigabytes(storage.maxBytes)) "
