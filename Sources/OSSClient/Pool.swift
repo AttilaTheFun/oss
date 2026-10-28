@@ -44,9 +44,9 @@ public enum OSSDistance: Int, Comparable, Sendable, CustomStringConvertible {
 
 /// Several oss servers, leased from as one: a machine comes from the
 /// nearest server (this computer, then its LAN, then the tailnet) that has
-/// a base for it and room, and a container only from this computer's own
-/// server (it shares this computer's folders). Each lease is then used and
-/// released through the client of the server that lent it.
+/// a base for it and room, and a container with mounts only from this
+/// computer's own server (they share this computer's folders). Each lease
+/// is then used and released through the client of the server that lent it.
 public struct OSSPool: Sendable {
     public let entries: [OSSServerEntry]
     let transport: any OSSTransport
@@ -108,19 +108,21 @@ public struct OSSPool: Sendable {
         }
     }
 
-    /// A lease from the nearest server with room for it (a container: this
-    /// computer's server only), waited on until it is ready; with
-    /// `waitForCapacity`, until one has room. Returns the lease and the
+    /// A lease from the nearest server with room for it (a container with
+    /// mounts: this computer's server only), waited on until it is ready;
+    /// with `waitForCapacity`, until one has room. Returns the lease and the
     /// client to use it with.
     public func lease(_ request: LeaseRequest, waitForCapacity: Bool = false,
                       progress: @Sendable (String) -> Void = { _ in }) async throws -> (client: OSSClient, lease: Lease) {
+        let mounts = request.platform == .container && !(request.container?.mounts.isEmpty ?? true)
         while true {
             let reached = await reach()
-            let candidates = reached.filter { request.platform != .container || $0.distance == .thisComputer }
+            let candidates = reached.filter { !mounts || $0.distance == .thisComputer }
             guard candidates.contains(where: { $0.lends(request.platform, config: request.config) }) else {
                 let names = reached.map { "\($0.name) (\($0.distance))" }.joined(separator: ", ")
-                throw request.platform == .container
-                    ? OSSError(status: 0, message: "no server on this computer lends containers (reached: \(names.isEmpty ? "none" : names))",
+                throw mounts
+                    ? OSSError(status: 0, message: "no server on this computer lends containers, and only one there may share its folders "
+                                                 + "(reached: \(names.isEmpty ? "none" : names))",
                                code: reached.contains { $0.lends(.container, config: nil) } ? "notLocal" : "noContainers")
                     : OSSError(status: 0, message: "no server lends \(request.platform.rawValue)\(request.config.map { " \($0)" } ?? "") (reached: \(names.isEmpty ? "none" : names))")
             }
@@ -128,8 +130,8 @@ public struct OSSPool: Sendable {
                 do {
                     progress("\(server.name) (\(server.distance))")
                     return (server.client, try await server.client.lease(request, progress: progress))
-                } catch let error as OSSError where error.code == "busy" || error.message.hasPrefix("busy") {
-                    continue   // taken meanwhile: the next one
+                } catch let error as OSSError where error.code == "busy" || error.message.hasPrefix("busy") || error.code == "notLocal" {
+                    continue   // taken meanwhile, or (a server before API 9) a container for its own Mac only: the next one
                 }
             }
             guard waitForCapacity else {

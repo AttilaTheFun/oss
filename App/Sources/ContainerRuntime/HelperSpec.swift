@@ -53,6 +53,10 @@ public struct HelperSpec: Codable, Sendable {
         self.command = command
     }
 
+    /// The file beside `helper.json` the helper writes the container's IPv4
+    /// address in, once its network is made (where its ports are forwarded).
+    public static let addressFile = "address"
+
     /// What a container runs when its lease names nothing: a process that
     /// waits, so commands are run in it with exec.
     public static let waits = ["/bin/sh", "-c", "trap 'exit 0' TERM INT; while :; do sleep 86400 & wait $!; done"]

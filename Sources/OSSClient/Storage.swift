@@ -91,9 +91,13 @@ public struct StorageInfo: Codable, Sendable {
 /// token (Visor) asks for one in a holder's name, and hands the URL to
 /// what may do only that (an agent in a container).
 public struct GrantRequest: Codable, Sendable {
-    /// What it allows: `storage.put`, `storage.get` or `machine.install`.
+    /// What it allows: `storage.put`, `storage.get` or `machine.install`;
+    /// from API 9 `machine.exec`, `machine.upload` and `machine.download`
+    /// (a container lease's commands, and its files either way).
     public var verb: String
-    /// `machine.install`: the iOS lease it installs on (the holder's own).
+    /// `machine.install`: the iOS lease it installs on (the holder's own);
+    /// `machine.exec`, `machine.upload`, `machine.download`: the container
+    /// lease (the holder's own).
     public var lease: String?
     /// `storage.get`: the object, by its SHA-256 or a name of the holder's.
     public var object: String?
@@ -280,11 +284,17 @@ public struct OSSGrantClient: Sendable {
         self.transport = transport
     }
 
-    private func send(_ method: String, body: Data? = nil, headers: [String: String] = [:], bodyFile: URL? = nil,
-                      responseFile: URL? = nil, timeout: TimeInterval = OSSClient.transferTimeout) async throws -> OSSHTTPResponse {
+    /// A request to the grant's URL, with `query` beside its own (a file's path).
+    func send(_ method: String, query: [String: String] = [:], body: Data? = nil, headers: [String: String] = [:], bodyFile: URL? = nil,
+              responseFile: URL? = nil, timeout: TimeInterval = OSSClient.transferTimeout) async throws -> OSSHTTPResponse {
         var headers = headers.merging(["OSS-API": "\(OSS.apiLevel)"]) { $1 }
         if body != nil || bodyFile != nil { headers["Content-Type"] = method == "POST" ? "application/json" : "application/octet-stream" }
-        let request = OSSHTTPRequest(method: method, url: url, headers: headers, body: body, timeout: timeout)
+        var target = url
+        if !query.isEmpty, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            components.queryItems = (components.queryItems ?? []) + query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+            target = components.url ?? url
+        }
+        let request = OSSHTTPRequest(method: method, url: target, headers: headers, body: body, timeout: timeout)
         return try OSSClient.checked(bodyFile == nil && responseFile == nil
             ? await transport.send(request)
             : await transport.send(request, bodyFile: bodyFile, responseFile: responseFile))

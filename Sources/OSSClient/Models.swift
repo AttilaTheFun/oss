@@ -4,19 +4,21 @@ import Foundation
 /// Windows), an iOS simulator or an Android emulator on the server's Mac.
 public enum Platform: String, Codable, CaseIterable, Sendable {
     case macos, ios, android, linux, windows
-    /// A Linux container on the server's own Mac (API 6), lent only to a
-    /// client on that Mac: it shares the Mac's folders.
+    /// A Linux container on the server's own Mac (API 6), lent to a client
+    /// on that Mac until API 9, to one anywhere since (but its mounts,
+    /// which share the Mac's folders).
     case container
 
     public var isVM: Bool { self == .macos || self == .linux || self == .windows }
 }
 
 /// What a container lease runs: an image from a registry, what it's given,
-/// the server Mac's folders shared into it, volumes of its own, and its main
-/// process (by default one that waits, so commands are run in it with
-/// `exec`). It runs in a process of its own on the server's Mac, so it and
-/// its execs outlive the server's restarts; after the Mac's, it is started
-/// again from its own disk.
+/// the server Mac's folders shared into it, volumes of its own, ports
+/// forwarded to it, and its main process (by default one that waits, so
+/// commands are run in it with `exec`). It runs in a process of its own on
+/// the server's Mac, so it and its execs outlive the server's restarts;
+/// after the Mac's, it is started again from its own disk. Everything but
+/// `mounts` may be asked for from another computer (API 9).
 public struct ContainerSpec: Codable, Sendable, Hashable {
     /// An image reference: `ghcr.io/owner/name:tag`, `alpine:3.20` (Docker
     /// Hub's). Pulled once, kept by digest.
@@ -25,6 +27,7 @@ public struct ContainerSpec: Codable, Sendable, Hashable {
     public var memoryBytes: Int64?
     /// Its root filesystem's size.
     public var diskBytes: Int64?
+    /// Folders of the server's Mac: only a client on that Mac may ask for them.
     public var mounts: [ContainerMount]
     public var volumes: [ContainerVolume]
     /// x86_64 Linux programs run under Rosetta (where the Mac has it).
@@ -33,10 +36,14 @@ public struct ContainerSpec: Codable, Sendable, Hashable {
     public var workingDirectory: String?
     /// Its main process; nil: one that waits until the lease ends.
     public var command: [String]?
+    /// Its TCP ports to forward (API 9): each gets a port on the server's
+    /// Mac, from the range VMs' ports come from, reached from this Mac, the
+    /// LAN and the tailnet (`Lease.ports`), until the lease ends.
+    public var ports: [Int]
 
     public init(image: String, cpus: Int? = nil, memoryBytes: Int64? = nil, diskBytes: Int64? = nil, mounts: [ContainerMount] = [],
                 volumes: [ContainerVolume] = [], rosetta: Bool = false, environment: [String: String] = [:],
-                workingDirectory: String? = nil, command: [String]? = nil) {
+                workingDirectory: String? = nil, command: [String]? = nil, ports: [Int] = []) {
         self.image = image
         self.cpus = cpus
         self.memoryBytes = memoryBytes
@@ -47,6 +54,7 @@ public struct ContainerSpec: Codable, Sendable, Hashable {
         self.environment = environment
         self.workingDirectory = workingDirectory
         self.command = command
+        self.ports = ports
     }
 
     public init(from decoder: Decoder) throws {
@@ -61,6 +69,38 @@ public struct ContainerSpec: Codable, Sendable, Hashable {
         environment = try c.decodeIfPresent([String: String].self, forKey: .environment) ?? [:]
         workingDirectory = try c.decodeIfPresent(String.self, forKey: .workingDirectory)
         command = try c.decodeIfPresent([String].self, forKey: .command)
+        ports = try c.decodeIfPresent([Int].self, forKey: .ports) ?? []
+    }
+}
+
+/// A container's port forwarded on its server's Mac (API 9): the
+/// container's own (TCP), and where it is reached, on every interface of
+/// the Mac (this Mac, the LAN, the tailnet). `host` is the server as the
+/// asker reached it, filled in with each answer.
+public struct ForwardedPort: Codable, Sendable, Hashable, CustomStringConvertible {
+    public var port: Int
+    public var host: String?
+    public var hostPort: Int
+
+    public init(port: Int, host: String? = nil, hostPort: Int) {
+        self.port = port
+        self.host = host
+        self.hostPort = hostPort
+    }
+
+    /// `8080 → server.local:47512`.
+    public var description: String { "\(port) → \(host ?? "<server>"):\(hostPort)" }
+}
+
+/// A file put in a container lease, or the one asked for (API 9): its
+/// path in the container (absolute) and its size.
+public struct MachineFile: Codable, Sendable, Hashable {
+    public var path: String
+    public var size: Int64
+
+    public init(path: String, size: Int64) {
+        self.path = path
+        self.size = size
     }
 }
 
@@ -115,7 +155,9 @@ public struct ContainerMount: Codable, Sendable, Hashable {
 }
 
 /// A command run in a container lease: the first frame on its exec socket
-/// (`Lease.execSocket`), then a stream of `ExecFrame`s both ways.
+/// (`Lease.execSocket`), then a stream of `ExecFrame`s both ways; or, from
+/// any computer, the body of `POST /v1/machines/<id>/exec` (API 9), whose
+/// connection then carries the same frames.
 public struct ExecRequest: Codable, Sendable, Hashable {
     public var arguments: [String]
     /// A terminal of `columns` × `rows`, its output on stdout alone.
@@ -309,6 +351,8 @@ public struct Lease: Codable, Sendable {
     /// through on the server's Mac (`ExecFrame`s; API 6).
     public var container: ContainerSpec?
     public var execSocket: String?
+    /// A container's forwarded ports, once it is ready (API 9).
+    public var ports: [ForwardedPort]?
 
     public init(id: String, platform: Platform, config: String, name: String, holder: String, state: LeaseState,
                 created: Date, expires: Date, error: String? = nil, kind: LeaseKind? = nil, label: String? = nil, link: URL? = nil) {
@@ -335,7 +379,9 @@ public struct LeaseRequest: Codable, Sendable {
     /// The holder's public key, let into a VM for the lease.
     public var sshPublicKey: String?
     /// A container lease's image and what it's given (API 6). A container
-    /// may ask for `minutes: 0`: held until it is released.
+    /// may ask for `minutes: 0`: held until it is released. From another
+    /// computer than the server's Mac (API 9), it may ask for anything but
+    /// mounts.
     public var container: ContainerSpec?
     /// Who it is for, a line saying what for, and a page about it (API 8;
     /// each optional: a server takes a lease with no kind by its holder).
@@ -721,12 +767,15 @@ public struct CacheInfo: Codable, Sendable {
 public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
     public var error: String
     /// What kind of refusal, for a program to tell them apart (API 6):
-    /// `busy` (no room: 409), `notLocal` (a container for a client on
-    /// another computer: 403), `noContainers` (this server runs none),
-    /// `volumeInUse`; from API 7 `notFound` (no such lease or object of
-    /// the holder's: 404), `noObject` (a put with no body for an object the
-    /// store hasn't got: 404) and `quota` (past the holder's or the store's
-    /// cap: 413).
+    /// `busy` (no room: 409), `notLocal` (what only a client on the
+    /// server's Mac may ask for: a container before API 9, a container's
+    /// mounts from API 9, a volume's deletion: 403), `noContainers` (this
+    /// server runs none), `volumeInUse`; from API 7 `notFound` (no such
+    /// lease or object of the holder's: 404), `noObject` (a put with no body
+    /// for an object the store hasn't got: 404) and `quota` (past the
+    /// holder's or the store's cap: 413); from API 9 `notReady` (a
+    /// container lease not running yet, or not running again yet: 409) and
+    /// `noFile` (a container's file that isn't there: 404).
     public var code: String?
     public var description: String { error }
     public init(error: String, code: String? = nil) {
@@ -742,6 +791,13 @@ public enum OSS {
     /// `agent` or `manual`, with a `label` and a `link`), asked for in a
     /// `LeaseRequest` or taken from its holder, and carried by a lease's
     /// usage (`MachineUsage.kind`) and its volumes (`VolumeInfo.kind`).
+    /// 9 from 0.13.0: a container from any computer (mounts still the
+    /// server Mac's own), its commands through the API
+    /// (`POST /v1/machines/<id>/exec`, upgraded to `oss-exec`: the exec
+    /// socket's frames), its files (`PUT` and `GET
+    /// /v1/machines/<id>/files?path=…`), its ports forwarded
+    /// (`ContainerSpec.ports`, `Lease.ports`), and grants for each
+    /// (`machine.exec`, `machine.upload`, `machine.download`).
     /// 7 from 0.13.0: storage (`/v1/storage/…`: objects by their SHA-256,
     /// kept while a holder's lease on them lasts), grants (`/v1/grants`: a
     /// URL that does one thing without the token), an iOS lease's app
@@ -762,7 +818,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 8
+    public static let apiLevel = 9
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
 }

@@ -64,9 +64,14 @@ public enum ContainerHelper {
         var network = try VmnetNetwork()
         var config = LinuxContainer.Configuration()
         if let image = spec.image { config.process = LinuxProcessConfiguration(from: image) }
+        // Its address, for OS Server to forward the lease's ports to: written
+        // before its socket answers, written again each time it starts.
+        let addressFile = directory.appendingPathComponent(HelperSpec.addressFile)
+        try? FileManager.default.removeItem(at: addressFile)
         if let interface = try network.createInterface(spec.name) {
             config.interfaces = [interface]
             if let gateway = interface.ipv4Gateway { config.dns = DNS(nameservers: [gateway.description]) }
+            try? Data(interface.ipv4Address.address.description.utf8).write(to: addressFile, options: .atomic)
         }
         config.cpus = spec.cpus
         config.memoryInBytes = UInt64(spec.memoryBytes)

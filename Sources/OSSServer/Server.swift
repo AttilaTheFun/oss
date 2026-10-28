@@ -63,11 +63,16 @@ actor MachineManager {
     private let bazelCache: (port: Int, readToken: String)?
     /// What runs containers, where this process can (OS Server's app).
     let containers: ContainerBackend?
+    /// Where the leases are kept across restarts (`State/leases.json`; a
+    /// test's own elsewhere).
+    private let leasesPath: String
 
-    init(config: ServerConfig, bazelCache: (port: Int, readToken: String)? = nil, containers: ContainerBackend? = nil) {
+    init(config: ServerConfig, bazelCache: (port: Int, readToken: String)? = nil, containers: ContainerBackend? = nil,
+         leasesPath: String = Paths.leases) {
         self.config = config
         self.bazelCache = bazelCache
         self.containers = containers
+        self.leasesPath = leasesPath
     }
 
     // MARK: Status
@@ -150,18 +155,29 @@ actor MachineManager {
 
     // MARK: Leasing
 
-    /// `local`: whether the client is on this Mac (a container is lent to
-    /// no other: it shares this Mac's folders).
+    /// `local`: whether the client is on this Mac. A container is lent to
+    /// any client, but only one on this Mac may share this Mac's folders
+    /// into it (mounts): a client elsewhere (another Mac, a container) puts
+    /// files in through the API, or keeps them on a volume.
     func lease(_ request: LeaseRequest, local: Bool) async throws -> Lease {
         guard self.config.lends(request.platform) else { throw APIError(error: "this server lends no \(request.platform.rawValue) machines") }
         let origin = try LeaseOrigin(request)
         if request.platform == .container {
             guard containers != nil else { throw APIError(error: "this server runs no containers (OS Server's app does)", code: "noContainers") }
-            guard local else { throw APIError(error: "a container is lent only to a client on its server's Mac", code: "notLocal") }
             guard let spec = request.container, !spec.image.isEmpty else { throw APIError(error: "a container lease names its image") }
+            if !local, let mount = spec.mounts.first {
+                throw APIError(error: "a mount shares a folder of the server's Mac (\(mount.source)): only a client on that Mac may ask for "
+                                    + "one; from another computer or a container, put files in with oss machine upload (or exec), "
+                                    + "or keep them on a volume", code: "notLocal")
+            }
             for mount in spec.mounts where !mount.source.hasPrefix("/") || !FileManager.default.fileExists(atPath: mount.source) {
                 throw APIError(error: "no folder \(mount.source) to share")
             }
+            guard spec.ports.count <= ContainerDefaults.maxPorts else {
+                throw APIError(error: "at most \(ContainerDefaults.maxPorts) ports a container lease")
+            }
+            for port in spec.ports where !(1...65535).contains(port) { throw APIError(error: "no port \(port): 1 to 65535") }
+            guard Set(spec.ports).count == spec.ports.count else { throw APIError(error: "a port is asked for twice") }
             for volume in spec.volumes {
                 guard !volume.name.isEmpty, volume.name.allSatisfy({ $0.isLetter || $0.isNumber || "-_.".contains($0) }),
                       !volume.name.hasPrefix(".") else { throw APIError(error: "a volume's name is letters, digits, - _ and .") }
@@ -231,9 +247,57 @@ actor MachineManager {
         leases[id]?.cpus = spec.cpus ?? ContainerDefaults.cpus
         leases[id]?.memoryLimitBytes = spec.memoryBytes ?? ContainerDefaults.memoryBytes
         leases[id]?.execSocket = socket
+        let address = await containers.address(name: lease.name)
+        // Released meanwhile: release stopped what it found, and this is gone too.
+        guard leases[id]?.state == .creating else { await containers.stop(name: lease.name, spec: spec); return }
+        leases[id]?.guestAddress = address
+        // Its ports, each on one of the Mac's from the range VMs' come from.
+        if !spec.ports.isEmpty {
+            guard let address else {
+                await containers.stop(name: lease.name, spec: spec)
+                throw APIError(error: "its container has no address on the Mac's network to forward ports to")
+            }
+            var forwarded: [ForwardedPort] = []
+            for port in spec.ports {
+                do {
+                    forwarded.append(ForwardedPort(port: port, hostPort: try forward(id, to: address, port: port)))
+                } catch {
+                    forwarders.removeValue(forKey: id)?.forEach { $0.stop() }
+                    await containers.stop(name: lease.name, spec: spec)
+                    throw error
+                }
+            }
+            leases[id]?.ports = forwarded
+        }
         leases[id]?.state = .ready
         save()
-        log("lease \(id): container \(lease.name) running \(spec.image)")
+        log("lease \(id): container \(lease.name) running \(spec.image)"
+            + (leases[id]?.ports.map { ", ports " + $0.map { "\($0.port) → :\($0.hostPort)" }.joined(separator: ", ") } ?? ""))
+    }
+
+    /// A container's forwarded ports pointed at it where it runs now (a
+    /// container started again may have another address), on the ports
+    /// its lease had.
+    private func reforwardContainer(_ id: String) async {
+        guard let lease = leases[id], let containers else { return }
+        let address = await containers.address(name: lease.name)
+        leases[id]?.guestAddress = address
+        guard let ports = lease.ports, !ports.isEmpty else { return }
+        guard let address else {
+            log("lease \(id): its container has no address now; its ports go nowhere")
+            return
+        }
+        var made: [Forwarder] = []
+        for port in ports {
+            if let kept = forwarders[id]?.first(where: { $0.port == port.hostPort }) {
+                kept.retarget(address, port.port)
+                made.append(kept)
+            } else if let forwarder = try? Forwarder(port: port.hostPort, target: address, targetPort: port.port) {
+                forwarder.start()
+                made.append(forwarder)
+            }
+        }
+        forwarders[id] = made
     }
 
     /// Machines whose process has stopped are started again from their
@@ -263,6 +327,8 @@ actor MachineManager {
             log("lease \(lease.id): \(lease.name) stopped; starting it again")
             if let socket = await containers.reattach(name: lease.name, spec: spec) {
                 leases[lease.id]?.execSocket = socket
+                await reforwardContainer(lease.id)
+                save()
             } else {
                 leases[lease.id]?.error = "its container stopped and couldn't be started again"
                 await release(lease.id, reason: "its container is gone")
@@ -517,8 +583,12 @@ actor MachineManager {
         return (config.firstQEMUVNCPort...config.lastQEMUVNCPort).first { !used.contains($0) }
     }
 
+    /// A port of the forwarded range, listening, relayed to `address`'s
+    /// `port`: one no forwarder holds and no lease has (a lease's ports are
+    /// its own until it ends, forwarded again or not yet: VMs' SSH and VNC,
+    /// emulators' adb and containers' ports come from the one range).
     private func forward(_ id: String, to address: String, port: Int, vncPassword: String? = nil) throws -> Int {
-        let used = Set(forwarders.values.flatMap { $0.map(\.port) })
+        let used = Set(forwarders.values.flatMap { $0.map(\.port) }).union(Self.portsHeld(by: Array(leases.values)))
         for candidate in config.firstPort...config.lastPort where !used.contains(candidate) {
             guard let forwarder = try? Forwarder(port: candidate, target: address, targetPort: port, vncPassword: vncPassword) else { continue }
             forwarder.start()
@@ -526,6 +596,14 @@ actor MachineManager {
             return candidate
         }
         throw APIError(error: "no free port for forwarding")
+    }
+
+    /// The Mac's ports the leases have: a VM's SSH and VNC, an emulator's
+    /// adb, a container's forwarded ports. A failed lease holds none.
+    static func portsHeld(by leases: [Lease]) -> Set<Int> {
+        Set(leases.filter { $0.state != .failed }.flatMap { lease in
+            [lease.sshPort, lease.vncPort, lease.adbPort].compactMap { $0 } + (lease.ports ?? []).map(\.hostPort)
+        })
     }
 
     func renew(_ id: String, minutes: Int?) throws -> Lease {
@@ -738,13 +816,13 @@ actor MachineManager {
     // MARK: Persistence
 
     private func save() {
-        LeaseFile.write(Array(leases.values), to: Paths.leases)
+        LeaseFile.write(Array(leases.values), to: leasesPath)
     }
 
     /// After a restart: leases still running get their forwards back; clones
     /// nobody holds any more are deleted.
     func recover() async {
-        let saved = LeaseFile.read(Paths.leases)
+        let saved = LeaseFile.read(leasesPath)
         // What this server doesn't lend, it leaves alone (a second server's
         // machines, named like its own).
         let simulators = config.lends(.ios) ? ((try? await Simulators.devices()) ?? []) : []
@@ -808,6 +886,10 @@ actor MachineManager {
                 guard let containers, config.lends(.container), let spec = lease.container,
                       let socket = await containers.reattach(name: lease.name, spec: spec) else { continue }
                 lease.execSocket = socket
+                // Its ports on the Mac's ports it had, to where it runs now.
+                leases[lease.id] = lease
+                await reforwardContainer(lease.id)
+                lease = leases[lease.id] ?? lease
             }
             leases[lease.id] = lease
             log("lease \(lease.id): recovered")
@@ -977,6 +1059,27 @@ enum Server {
         while true { try await Task.sleep(for: .seconds(3600)) }
     }
 
+    /// The server's host as the asker reached it (its `Host`, without the
+    /// port): where the asker reaches a lease's forwarded ports too.
+    static func reachedHost(_ request: HTTPRequest) -> String {
+        guard let host = request.header("host"), !host.isEmpty,
+              host.allSatisfy({ $0.isLetter || $0.isNumber || ".-:[]".contains($0) }) else { return localHostName }
+        if host.hasPrefix("["), let end = host.firstIndex(of: "]") { return String(host[...end]) }
+        return String(host.split(separator: ":").first ?? Substring(host))
+    }
+
+    /// A lease as one asker sees it: its forwarded ports at `host`.
+    static func addressed(_ lease: Lease, host: String) -> Lease {
+        guard let ports = lease.ports else { return lease }
+        var lease = lease
+        lease.ports = ports.map { port in
+            var port = port
+            port.host = host
+            return port
+        }
+        return lease
+    }
+
     static func route(_ request: HTTPRequest, api: API) async -> HTTPResponse {
         let machines = api.machines, cache = api.cache
         let parts = (request.path.split(separator: "?").first ?? "").split(separator: "/").map(String.init)
@@ -984,6 +1087,9 @@ enum Server {
         // can't read a container's platform: it is shown none.
         let seesContainers = (Int(request.header("oss-api") ?? "") ?? 0) >= 6
         func visible(_ platform: Platform) -> Bool { seesContainers || platform != .container }
+        // A container's forwarded ports, at the server's host as this asker reached it.
+        let host = reachedHost(request)
+        func reached(_ lease: Lease) -> Lease { Self.addressed(lease, host: host) }
         if parts == ["v1", "capabilities"] {
             let platforms = ((try? await machines.bases()) ?? []).map(\.platform)
             return .json(Capabilities(version: OSS.version, api: OSS.apiLevel, features: OSS.features + (cache == nil ? [] : ["cache"]),
@@ -1004,7 +1110,7 @@ enum Server {
             case ("GET", 2) where parts[1] == "status":
                 return .json(Status(server: localHostName, bases: try await machines.bases().filter { visible($0.platform) },
                                     capacity: await machines.capacity().filter { visible($0.platform) },
-                                    leases: await machines.all().filter { visible($0.platform) },
+                                    leases: await machines.all().filter { visible($0.platform) }.map(reached),
                                     storage: await api.storage.info()))
             case ("GET", 2) where parts[1] == "usage":
                 var usage = await machines.usage()
@@ -1029,13 +1135,13 @@ enum Server {
                               "simctl": simctl ? "ok" : "no Xcode (iOS simulators off)",
                               "emulator": emulator ? "ok" : "no Android SDK: oss setup android"])
             case ("POST", 2) where parts[1] == "machines":
-                return .json(try await machines.lease(try JSONDecoder.oss.decode(LeaseRequest.self, from: request.body),
-                                                      local: LocalNetworks.isThisMac(request.remoteAddress)), status: 201)
+                return .json(reached(try await machines.lease(try JSONDecoder.oss.decode(LeaseRequest.self, from: request.body),
+                                                      local: LocalNetworks.isThisMac(request.remoteAddress))), status: 201)
             case ("GET", 2) where parts[1] == "machines":
-                return .json(await machines.all().filter { visible($0.platform) })
+                return .json(await machines.all().filter { visible($0.platform) }.map(reached))
             case ("GET", 3) where parts[1] == "machines":
                 guard let lease = await machines.lease(parts[2]), visible(lease.platform) else { return .error("no lease \(parts[2])", status: 404) }
-                return .json(lease)
+                return .json(reached(lease))
             case ("GET", 2) where parts[1] == "volumes":
                 return .json(await machines.volumes())
             case ("DELETE", 3) where parts[1] == "volumes":
@@ -1051,7 +1157,7 @@ enum Server {
                 return .json(["released": id])
             case ("POST", 4) where parts[1] == "machines" && parts[3] == "renew":
                 let body = (try? JSONDecoder.oss.decode(RenewRequest.self, from: request.body)) ?? RenewRequest()
-                return .json(try await machines.renew(parts[2], minutes: body.minutes))
+                return .json(reached(try await machines.renew(parts[2], minutes: body.minutes)))
             case ("POST", 4) where parts[1] == "machines" && (parts[3] == "simctl" || parts[3] == "adb"):
                 let body = try JSONDecoder.oss.decode(DeviceCommand.self, from: request.body)
                 return .json(try await machines.command(parts[2], body.arguments))

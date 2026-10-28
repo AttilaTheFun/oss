@@ -44,6 +44,10 @@ public protocol OSSTransport: Sendable {
     /// held: a stored object can be gigabytes. The default reads and writes
     /// them whole, through `send(_:)`.
     func send(_ request: OSSHTTPRequest, bodyFile: URL?, responseFile: URL?) async throws -> OSSHTTPResponse
+    /// A connection of its own to the server, both ways, for a request the
+    /// server upgrades (a container's exec, API 9). The default is a TCP
+    /// socket of this process's.
+    func connect(host: String, port: Int) async throws -> any OSSByteStream
 }
 
 extension OSSTransport {
@@ -56,6 +60,10 @@ extension OSSTransport {
             answer.body = Data()
         }
         return answer
+    }
+
+    public func connect(host: String, port: Int) async throws -> any OSSByteStream {
+        try await OSSSocketStream.connect(host: host, port: port)
     }
 }
 
@@ -113,7 +121,8 @@ public struct OSSError: Error, Sendable, CustomStringConvertible {
     public var status: Int
     public var message: String
     /// The server's kind of refusal (`APIError.code`): `busy`, `notLocal`,
-    /// `noContainers`, `volumeInUse`.
+    /// `noContainers`, `volumeInUse`, `notFound`, `noObject`, `quota`,
+    /// `notReady`, `noFile`.
     public var code: String?
     public var description: String { message }
 
@@ -173,18 +182,27 @@ public struct OSSClient: Sendable {
     public func send(_ method: String, _ path: String, query: [String: String] = [:], body: Data? = nil,
                      contentType: String = "application/json", headers extra: [String: String] = [:],
                      bodyFile: URL? = nil, responseFile: URL? = nil, timeout: TimeInterval? = nil) async throws -> OSSHTTPResponse {
+        var headers = extra.merging(try await authorization()) { $1 }
+        if body != nil || bodyFile != nil { headers["Content-Type"] = contentType }
+        let request = OSSHTTPRequest(method: method, url: url(path, query: query), headers: headers, body: body, timeout: timeout ?? self.timeout)
+        return try Self.checked(bodyFile == nil && responseFile == nil
+            ? await transport.send(request)
+            : await transport.send(request, bodyFile: bodyFile, responseFile: responseFile))
+    }
+
+    /// An API path on this client's server, with its query.
+    func url(_ path: String, query: [String: String] = [:]) -> URL {
         var components = URLComponents(url: server, resolvingAgainstBaseURL: false)!
         components.percentEncodedPath = (components.percentEncodedPath.hasSuffix("/") ? String(components.percentEncodedPath.dropLast()) : components.percentEncodedPath)
             + path
         if !query.isEmpty { components.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) } }
-        // The API level this client speaks: a server shows an older one only
-        // what it knows (no containers below 6).
-        var headers = extra.merging(["Authorization": "Bearer \(try await token())", "OSS-API": "\(OSS.apiLevel)"]) { $1 }
-        if body != nil || bodyFile != nil { headers["Content-Type"] = contentType }
-        let request = OSSHTTPRequest(method: method, url: components.url!, headers: headers, body: body, timeout: timeout ?? self.timeout)
-        return try Self.checked(bodyFile == nil && responseFile == nil
-            ? await transport.send(request)
-            : await transport.send(request, bodyFile: bodyFile, responseFile: responseFile))
+        return components.url!
+    }
+
+    /// The token, and the API level this client speaks: a server shows an
+    /// older one only what it knows (no containers below 6).
+    func authorization() async throws -> [String: String] {
+        ["Authorization": "Bearer \(try await token())", "OSS-API": "\(OSS.apiLevel)"]
     }
 
     /// The answer, or a status but 2xx thrown with the server's message.

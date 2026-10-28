@@ -579,20 +579,21 @@ final class CachePeer: @unchecked Sendable {
         }
     }
 
-    /// Exactly `count` bytes, handed on as they come: whether they all came.
-    func body(_ count: Int64, _ sink: (Data) throws -> Void) async throws -> Bool {
+    /// Exactly `count` bytes, handed on as they come (the next read waits
+    /// for `sink`): whether they all came.
+    func body(_ count: Int64, _ sink: (Data) async throws -> Void) async throws -> Bool {
         var left = count
         while left > 0 {
             if buffer.isEmpty { guard await fill() else { return false } }
             let part = take(Int(min(Int64(buffer.count), left)))
-            try sink(part)
+            try await sink(part)
             left -= Int64(part.count)
         }
         return true
     }
 
     /// A chunked body, handed on as it comes.
-    func chunkedBody(_ sink: (Data) throws -> Void) async throws -> Bool {
+    func chunkedBody(_ sink: (Data) async throws -> Void) async throws -> Bool {
         while true {
             guard let sizeLine = await line(),
                   let size = Int64((sizeLine.split(separator: ";").first ?? "").trimmingCharacters(in: .whitespaces), radix: 16) else { return false }
@@ -610,6 +611,16 @@ final class CachePeer: @unchecked Sendable {
             connection.send(content: data, completion: .contentProcessed { error in continuation.resume(returning: error == nil) })
         }
     }
+
+    /// What comes next, as it comes (what was read past the request first):
+    /// an upgraded connection's bytes. Nil once the peer has nothing more.
+    func next() async -> Data? {
+        if buffer.isEmpty { guard await fill() else { return nil } }
+        return take(buffer.count)
+    }
+
+    /// Closed both ways (a read waiting ends).
+    func close() { connection.cancel() }
 
     /// A response's head, with `message` as its body unless `length` says
     /// the caller sends the body itself.

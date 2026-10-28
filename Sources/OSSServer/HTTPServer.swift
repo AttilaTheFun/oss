@@ -54,7 +54,7 @@ struct HTTPResponse: Sendable {
     }
 
     static let reasons = [200: "OK", 201: "Created", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
-                          405: "Method Not Allowed", 409: "Conflict", 411: "Length Required", 413: "Content Too Large",
+                          405: "Method Not Allowed", 409: "Conflict", 411: "Length Required", 413: "Content Too Large", 426: "Upgrade Required",
                           500: "Internal Server Error", 503: "Service Unavailable"]
 
     /// Its status line and fields, the connection closed after it; without
@@ -89,6 +89,16 @@ final class HTTPServer: @unchecked Sendable {
         self.handler = handler
         self.streams = streams
         self.streamer = streamer
+    }
+
+    /// The port it listens on once it does: the one asked for, or (asked
+    /// for 0, as a test's is) the one the system gave.
+    var boundPort: Int? { listener.port.map { Int($0.rawValue) }.flatMap { $0 == 0 ? nil : $0 } }
+
+    /// No longer listening (a test's server; OS Server's lasts as long as it does).
+    func stop() {
+        listener.stateUpdateHandler = nil
+        listener.cancel()
     }
 
     func start() {

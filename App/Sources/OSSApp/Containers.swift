@@ -113,6 +113,14 @@ actor ContainerEngine: ContainerBackend {
 
     func isRunning(name: String) async -> Bool { isAnswering(name) }
 
+    /// As its helper wrote it when the container started (before its socket
+    /// answered). A helper from before 0.13 writes none.
+    func address(name: String) async -> String? {
+        FileManager.default.contents(atPath: folder(name).appendingPathComponent(HelperSpec.addressFile).path)
+            .map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+    }
+
     func stop(name: String, spec: ContainerSpec?) async {
         await bootout(name)
         try? FileManager.default.removeItem(at: folder(name))
