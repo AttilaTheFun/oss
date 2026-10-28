@@ -26,6 +26,27 @@ those run on the host Mac today. In 0.14 each GUI platform gets a
   It drains first: no new work goes to it, the running leases' work
   finishes (or moves, for simulators), then it is replaced; leases waiting
   meanwhile queue rather than fail.
+- **Interrupted work is retried, not lost**: a primary's leases are slots,
+  so they outlive its restart; only the work running then fails, with a
+  retryable `primaryRestarted` (and when to try again) that `oss` commands
+  retry themselves and CI retries as a step. `GET /v1/events` streams a
+  lease's "draining", "restarting" and "ready again" to whoever holds it
+  (Visor shows its session why).
+- **A leak ends one lease's work, not the VM**: macOS caps no process's
+  memory, so OS Server watches. It knows each lease's processes (the
+  simulator's tree, the app it launched, the xcodebuild run), samples their
+  memory every few seconds against the lease's budget, and past it ends that
+  tree alone (a simulator shut down and erased, an app or a run killed), the
+  work failing with `memoryLimit`. The VM restarts only when the primary
+  itself is unwell (the simulator service or the window server stuck, memory
+  short with no lease to blame), besides the reset when idle.
+- **CI's Mac work on the primary**: CI's runners become containers of their
+  own, one a job (no `ci` user on the Mac), and their Mac steps use the
+  primary's slots, not a whole VM: test bundles built on Linux, run with
+  `oss machine xctest`, their snapshot pictures brought back as attachments
+  or through a files call. Not runners inside the primary: a job runs a pull
+  request's code, and the primary, shared by every lease, runs only what OS
+  Server asks of it.
 - **The secondary** is lent whole as `macos` leases are now, queued
   (`--wait`); AGENTS.md tells agents it is a last resort, for what needs a
   whole OS.
