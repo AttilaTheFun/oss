@@ -1,5 +1,34 @@
 # TODO
 
+## 0.14: a primary VM per GUI platform
+
+Apple's licence allows two macOS VMs per Mac, so lending both whole leaves
+nothing for the many small jobs (a simulator, an app, a test bundle), and
+those run on the host Mac today. In 0.14 each GUI platform gets a
+**primary** VM that OS Server keeps for itself and never lends whole, and a
+**secondary** that is lent whole only when a lease really needs a whole OS.
+
+- **The macOS primary**: large (on a 512 GB Mac Studio, 128 to 256 GB and
+  most of the cores), Xcode installed, a small agent inside it that OS
+  Server drives. It does the work leases ask for:
+  - `ios` leases are simulators inside it, one per lease, not on the host;
+    `xctest`, `install`, screenshots and input go there as they go to the
+    host's simulators today.
+  - A `macos-app` lease is a slot on it: install a `.app`, launch it,
+    screenshot its window, run macOS xctest bundles.
+  - Simulators and unit tests run side by side; macOS UI tests and anything
+    that needs the screen wait their turn (one desktop).
+  - A lease's apps, simulators and processes go when it is released; the
+    primary is rebuilt from its base on a schedule, so nothing accumulates.
+- **The secondary** is lent whole as `macos` leases are now, queued
+  (`--wait`); AGENTS.md tells agents it is a last resort, for what needs a
+  whole OS.
+- **Linux and Windows** follow the same pattern: Linux can give each lease a
+  display of its own, so its GUI leases run side by side; Windows has one
+  desktop, so its GUI work takes turns as the Mac's does.
+- Order: the macOS primary with `ios` leases and xctest moved into it, then
+  `macos-app` slots, then the secondaries' queue, then Linux and Windows.
+
 ## Storage
 
 - **A VM's files through the server**: `machine.upload` and
