@@ -12,15 +12,18 @@ let usage = """
                                                             a container on the server's Mac, for a client on that Mac
                                                             (--minutes=0: held until released); it outlives the server's
                                                             restarts, and after the Mac's starts again from its own disk
+      oss machine lease … [--kind=ci|session|agent|manual] [--label="…"] [--link=URL]
+                                                            who it's for, shown wherever it is; with no --kind in GitHub
+                                                            Actions: ci, labelled with the job, linked to its run
       oss machine renew <id | platform> [--minutes=N]       its time set to N minutes from now (default 60, at most 480)
       oss machine release <id | platform>                   given back: the clone is deleted
-      oss machine list
+      oss machine list [--json]                             every lease: its kind, holder, time and label
       oss machine ssh <id> [-- command…]                    macOS, Linux, Windows
       oss machine vnc <id> [--open]                         macOS, Linux, Windows: its VNC address and password
       oss machine exec <id | --socket=PATH> [--tty] [--env=NAME=VALUE]… [--env-file=F] [--workdir=DIR] -- command…
                                                             a container: the command run in it, streamed, signals passed on
                                                             (--socket: the lease's execSocket, no server or token needed)
-      oss volume list | delete <name>                       containers' volumes, kept ones too
+      oss volume list [--json] | delete <name>              containers' volumes, kept ones too
     Storage (files kept on the server by their SHA-256 while a lease of yours holds them, 24h unless --ttl, at most 7d):
       oss storage put <file> [--name=N] [--ttl=24h] [--json]
                                                             kept once however often it's put; its bytes go only if the
@@ -52,7 +55,8 @@ let usage = """
       oss machine upload <id> <local> <remote>              macOS, Linux, Windows (scp; a directory too)
       oss machine download <id> <remote> <local>
       oss machine run <platform> [--config=NAME] [--minutes=N] -- command…   (a 5-minute lease renewed while it runs;
-                                                            SIGTERM releases it at once)
+                                                            SIGTERM releases it at once; --kind, --label and --link as
+                                                            lease's)
       oss machine run container --image=REF [lease options…] --inside [--cache=HOST] [--netrc=HOST]… [--env=…] -- command…
                                                             the command in the container, in this folder (mount it
                                                             at its own path), the lease released after (CI); --cache:
@@ -215,9 +219,43 @@ func leaseRequest(_ args: Arguments, platformArgument: String?) -> LeaseRequest 
     let keyPath = args.options["key"] ?? defaultKey()
     let key = keyPath.flatMap { FileManager.default.contents(atPath: $0) }
         .map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
-    return LeaseRequest(platform: platform, config: args.options["config"], minutes: args.options["minutes"].flatMap(Int.init),
-                        holder: args.options["holder"] ?? holderName(), sshPublicKey: platform == .container ? nil : key,
-                        container: platform == .container ? containerSpec(args) : nil)
+    var request = LeaseRequest(platform: platform, config: args.options["config"], minutes: args.options["minutes"].flatMap(Int.init),
+                               holder: args.options["holder"] ?? holderName(), sshPublicKey: platform == .container ? nil : key,
+                               container: platform == .container ? containerSpec(args) : nil)
+    describeOrigin(&request, args, environment: ProcessInfo.processInfo.environment)
+    return request
+}
+
+/// Who a lease is for: `--kind`, `--label` and `--link`. In a GitHub
+/// Actions job, a lease that says no other kind is `ci`, labelled with the
+/// job and linked to its run, unless `--label` or `--link` say otherwise.
+/// Elsewhere one with no `--kind` says none, and the server takes its
+/// holder's: manual, or a `visor:` holder's session or agent.
+func describeOrigin(_ request: inout LeaseRequest, _ args: Arguments, environment: [String: String]) {
+    if let kind = args.options["kind"] {
+        guard let parsed = LeaseKind(rawValue: kind) else {
+            fail("--kind is \(LeaseKind.allCases.map(\.rawValue).joined(separator: ", "))")
+        }
+        request.kind = parsed
+    }
+    request.label = args.options["label"]
+    if let link = args.options["link"] {
+        guard let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else {
+            fail("--link is an http or https URL")
+        }
+        request.link = url
+    }
+    if request.kind == nil || request.kind == .ci, let job = GitHubActionsJob(environment: environment) {
+        request.kind = .ci
+        request.label = request.label ?? job.label
+        request.link = request.link ?? job.link
+    }
+}
+
+/// A lease in a line: its id, machine, state, kind, holder, end and label.
+func leaseLine(_ lease: Lease) -> String {
+    "\(lease.id)  \(lease.platform.rawValue)/\(lease.config)  \(lease.state.rawValue)  \(lease.kind?.rawValue ?? "-")  \(lease.holder)  "
+        + "until \(iso(lease.expires))" + (lease.label.map { "  \($0)" } ?? "")
 }
 
 /// A container lease's spec from its options; GB as 2³⁰ bytes.
@@ -304,7 +342,7 @@ public enum OSSCommand {
                                   valued: ["config", "minutes", "key", "holder", "identity", "from", "script", "vm", "device", "runtime",
                                            "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "volume", "env", "env-file", "workdir",
                                            "command", "socket", "iso", "edition", "file", "netrc", "cache", "name", "ttl", "url",
-                                           "object-ttl"])
+                                           "object-ttl", "kind", "label", "link"])
         let command = arguments.positional.first ?? "help"
         let sub = arguments.positional.count > 1 ? arguments.positional[1] : nil
         let target = arguments.positional.count > 2 ? arguments.positional[2] : nil
@@ -356,8 +394,11 @@ public enum OSSCommand {
                     try? FileManager.default.removeItem(atPath: OSSClient.knownHosts(lease.id))
                     print("lease \(lease.id) released: \(lease.name) is being deleted")
                 case "list":
-                    for lease in try await client.leases() {
-                        print("\(lease.id)  \(lease.platform.rawValue)/\(lease.config)  \(lease.state.rawValue)  \(lease.holder)  until \(iso(lease.expires))")
+                    let leases = try await client.leases()
+                    if arguments.flags.contains("json") {
+                        try printJSON(leases)
+                    } else {
+                        for lease in leases { print(leaseLine(lease)) }
                     }
                 case "ssh":
                     let lease = try await resolveLease(target, client)
@@ -642,8 +683,14 @@ public enum OSSCommand {
                 let client = try await OSSClient.connect()
                 switch sub {
                 case "list":
-                    for volume in try await client.volumes() {
-                        print("\(volume.name)  \(gigabytes(volume.sizeBytes)) (\(gigabytes(volume.allocatedBytes)) used)  \(volume.lease.map { "lease \($0)" } ?? "kept")")
+                    let volumes = try await client.volumes()
+                    if arguments.flags.contains("json") {
+                        try printJSON(volumes)
+                    } else {
+                        for volume in volumes {
+                            let user = volume.lease.map { "lease \($0)" + (volume.kind.map { " (\($0.rawValue))" } ?? "") } ?? "kept"
+                            print("\(volume.name)  \(gigabytes(volume.sizeBytes)) (\(gigabytes(volume.allocatedBytes)) used)  \(user)")
+                        }
                     }
                 case "delete":
                     guard let target else { fail("oss volume delete <name>") }
@@ -669,8 +716,13 @@ public enum OSSCommand {
                         let capacity = status.capacity.first { $0.platform == platform }
                         print("  \(platform.rawValue): \(capacity?.leased ?? 0)/\(capacity?.limit ?? 0) leased; configs: \(configs.isEmpty ? "none" : configs.joined(separator: ", "))")
                     }
+                    // How many are CI's, sessions', agents' and by hand (a server before API 8 says no kinds).
+                    if status.leases.contains(where: { $0.kind != nil }) {
+                        let counts = LeaseKind.allCases.map { kind in "\(status.leases.filter { $0.kind == kind }.count) \(kind.rawValue)" }
+                        print("  leases: \(counts.joined(separator: ", "))")
+                    }
                     for lease in status.leases {
-                        print("    \(lease.id)  \(lease.platform.rawValue)/\(lease.config)  \(lease.state.rawValue)  \(lease.holder)  until \(iso(lease.expires))")
+                        print("    \(leaseLine(lease))")
                     }
                     if let storage = status.storage {
                         print("  storage: \(storage.objects) objects, \(gigabytes(storage.bytes)) of \(gigabytes(storage.maxBytes)) "
@@ -695,7 +747,8 @@ public enum OSSCommand {
                         let cpus = m.cpus.map { " of \($0 * 100)%" } ?? ""
                         let memory = m.memoryBytes.map(gigabytes) ?? "?"
                         let limit = m.memoryLimitBytes.map { " of \(gigabytes($0))" } ?? ""
-                        print("  \(m.id)  \(m.platform.rawValue)/\(m.config)  CPU \(cpu)\(cpus), memory \(memory)\(limit)  \(m.holder)")
+                        print("  \(m.id)  \(m.platform.rawValue)/\(m.config)  CPU \(cpu)\(cpus), memory \(memory)\(limit)  \(m.holder)"
+                              + (m.kind.map { " (\($0.rawValue))" } ?? ""))
                     }
                 }
 

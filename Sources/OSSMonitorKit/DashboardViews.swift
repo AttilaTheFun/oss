@@ -183,7 +183,12 @@ struct MachinesCard: View {
                         Image(systemName: Format.symbol(row.lease.platform)).frame(width: 22).foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("\(Format.platform(row.lease.platform)) · \(row.lease.config)").font(.body.weight(.medium))
-                            Text(row.lease.holder).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            HStack(spacing: 6) {
+                                if let kind = row.lease.kind { KindBadge(kind) }
+                                Text(row.lease.holder).lineLimit(1)
+                            }
+                            .font(.caption).foregroundStyle(.secondary)
+                            LeaseLabel(lease: row.lease).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
                         Spacer(minLength: 8)
                         VStack(alignment: .trailing, spacing: 2) {
@@ -251,8 +256,11 @@ struct DiskCard: View {
                         HStack(alignment: .firstTextBaseline) {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(volume.name).lineLimit(1).truncationMode(.middle)
-                                Text(volume.lease.map { "lease \($0)" } ?? "kept, no lease using it")
-                                    .font(.caption).foregroundStyle(.secondary)
+                                HStack(spacing: 6) {
+                                    Text(volume.lease.map { "lease \($0)" } ?? "kept, no lease using it")
+                                    if let kind = volume.kind { KindBadge(kind) }
+                                }
+                                .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             Text("\(Format.bytes(volume.allocatedBytes)) of \(Format.bytes(volume.sizeBytes))")
@@ -422,6 +430,55 @@ struct Row: View {
     }
 }
 
+/// Who a lease is for, in a small capsule of its kind's colour (Other
+/// apps' process count, tinted): CI, Session, Agent, Manual.
+public struct KindBadge: View {
+    let kind: LeaseKind
+
+    public init(_ kind: LeaseKind) {
+        self.kind = kind
+    }
+
+    public var body: some View {
+        Text(Format.kind(kind))
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 5)
+            .background(Capsule().fill(tint.opacity(0.15)))
+    }
+
+    private var tint: Color {
+        switch kind {
+        case .ci: .orange
+        case .session: .teal
+        case .agent: .indigo
+        case .manual: .gray
+        }
+    }
+}
+
+/// A lease's label, a link to its page when it has one (a CI run's);
+/// nothing without one.
+public struct LeaseLabel: View {
+    let lease: Lease
+
+    public init(lease: Lease) {
+        self.lease = lease
+    }
+
+    public var body: some View {
+        if let label = lease.label {
+            if let link = lease.link {
+                Link(label, destination: link)
+            } else {
+                Text(label)
+            }
+        }
+    }
+}
+
 /// A titled panel.
 struct Card<Content: View>: View {
     let title: String
@@ -487,6 +544,15 @@ public enum Format {
         case .linux: "server.rack"
         case .windows: "pc"
         case .container: "shippingbox"
+        }
+    }
+
+    public static func kind(_ kind: LeaseKind) -> String {
+        switch kind {
+        case .ci: "CI"
+        case .session: "Session"
+        case .agent: "Agent"
+        case .manual: "Manual"
         }
     }
 }

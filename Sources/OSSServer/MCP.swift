@@ -108,7 +108,7 @@ enum MCPServer {
                 }
                 let held = status.leases.filter { $0.holder == holderName() }
                 lines.append(held.isEmpty ? "you hold no machines" : "you hold:")
-                for lease in held { lines.append("  \(lease.id)  \(lease.platform.rawValue)/\(lease.config)  \(lease.state.rawValue)  until \(iso(lease.expires))") }
+                for lease in held { lines.append("  \(leaseLine(lease))") }
                 return text(lines.joined(separator: "\n"))
             case "oss_lease":
                 guard let name = arguments["platform"] as? String, let platform = Platform(rawValue: name), platform != .container else {
@@ -116,9 +116,10 @@ enum MCPServer {
                 }
                 let key = defaultKey().flatMap { FileManager.default.contents(atPath: $0) }
                     .map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+                // A program that speaks MCP to lease a machine is an agent at work.
                 let lease = try await client.lease(LeaseRequest(platform: platform, config: arguments["config"] as? String,
                                                                 minutes: (arguments["minutes"] as? NSNumber)?.intValue,
-                                                                holder: holderName(), sshPublicKey: key))
+                                                                holder: holderName(), sshPublicKey: key, kind: .agent))
                 return text(describe(lease, client))
             case "oss_renew":
                 let renewed = try await client.renew(try await lease().id, minutes: (arguments["minutes"] as? NSNumber)?.intValue)
@@ -165,7 +166,7 @@ enum MCPServer {
                 var lines = ["\(h.name): CPU \(Int(h.cpuPercent))% of \(h.cpus * 100)%, memory \(gigabytes(h.memoryUsedBytes)) of \(gigabytes(h.memoryBytes))"]
                 for m in usage.machines {
                     let cpu = m.cpuPercent.map { "\(Int($0))%" } ?? "?"
-                    lines.append("  \(m.id) \(m.platform.rawValue)/\(m.config): CPU \(cpu), memory \(m.memoryBytes.map(gigabytes) ?? "?") (\(m.holder))")
+                    lines.append("  \(m.id) \(m.platform.rawValue)/\(m.config): CPU \(cpu), memory \(m.memoryBytes.map(gigabytes) ?? "?") (\(m.holder)\(m.kind.map { ", \($0.rawValue)" } ?? ""))")
                 }
                 return text(lines.joined(separator: "\n"))
             default:

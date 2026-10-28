@@ -83,19 +83,21 @@ public struct ContainerVolume: Codable, Sendable, Hashable {
 }
 
 /// A container volume on the server's Mac: its size, the disk it takes
-/// now, and the lease using it.
+/// now, and the lease using it and that lease's kind (API 8).
 public struct VolumeInfo: Codable, Sendable, Identifiable {
     public var name: String
     public var sizeBytes: Int64
     public var allocatedBytes: Int64
     public var lease: String?
+    public var kind: LeaseKind?
     public var id: String { name }
 
-    public init(name: String, sizeBytes: Int64, allocatedBytes: Int64, lease: String? = nil) {
+    public init(name: String, sizeBytes: Int64, allocatedBytes: Int64, lease: String? = nil, kind: LeaseKind? = nil) {
         self.name = name
         self.sizeBytes = sizeBytes
         self.allocatedBytes = allocatedBytes
         self.lease = lease
+        self.kind = kind
     }
 }
 
@@ -231,6 +233,26 @@ public enum LeaseState: String, Codable, Sendable {
     case creating, ready, returning, failed
 }
 
+/// Who a lease is for (API 8), so whoever looks at a server can tell a CI
+/// job's machines from a session's and an agent's.
+public enum LeaseKind: String, Codable, CaseIterable, Sendable {
+    /// A CI job's (`oss` fills it in from GitHub Actions' variables).
+    case ci
+    /// A Visor session's own machine: the container it runs in.
+    case session
+    /// A machine an agent in a session leased for its work.
+    case agent
+    /// Someone's at a terminal, or a program's that said nothing else.
+    case manual
+
+    /// A kind this build doesn't know (a newer server's) reads as `manual`:
+    /// an unknown value would otherwise fail the whole status it came in
+    /// (OS Monitor reading a newer server), or a server's saved leases.
+    public init(from decoder: Decoder) throws {
+        self = LeaseKind(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .manual
+    }
+}
+
 /// A machine lent to one holder until it is released or its time runs out.
 public struct Lease: Codable, Sendable {
     public var id: String
@@ -243,6 +265,16 @@ public struct Lease: Codable, Sendable {
     public var created: Date
     public var expires: Date
     public var error: String?
+
+    /// Who it is for (API 8; nil from an older server): what the request
+    /// said, or, where it said nothing, what the server took its holder
+    /// for (`visor:` holders' containers are sessions, their other
+    /// machines agents', any other holder's manual).
+    public var kind: LeaseKind?
+    /// A short line saying what it's for (a session's title, a CI job's
+    /// repository, workflow, run and job), and a page about it (the run's).
+    public var label: String?
+    public var link: URL?
 
     // VMs
     /// The guest's address on the VMs' network (reached from the server's Mac only).
@@ -279,7 +311,7 @@ public struct Lease: Codable, Sendable {
     public var execSocket: String?
 
     public init(id: String, platform: Platform, config: String, name: String, holder: String, state: LeaseState,
-                created: Date, expires: Date, error: String? = nil) {
+                created: Date, expires: Date, error: String? = nil, kind: LeaseKind? = nil, label: String? = nil, link: URL? = nil) {
         self.id = id
         self.platform = platform
         self.config = config
@@ -289,6 +321,9 @@ public struct Lease: Codable, Sendable {
         self.created = created
         self.expires = expires
         self.error = error
+        self.kind = kind
+        self.label = label
+        self.link = link
     }
 }
 
@@ -302,16 +337,65 @@ public struct LeaseRequest: Codable, Sendable {
     /// A container lease's image and what it's given (API 6). A container
     /// may ask for `minutes: 0`: held until it is released.
     public var container: ContainerSpec?
+    /// Who it is for, a line saying what for, and a page about it (API 8;
+    /// each optional: a server takes a lease with no kind by its holder).
+    /// The label is kept to one line of at most 200 characters; the link
+    /// must be http or https.
+    public var kind: LeaseKind?
+    public var label: String?
+    public var link: URL?
 
     public init(platform: Platform, config: String? = nil, minutes: Int? = nil, holder: String? = nil, sshPublicKey: String? = nil,
-                container: ContainerSpec? = nil) {
+                container: ContainerSpec? = nil, kind: LeaseKind? = nil, label: String? = nil, link: URL? = nil) {
         self.platform = platform
         self.config = config
         self.minutes = minutes
         self.holder = holder
         self.sshPublicKey = sshPublicKey
         self.container = container
+        self.kind = kind
+        self.label = label
+        self.link = link
     }
+}
+
+/// A GitHub Actions job, from the variables its runner sets: what `oss`
+/// says of a lease taken in one that says nothing of itself (kind `ci`,
+/// this label and link). Nil unless every one it reads is set.
+public struct GitHubActionsJob: Sendable, Equatable {
+    /// `owner/name`.
+    public var repository: String
+    /// The workflow's name, the run's id, which attempt at the run this is
+    /// (1, or more for a run re-run: its page shows the latest), and the
+    /// job's id in the workflow.
+    public var workflow: String
+    public var runID: String
+    public var attempt: String
+    public var job: String
+    /// `https://github.com`, or a GitHub Enterprise server's.
+    public var server: String
+
+    public init?(environment: [String: String]) {
+        guard environment["GITHUB_ACTIONS"] == "true" else { return nil }
+        func value(_ name: String) -> String? {
+            guard let value = environment[name]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+            return value
+        }
+        guard let repository = value("GITHUB_REPOSITORY"), let workflow = value("GITHUB_WORKFLOW"), let runID = value("GITHUB_RUN_ID"),
+              let attempt = value("GITHUB_RUN_ATTEMPT"), let job = value("GITHUB_JOB"), let server = value("GITHUB_SERVER_URL")
+        else { return nil }
+        self.repository = repository
+        self.workflow = workflow
+        self.runID = runID
+        self.attempt = attempt
+        self.job = job
+        self.server = server.hasSuffix("/") ? String(server.dropLast()) : server
+    }
+
+    /// `owner/name · Workflow #<run id> · job`.
+    public var label: String { "\(repository) · \(workflow) #\(runID) · \(job)" }
+    /// The run's page.
+    public var link: URL? { URL(string: "\(server)/\(repository)/actions/runs/\(runID)") }
 }
 
 public struct RenewRequest: Codable, Sendable {
@@ -575,6 +659,8 @@ public struct MachineUsage: Codable, Sendable {
     public var platform: Platform
     public var config: String
     public var holder: String
+    /// The lease's kind (API 8).
+    public var kind: LeaseKind?
     public var cpus: Int?
     public var memoryLimitBytes: Int64?
     public var cpuPercent: Double?
@@ -585,13 +671,14 @@ public struct MachineUsage: Codable, Sendable {
     /// (API 6).
     public var diskBytes: Int64?
 
-    public init(id: String, platform: Platform, config: String, holder: String, cpus: Int? = nil, memoryLimitBytes: Int64? = nil,
-                cpuPercent: Double? = nil, memoryBytes: Int64? = nil, diskBytes: Int64? = nil) {
+    public init(id: String, platform: Platform, config: String, holder: String, kind: LeaseKind? = nil, cpus: Int? = nil,
+                memoryLimitBytes: Int64? = nil, cpuPercent: Double? = nil, memoryBytes: Int64? = nil, diskBytes: Int64? = nil) {
         self.diskBytes = diskBytes
         self.id = id
         self.platform = platform
         self.config = config
         self.holder = holder
+        self.kind = kind
         self.cpus = cpus
         self.memoryLimitBytes = memoryLimitBytes
         self.cpuPercent = cpuPercent
@@ -651,6 +738,10 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
 public enum OSS {
     /// This build's version, and the API level it speaks.
     public static let version = "0.12.1"
+    /// 8 from 0.13.0: who a lease is for (`Lease.kind`: `ci`, `session`,
+    /// `agent` or `manual`, with a `label` and a `link`), asked for in a
+    /// `LeaseRequest` or taken from its holder, and carried by a lease's
+    /// usage (`MachineUsage.kind`) and its volumes (`VolumeInfo.kind`).
     /// 7 from 0.13.0: storage (`/v1/storage/…`: objects by their SHA-256,
     /// kept while a holder's lease on them lasts), grants (`/v1/grants`: a
     /// URL that does one thing without the token), an iOS lease's app
@@ -671,7 +762,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 7
+    public static let apiLevel = 8
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
 }

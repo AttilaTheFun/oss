@@ -44,6 +44,27 @@
   app's bundle identifier.
 - `oss status` shows the store's use (`Status.storage`): its objects and
   bytes against its caps, its leases, the served files.
+- **Who a lease is for** (API 8): every machine lease has a `kind` (`ci`,
+  `session`, `agent` or `manual`), and may have a `label` (a short line:
+  a session's title, a CI job's name) and a `link` (the CI run's page),
+  all optional in a `LeaseRequest` and kept with the lease across
+  restarts. `oss machine lease` and `oss machine run` take `--kind`,
+  `--label` and `--link`; in a GitHub Actions job, a lease with no
+  `--kind` is `ci`, labelled `<repository> · <workflow> #<run id> · <job>`
+  and linked to the run; `oss mcp`'s are `agent`. A lease that says no
+  kind (an older client's) is taken by its holder, on the server, so every
+  view agrees: a `visor:` holder's container is a `session`, its other
+  machines `agent`, anyone else's `manual` (the leases a server kept from
+  before take theirs the same way). A label is kept to one line of at
+  most 200 characters; a link that isn't http or https is refused.
+- Kinds are shown wherever leases are: `oss machine list` (a kind column
+  and the label; `--json` too), `oss status` (how many of each), `oss
+  usage` and `oss volume list` (the lease's kind; `--json`), the JSON
+  (`Lease`, `MachineUsage.kind`, `VolumeInfo.kind`), and a badge (CI,
+  Session, Agent, Manual) on each lease in OS Server's window and menu bar
+  panel and in OS Monitor, with its label (a link to its page where it has
+  one), and beside a volume's lease. The canned servers of the proofs have
+  one lease of each kind.
 
 ## 0.12.1
 

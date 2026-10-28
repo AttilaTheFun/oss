@@ -29,13 +29,16 @@ repository's `.github/icon.png` is the same document at 512 px.
   log, the launch agent's plist, the command line's link and the login
   item), then it quits.
 - **What it shows** comes from the server's API (`Monitor`, OSSClient, every
-  two seconds): `status`, `usage`, `capabilities` and `cache`.
+  two seconds): `status`, `usage`, `capabilities` and `cache`. Each lease
+  carries a badge of its kind (CI, Session, Agent, Manual: OSSMonitorKit's
+  `KindBadge`, as OS Monitor's) beside its holder, and its label.
 - **The menu bar**: closing the window turns the app into a menu bar app
   (no Dock icon); its item shows the leases' count, and its panel the Mac's
-  CPU and memory and each lease.
-- **The canned server** (`-fixture YES`, Fixture.swift): the same leases,
-  usage and log every time, nothing started; `-panel YES` shows the menu
-  bar's panel in a window of its own, `-appearance light|dark` forces one.
+  CPU and memory and each lease, with its kind and label.
+- **The canned server** (`-fixture YES`, Fixture.swift): the same leases
+  (one of each kind), usage and log every time, nothing started;
+  `-panel YES` shows the menu bar's panel in a window of its own,
+  `-appearance light|dark` forces one.
   The proof (`../tools/proof.py`) photographs these on a macOS lease (`tools/proof.py`).
   Launch arguments are AppKit's `-key value` pairs: a flag without a value
   takes the next one as its value, and a word left over is a file to open,

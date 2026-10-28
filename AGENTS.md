@@ -27,8 +27,10 @@ containers for agents are Visor's (`visor machine …` leases through it).
 ## Machines
 
 ```sh
-oss status                                       # bases (configs), capacity, leases
+oss status                                       # bases (configs), capacity, leases (how many of each kind)
 oss machine lease <macos|ios|android|linux|windows> [--config=NAME] [--minutes=N] [--wait]
+                  [--kind=ci|session|agent|manual] [--label="what for"] [--link=URL]
+oss machine list                                 # every lease: kind, holder, time, label
 oss machine ssh <id> -- <command>                # VMs: as runner; sudo needs no password
 oss machine simctl <id> install ./My.app         # iOS: local paths uploaded first
 oss machine simctl <id> launch <bundle id> | openurl <url> | terminate … | listapps
@@ -47,6 +49,14 @@ oss machine release <id>
 `renew`, `release` and the others take the lease's id, or its platform
 when you hold just one lease of it. On Android you can also use your own
 adb: `adb connect <host>:<adbPort>` (printed with the lease).
+
+Say who a lease is for: everyone watching the server (`oss status`, OS
+Server's window, OS Monitor) sees each lease's kind and label. An agent
+leasing for its work passes `--kind=agent --label="<its task>"`; a CI job
+in GitHub Actions is `ci` by itself (its job and run); `oss mcp`'s leases
+are `agent`. Without `--kind`, the server takes the holder's: a `visor:`
+holder's container is its `session`, its other machines `agent`, anyone
+else's `manual`.
 
 Configs are the bases the server has (`oss status`). `vanilla` is the OS
 as it comes with only what oss needs (no Git, no package manager): the

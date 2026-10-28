@@ -117,7 +117,7 @@ enum UsageProbe {
             }
             let processes = Dictionary(roots.flatMap { tree($0, in: all) }.map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a }).values
             ourPIDs.formUnion(processes.map(\.pid))
-            return MachineUsage(id: lease.id, platform: lease.platform, config: lease.config, holder: lease.holder,
+            return MachineUsage(id: lease.id, platform: lease.platform, config: lease.config, holder: lease.holder, kind: lease.kind,
                                 cpus: lease.cpus, memoryLimitBytes: lease.memoryLimitBytes,
                                 cpuPercent: processes.isEmpty ? nil : (processes.reduce(0) { $0 + $1.cpu } * 10).rounded() / 10,
                                 memoryBytes: processes.isEmpty ? nil : processes.reduce(0) { $0 + (footprint($1.pid) ?? $1.rss) },
