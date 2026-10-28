@@ -154,6 +154,7 @@ actor MachineManager {
     /// no other: it shares this Mac's folders).
     func lease(_ request: LeaseRequest, local: Bool) async throws -> Lease {
         guard self.config.lends(request.platform) else { throw APIError(error: "this server lends no \(request.platform.rawValue) machines") }
+        let origin = try LeaseOrigin(request)
         if request.platform == .container {
             guard containers != nil else { throw APIError(error: "this server runs no containers (OS Server's app does)", code: "noContainers") }
             guard local else { throw APIError(error: "a container is lent only to a client on its server's Mac", code: "notLocal") }
@@ -189,9 +190,10 @@ actor MachineManager {
                           expires: untilReleased ? .distantFuture : Date().addingTimeInterval(TimeInterval(minutes * 60)))
         if request.platform.isVM { lease.sshUser = self.config.guestUser }
         lease.container = request.container
+        lease.take(origin)
         leases[id] = lease
         save()
-        log("lease \(id): \(base.name) for \(lease.holder), \(untilReleased ? "until released" : "\(minutes) min")")
+        log("lease \(id): \(base.name) for \(lease.holder) (\(origin.kind.rawValue)), \(untilReleased ? "until released" : "\(minutes) min")")
         Task { await self.create(id, from: base, holderKey: request.sshPublicKey) }
         return lease
     }
@@ -272,7 +274,9 @@ actor MachineManager {
         guard let containers else { return [] }
         return await containers.volumes().map { volume in
             var volume = volume
-            volume.lease = leases.values.first { $0.state != .failed && $0.container?.volumes.contains { $0.name == volume.name } == true }?.id
+            let user = leases.values.first { $0.state != .failed && $0.container?.volumes.contains { $0.name == volume.name } == true }
+            volume.lease = user?.id
+            volume.kind = user?.kind
             return volume
         }
     }
@@ -734,17 +738,13 @@ actor MachineManager {
     // MARK: Persistence
 
     private func save() {
-        Paths.ensure(Paths.state)
-        if let data = try? JSONEncoder.oss.encode(Array(leases.values)) {
-            FileManager.default.createFile(atPath: Paths.leases, contents: data, attributes: [.posixPermissions: 0o600])
-        }
+        LeaseFile.write(Array(leases.values), to: Paths.leases)
     }
 
     /// After a restart: leases still running get their forwards back; clones
     /// nobody holds any more are deleted.
     func recover() async {
-        let saved = (FileManager.default.contents(atPath: Paths.leases))
-            .flatMap { try? JSONDecoder.oss.decode([Lease].self, from: $0) } ?? []
+        let saved = LeaseFile.read(Paths.leases)
         // What this server doesn't lend, it leaves alone (a second server's
         // machines, named like its own).
         let simulators = config.lends(.ios) ? ((try? await Simulators.devices()) ?? []) : []

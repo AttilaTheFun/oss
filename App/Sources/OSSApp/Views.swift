@@ -158,7 +158,15 @@ struct MachinesSection: View {
                                     Text(row.lease.id).font(.caption.monospaced()).foregroundStyle(.secondary)
                                 }
                             }
-                            Text(row.lease.holder).lineLimit(1)
+                            // Who it's for: its kind and holder, and what for (a CI run's label links to the run).
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    if let kind = row.lease.kind { KindBadge(kind) }
+                                    Text(row.lease.holder).lineLimit(1)
+                                }
+                                LeaseLabel(lease: row.lease).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            .frame(maxWidth: 220, alignment: .leading)
                             UsageCell(text: cpuText(row), fraction: cpuFraction(row), tint: .blue)
                             UsageCell(text: memoryText(row), fraction: memoryFraction(row), tint: .purple)
                             Text(row.usage?.diskBytes.map(Format.bytes) ?? "—").monospacedDigit()
@@ -453,7 +461,12 @@ struct MenuBarView: View {
                         Image(systemName: Format.symbol(row.lease.platform)).frame(width: 18)
                         VStack(alignment: .leading, spacing: 1) {
                             Text("\(Format.platform(row.lease.platform)) · \(row.lease.config)").lineLimit(1)
-                            Text(row.lease.holder).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            // Its kind, and what it's for where it says (a session's title), else its holder.
+                            HStack(spacing: 5) {
+                                if let kind = row.lease.kind { KindBadge(kind) }
+                                Text(row.lease.label ?? row.lease.holder).lineLimit(1)
+                            }
+                            .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 1) {

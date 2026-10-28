@@ -14,6 +14,11 @@
   carries it; both draw leases from `Status`, and their proofs' canned
   servers would need a value too.
 - **`oss mcp`**: tools for storage and grants beside the machines'.
+- **Kinds for storage's leases**: a machine lease says who it's for
+  (`kind`, `label`, `link`, API 8) and a storage lease doesn't. Its holder
+  could be taken the same way (`LeaseOrigin`: a `visor:` holder's objects
+  are a session's), so `oss storage ls` and the store's use in `oss status`
+  could say how much CI, sessions and people keep.
 - **A free-space floor for the store**, as the Bazel cache keeps one
   (`minFreeGigabytes`): today only its caps bound it.
 - **One writer in `Files/sha256/`**: `oss files add` and `remove` write the

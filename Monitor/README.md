@@ -6,7 +6,8 @@ shows:
 - what its Mac's CPU, memory and disk go to: OS Server and the machines it
   lends, every other process, what's free;
 - the last minutes of CPU and memory;
-- what's running (each lease, its holder, what it uses, its time left);
+- what's running (each lease, its kind: CI, Session, Agent or Manual, its
+  holder and label, what it uses, its time left);
 - the other apps using the most;
 - OS Server's files on disk, its capacity per platform, and its Bazel cache.
 

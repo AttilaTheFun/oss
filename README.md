@@ -57,8 +57,9 @@ agents (Visor runs its own), and oss stays with what needs a GUI.
 OS Server's client for iPhone, iPad and Mac (`Monitor/`, its README).
 - **What it shows:** each server's CPU, memory and disk, split into OS
   Server's share (its own process and every machine it lends), every other
-  process's, and what's free; what's running; the other apps using the
-  most; OS Server's files.
+  process's, and what's free; what's running, and whose (CI's, a
+  session's, an agent's, by hand); the other apps using the most; OS
+  Server's files.
 - **Adding a server:** with the code in OS Server's Settings › OS Monitor (a
   QR code, or Copy Code), or from `oss monitor code` on a server run
   without the app.
@@ -89,6 +90,7 @@ oss machine type <id> hello world              # into what has focus
 oss machine key <id> return                    # names, a VM's cmd+a, or the platform's code
 oss machine upload <id> ./build ~/build        # VMs (scp; download the other way)
 oss machine run windows -- ./test.sh           # lease, run with OSS_* set, release
+oss machine list                               # every lease: its kind, holder, time and label
 oss usage                                      # the server's CPU and memory, and each lease's
 ```
 
@@ -103,6 +105,25 @@ cloned from. oss makes vanilla bases (below); a server can have as many
 more as its owner builds. A lease that isn't renewed is released when its
 time runs out (60 minutes unless asked otherwise, at most 480). `renew`
 and `release` take the lease's id, or its platform when you hold just one.
+
+Every lease says who it is for (API 8), so a server's leases can be told
+apart wherever they're shown (`oss machine list` and `oss status`, OS
+Server's window and menu bar, OS Monitor, a volume's lease):
+
+- **Its kind**: `ci` (a CI job's), `session` (a Visor session's own
+  machine: the container it runs in), `agent` (a machine an agent in a
+  session leased for its work) or `manual` (someone's at a terminal).
+- **A label**, a short line (a session's title, a CI job's name), and **a
+  link** to a page about it (the CI run's).
+
+`oss machine lease` and `oss machine run` take `--kind`, `--label` and
+`--link`. In a GitHub Actions job a lease with no `--kind` is `ci`,
+labelled `<repository> · <workflow> #<run id> · <job>` and linked to the
+run, from the variables the runner sets; `oss mcp`'s leases are `agent`.
+A lease that says no kind (from a client before API 8, or one that left
+it out) is taken by its holder: Visor's, `visor:<session>`, are a
+`session` for a container and an `agent` for anything else; any other
+holder's are `manual`.
 
 ### Containers
 
@@ -213,7 +234,8 @@ alone; anything else gets the same 403, whatever was wrong.
 
 or `oss machine lease linux --exports >> "$GITHUB_ENV"`, then `$OSS_SSH '…'`
 in later steps and `oss machine release "$OSS_ID"` in an `if: always()`
-step.
+step. Either lease is shown as the job's (kind `ci`, its repository,
+workflow, run and job, a link to the run) unless `--kind` says otherwise.
 
 A job in a container, on the runner's own Mac (containers are lent there
 only): `--inside` runs the command in the container, in the runner's
@@ -323,6 +345,13 @@ let lease = try await client.lease(LeaseRequest(platform: .ios))
 try await client.release(lease.id)
 ```
 
+A program that leases for others says who each lease is for (API 8), as
+Visor does for a session's container and its agents' machines:
+
+```swift
+let lease = try await client.lease(LeaseRequest(platform: .macos, holder: "visor:\(session)", kind: .agent, label: title))
+```
+
 A container's commands (`exec`) go straight to it, over its Unix socket:
 
 ```swift
@@ -388,17 +417,17 @@ containers, which it couldn't read.
 | `GET /v1/capabilities` | its version, API level, features and platforms |
 | `GET /v1/status` | bases, capacity, leases |
 | `GET /v1/doctor` | whether the server can drive UTM, simulators and emulators |
-| `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?, "container"?}` | a lease (state `creating`; poll it until `ready`). A container's `container` is a `ContainerSpec` (`image`, `cpus`, `memoryBytes`, `diskBytes`, `mounts`, `volumes`, `rosetta`, `environment`, `workingDirectory`, `command`); `minutes: 0` holds it until released; only a client on the server's Mac gets one |
-| `GET /v1/machines`, `GET /v1/machines/<id>` | leases; one lease: ports, VNC password, UDID, adb port… |
+| `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?, "container"?, "kind"?, "label"?, "link"?}` | a lease (state `creating`; poll it until `ready`). A container's `container` is a `ContainerSpec` (`image`, `cpus`, `memoryBytes`, `diskBytes`, `mounts`, `volumes`, `rosetta`, `environment`, `workingDirectory`, `command`); `minutes: 0` holds it until released; only a client on the server's Mac gets one. `kind` is `ci`, `session`, `agent` or `manual` (one a server doesn't know reads as `manual`; without one, the holder's: a `visor:` holder's container `session`, its other machines `agent`, anyone else's `manual`); `label` is kept to one line of at most 200 characters; `link` must be http or https (400 otherwise) |
+| `GET /v1/machines`, `GET /v1/machines/<id>` | leases (each with its `kind`, `label` and `link`); one lease: ports, VNC password, UDID, adb port… |
 | `POST /v1/machines/<id>/renew` `{"minutes"?}` | its time set again |
 | `DELETE /v1/machines/<id>` | released |
 | `PUT /v1/machines/<id>/files/<name>` (raw body) | a file for its commands, as `@<name>` (a `.zip` is unpacked: an `.app`) |
 | `POST /v1/machines/<id>/simctl` or `/adb` `{"arguments": [...]}` | `simctl` against the simulator / `adb` against the emulator: `{"status", "output", "error"}` |
 | `GET /v1/machines/<id>/screenshot` | a PNG of its screen |
 | `POST /v1/machines/<id>/input` `{"action": "tap"\|"swipe"\|"type"\|"key", "x"?, "y"?, "toX"?, "toY"?, "milliseconds"?, "text"?, "key"?}` | a tap, swipe, text or key on its screen, in its screenshot's pixels |
-| `GET /v1/usage` | the server's CPU and memory, and each lease's (its processes on the Mac; 100% CPU is one core), against what it was given; from API 5 also OS Server's share (`ours`), everyone else's (`others`), the disk and OS Server's files on it (`disk`), and the other apps using the most (`topProcesses`) |
+| `GET /v1/usage` | the server's CPU and memory, and each lease's (its processes on the Mac; 100% CPU is one core), against what it was given (and from API 8 its `kind`); from API 5 also OS Server's share (`ours`), everyone else's (`others`), the disk and OS Server's files on it (`disk`), and the other apps using the most (`topProcesses`) |
 | `GET /v1/usage/history` | the last day of the server's Mac, a sample a minute: CPU, memory and disk, OS Server's and everyone else's |
-| `GET /v1/volumes`, `DELETE /v1/volumes/<name>` | containers' volumes (size, disk taken, the lease using one); a kept one deleted (from the server's Mac) |
+| `GET /v1/volumes`, `DELETE /v1/volumes/<name>` | containers' volumes (size, disk taken, the lease using one and its `kind`); a kept one deleted (from the server's Mac) |
 | `GET /v1/cache` | the Bazel cache's port and read token, its size and how many lookups it answered (404 without one) |
 | `HEAD /v1/storage/objects/<sha256>` | 200 with its `Content-Length` if the store has it, else 404 |
 | `PUT /v1/storage/objects?name=…&ttl=…` (raw body; `OSS-SHA256`?) | the body streamed to a file, hashed as it comes, checked against `OSS-SHA256` if given, kept once; then the holder's lease (`ttl` `90s`, `30m`, `24h`, `7d` or seconds: 24h unless given, at most 7d; `name`: the lease of the holder's that had it is released). 201 `{"object": {"sha256", "size"}, "lease", "existed"}`. With `OSS-SHA256` and no body, a lease on what the store has (404 `noObject` if it hasn't). Past a cap (its length counted as new bytes unless `OSS-SHA256` names what the store has), 413 `quota`, before the body is read |

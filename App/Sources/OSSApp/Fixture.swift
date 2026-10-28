@@ -75,26 +75,32 @@ enum Fixture {
     @MainActor
     static func apply(to monitor: Monitor, server: ServerRunner) {
         let gb: Int64 = 1_073_741_824
-        func lease(_ id: String, _ platform: Platform, _ config: String, _ holder: String, minutesAgo: Double,
-                   minutesLeft: Double, cpus: Int?, memory: Int64?) -> Lease {
+        func lease(_ id: String, _ platform: Platform, _ config: String, _ holder: String, _ kind: LeaseKind, label: String? = nil,
+                   link: String? = nil, minutesAgo: Double, minutesLeft: Double, cpus: Int?, memory: Int64?) -> Lease {
             var lease = Lease(id: id, platform: platform, config: config, name: "oss-lease-\(platform.rawValue)-\(id)",
                               holder: holder, state: .ready, created: now.addingTimeInterval(-minutesAgo * 60),
-                              expires: now.addingTimeInterval(minutesLeft * 60))
+                              expires: now.addingTimeInterval(minutesLeft * 60), kind: kind, label: label, link: link.flatMap { URL(string: $0) })
             lease.cpus = cpus
             lease.memoryLimitBytes = memory
             // OS Server's own QEMU: its Screen window.
             if platform == .linux || platform == .windows { lease.qemuVNCPort = 46500 }
             return lease
         }
+        // One lease of each kind: a session's own container, its agents' machines, a CI job's, and one by hand.
         let leases = [
-            lease("3f2a91c0", .macos, "xcode-27.0", "visor:session-a", minutesAgo: 42, minutesLeft: 18, cpus: 6, memory: 16 * gb),
-            lease("7b1e04d2", .windows, "swift-6.3.2", "visor:session-a", minutesAgo: 31, minutesLeft: 29, cpus: 6, memory: 16 * gb),
-            lease("a90c3e17", .linux, "dev", "ci@runner", minutesAgo: 12, minutesLeft: 48, cpus: 6, memory: 16 * gb),
-            lease("c44d8a20", .ios, "iphone", "visor:session-b", minutesAgo: 8, minutesLeft: 52, cpus: nil, memory: nil),
-            lease("e5f61b39", .android, "phone", "visor:session-b", minutesAgo: 6, minutesLeft: 54, cpus: 4, memory: 4 * gb),
+            lease("3f2a91c0", .macos, "xcode-27.0", "visor:session-a", .agent, label: "Sidebar snapshot tests",
+                  minutesAgo: 42, minutesLeft: 18, cpus: 6, memory: 16 * gb),
+            lease("7b1e04d2", .windows, "swift-6.3.2", "visor:session-a", .agent, label: "Sidebar snapshot tests",
+                  minutesAgo: 31, minutesLeft: 29, cpus: 6, memory: 16 * gb),
+            lease("a90c3e17", .linux, "dev", "ci@runner", .ci, label: "example/app · CI #18342034123 · test",
+                  link: "https://github.com/example/app/actions/runs/18342034123", minutesAgo: 12, minutesLeft: 48, cpus: 6, memory: 16 * gb),
+            lease("c44d8a20", .ios, "iphone", "visor:session-b", .agent, label: "Onboarding screens",
+                  minutesAgo: 8, minutesLeft: 52, cpus: nil, memory: nil),
+            lease("e5f61b39", .android, "phone", "dev@workstation", .manual, minutesAgo: 6, minutesLeft: 54, cpus: 4, memory: 4 * gb),
             {
-                // An agent's container, held until it is released.
-                var held = lease("0d9c27f4", .container, "linux", "visor:session-c", minutesAgo: 95, minutesLeft: 0, cpus: 6, memory: 16 * gb)
+                // A session's own container, held until it is released.
+                var held = lease("0d9c27f4", .container, "linux", "visor:session-c", .session, label: "Release notes for 1.0",
+                                 minutesAgo: 95, minutesLeft: 0, cpus: 6, memory: 16 * gb)
                 held.expires = .distantFuture
                 return held
             }(),
@@ -103,17 +109,17 @@ enum Fixture {
             sampledAt: now,
             host: HostUsage(name: "Mac Studio", cpus: 32, cpuPercent: 1184, memoryBytes: 512 * gb, memoryUsedBytes: 171 * gb),
             machines: [
-                MachineUsage(id: "3f2a91c0", platform: .macos, config: "xcode-27.0", holder: "visor:session-a", cpus: 6,
+                MachineUsage(id: "3f2a91c0", platform: .macos, config: "xcode-27.0", holder: "visor:session-a", kind: .agent, cpus: 6,
                              memoryLimitBytes: 16 * gb, cpuPercent: 412, memoryBytes: 17 * gb, diskBytes: 38 * gb),
-                MachineUsage(id: "7b1e04d2", platform: .windows, config: "swift-6.3.2", holder: "visor:session-a", cpus: 6,
+                MachineUsage(id: "7b1e04d2", platform: .windows, config: "swift-6.3.2", holder: "visor:session-a", kind: .agent, cpus: 6,
                              memoryLimitBytes: 16 * gb, cpuPercent: 538, memoryBytes: 19 * gb, diskBytes: 46 * gb),
-                MachineUsage(id: "a90c3e17", platform: .linux, config: "dev", holder: "ci@runner", cpus: 6,
+                MachineUsage(id: "a90c3e17", platform: .linux, config: "dev", holder: "ci@runner", kind: .ci, cpus: 6,
                              memoryLimitBytes: 16 * gb, cpuPercent: 96, memoryBytes: 7 * gb, diskBytes: 12 * gb),
-                MachineUsage(id: "c44d8a20", platform: .ios, config: "iphone", holder: "visor:session-b",
+                MachineUsage(id: "c44d8a20", platform: .ios, config: "iphone", holder: "visor:session-b", kind: .agent,
                              cpuPercent: 64, memoryBytes: 3 * gb, diskBytes: 4 * gb),
-                MachineUsage(id: "e5f61b39", platform: .android, config: "phone", holder: "visor:session-b", cpus: 4,
+                MachineUsage(id: "e5f61b39", platform: .android, config: "phone", holder: "dev@workstation", kind: .manual, cpus: 4,
                              memoryLimitBytes: 4 * gb, cpuPercent: 38, memoryBytes: 5 * gb, diskBytes: 9 * gb),
-                MachineUsage(id: "0d9c27f4", platform: .container, config: "linux", holder: "visor:session-c", cpus: 6,
+                MachineUsage(id: "0d9c27f4", platform: .container, config: "linux", holder: "visor:session-c", kind: .session, cpus: 6,
                              memoryLimitBytes: 16 * gb, cpuPercent: 214, memoryBytes: 9 * gb, diskBytes: 7 * gb),
             ])
         let bases = [
@@ -145,11 +151,11 @@ enum Fixture {
                              hits: 48_213, misses: 3_907, writes: 11_542, evicted: 0),
             history: history)
         server.pretend(.running(since: now.addingTimeInterval(-3 * 3600 - 17 * 60)), lines: [
-            "2026-11-01T09:18:02Z lease a90c3e17: oss-linux-dev for ci@runner, 60 min",
+            "2026-11-01T09:18:02Z lease a90c3e17: oss-linux-dev for ci@runner (ci), 60 min",
             "2026-11-01T09:18:27Z lease a90c3e17: ready at 192.168.65.12, ssh :47502, vnc :47503",
-            "2026-11-01T09:22:10Z lease c44d8a20: oss-ios-iphone for visor:session-b, 60 min",
+            "2026-11-01T09:22:10Z lease c44d8a20: oss-ios-iphone for visor:session-b (agent), 60 min",
             "2026-11-01T09:22:15Z lease c44d8a20: simulator booted",
-            "2026-11-01T09:24:01Z lease e5f61b39: oss-android-phone for visor:session-b, 60 min",
+            "2026-11-01T09:24:01Z lease e5f61b39: oss-android-phone for dev@workstation (manual), 60 min",
             "2026-11-01T09:24:07Z lease e5f61b39: emulator-5700 booted, adb :47504",
         ])
     }
