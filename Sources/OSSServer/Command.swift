@@ -407,7 +407,7 @@ func xctestCommand(_ arguments: Arguments, put: ((URL) async throws -> String)?,
         default: break
         }
     }
-    FileHandle.standardError.write(Data("oss: xctest run \(outcome.id): xcodebuild exited \(outcome.status)\n".utf8))
+    FileHandle.standardError.write(Data("oss: xctest run \(outcome.id) exited \(outcome.status)\n".utf8))
     var status = outcome.status
     func fetched(_ what: String, _ fetch: () async throws -> Void) async {
         do {

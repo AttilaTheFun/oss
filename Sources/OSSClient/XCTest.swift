@@ -45,7 +45,8 @@ public struct XCTestRequest: Codable, Sendable, Hashable {
 
 /// A run's end: its id (what its JUnit and result bundle are read by, as
 /// long as the lease lasts) and xcodebuild's exit status (0 passed, 65 a
-/// test failed; 127 xcodebuild couldn't be started).
+/// test failed; 127 xcodebuild couldn't be started), or 1 where it passed
+/// with no test run (as rules_apple's runner fails it).
 public struct XCTestRun: Codable, Sendable, Hashable {
     public var id: String
     public var status: Int32

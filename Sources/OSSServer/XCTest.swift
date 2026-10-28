@@ -24,7 +24,8 @@ protocol XCTestTools: Sendable {
     /// `xcodebuild` with these arguments, its output (standard output and
     /// error together) handed to `output` as it comes; its exit status.
     /// `output` answering false (its client has gone), or the task
-    /// cancelled, ends it: SIGINT, then SIGKILL ten seconds on.
+    /// cancelled, ends it: SIGINT, then SIGKILL ten seconds on, for it and
+    /// everything it started.
     func xcodebuild(_ arguments: [String], output: @escaping @Sendable (Data) async -> Bool) async throws -> Int32
     /// A result bundle's tests, as `xcresulttool get test-results tests`
     /// gives them (JSON).
@@ -59,9 +60,11 @@ struct Xcode: XCTestTools {
 
 /// A program whose output is handed on as it comes (stdout and stderr in
 /// one pipe, as a terminal shows them), stopped when its reader has gone or
-/// its task is cancelled.
+/// its task is cancelled: SIGINT, then, `grace` seconds on, SIGKILL for it
+/// and everything it started.
 enum StreamedProcess {
-    static func run(_ executable: String, _ arguments: [String], output: @escaping @Sendable (Data) async -> Bool) async throws -> Int32 {
+    static func run(_ executable: String, _ arguments: [String], grace: TimeInterval = 10,
+                    output: @escaping @Sendable (Data) async -> Bool) async throws -> Int32 {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -89,7 +92,7 @@ enum StreamedProcess {
             }
         }
         try process.run()
-        let stopper = Stopper(process)
+        let stopper = Stopper(process, grace: grace)
         return await withTaskCancellationHandler {
             var reading = true
             for await chunk in chunks where reading {
@@ -131,19 +134,63 @@ enum StreamedProcess {
         }
     }
 
-    /// SIGINT (xcodebuild's own Ctrl-C: it stops the tests and says so), then SIGKILL ten seconds on.
+    /// SIGINT (xcodebuild's own Ctrl-C: it stops the tests and says so),
+    /// then SIGKILL `grace` seconds on, for its whole tree: xcodebuild
+    /// interrupted can still wait half a minute on its log, and what it
+    /// started (`simctl diagnose`, in a process group of its own) would
+    /// outlive it, writing into the run's folder for minutes.
     private final class Stopper: @unchecked Sendable {
         private let process: Process
-        init(_ process: Process) { self.process = process }
+        private let grace: TimeInterval
+        init(_ process: Process, grace: TimeInterval) {
+            self.process = process
+            self.grace = grace
+        }
 
         func stop() {
             guard process.isRunning else { return }
             process.interrupt()
             let pid = process.processIdentifier
-            DispatchQueue.global().asyncAfter(deadline: .now() + 10) { [self] in
-                if self.process.isRunning { kill(pid, SIGKILL) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + grace) { [self] in
+                if self.process.isRunning { ProcessTree.killAll(pid) }
             }
         }
+    }
+}
+
+/// A process and everything it started, killed.
+enum ProcessTree {
+    /// Each process found is stopped (SIGSTOP) before its children are
+    /// listed, so none starts another unseen, then all are killed; its
+    /// process group too (Foundation's Process makes the program the
+    /// leader of its own), for what was started there and left by its
+    /// parent.
+    static func killAll(_ root: pid_t) {
+        var found: [pid_t] = []
+        var waiting = [root]
+        while let pid = waiting.popLast() {
+            guard !found.contains(pid) else { continue }
+            _ = kill(pid, SIGSTOP)
+            found.append(pid)
+            waiting += children(of: pid)
+        }
+        _ = killpg(root, SIGKILL)
+        for pid in found { _ = kill(pid, SIGKILL) }
+    }
+
+    /// A process's children, as the kernel lists them (none known off a Mac:
+    /// the server runs xcodebuild only there).
+    static func children(of pid: pid_t) -> [pid_t] {
+        #if canImport(Darwin)
+        var pids = [pid_t](repeating: 0, count: 4096)
+        let bytes = pids.withUnsafeMutableBytes { buffer in
+            proc_listpids(UInt32(PROC_PPID_ONLY), UInt32(pid), buffer.baseAddress, Int32(buffer.count))
+        }
+        guard bytes > 0 else { return [] }
+        return pids.prefix(Int(bytes) / MemoryLayout<pid_t>.stride).filter { $0 > 0 && $0 != pid }
+        #else
+        return []
+        #endif
     }
 }
 
@@ -414,11 +461,19 @@ enum XCTestFolder {
 
     /// xcodebuild's arguments for a run: rules_apple's (its derived data in
     /// the run's folder, so nothing is left in ~/Library/Developer), the
-    /// lease's simulator, the result bundle in the run's folder; and each of
-    /// `onlyTesting` under the test target's name, unless it starts with it.
+    /// lease's simulator, the result bundle in the run's folder, no test
+    /// diagnostics; and each of `onlyTesting` under the test target's name,
+    /// unless it starts with it.
+    ///
+    /// Test diagnostics are xcodebuild's `simctl diagnose` of the simulator
+    /// when a test fails (and when it's interrupted), into the result
+    /// bundle: it can take the whole of its ten minutes (it did on every
+    /// failure in a macOS VM) and outlive xcodebuild. A failing test's own
+    /// failures, logs and timings are in the result bundle without them.
     static func arguments(_ prepared: Prepared, udid: String, folder: String, onlyTesting: [String]) -> [String] {
         var arguments = ["test-without-building", "-xctestrun", prepared.xctestrun, "-destination", "id=\(udid)",
-                         "-resultBundlePath", prepared.resultBundle, "-derivedDataPath", "\(folder)/derived_data"]
+                         "-resultBundlePath", prepared.resultBundle, "-derivedDataPath", "\(folder)/derived_data",
+                         "-collect-test-diagnostics", "never"]
         let target = XCTestRunFile.target(prepared.layout.bundle)
         for test in onlyTesting {
             arguments.append("-only-testing:" + (test == target || test.hasPrefix(target + "/") ? test : "\(target)/\(test)"))
@@ -469,9 +524,18 @@ enum JUnit {
         var skipped: String?
     }
 
-    static func xml(fromTestResults json: Data) throws -> String {
+    /// A test bundle's cases (a `<testsuite>`).
+    struct Suite: Equatable {
+        var name: String
+        var cases: [Case]
+    }
+
+    static func xml(fromTestResults json: Data) throws -> String { xml(try suites(fromTestResults: json)) }
+
+    /// The report's bundles and their tests.
+    static func suites(fromTestResults json: Data) throws -> [Suite] {
         let tests = try JSONDecoder().decode(Tests.self, from: json)
-        var suites: [(name: String, cases: [Case])] = []
+        var suites: [Suite] = []
         // Tests outside any bundle (none that Xcode makes): a suite of their own.
         var loose: Int?
         func messages(_ node: Node, _ type: String) -> [String] {
@@ -480,13 +544,13 @@ enum JUnit {
         func visit(_ node: Node, bundle: Int?, path: [String]) {
             switch node.nodeType {
             case "Unit test bundle", "UI test bundle":
-                suites.append((node.name, []))
+                suites.append(Suite(name: node.name, cases: []))
                 for child in node.children ?? [] { visit(child, bundle: suites.count - 1, path: [node.name]) }
             case "Test Suite":
                 for child in node.children ?? [] { visit(child, bundle: bundle, path: path + [node.name]) }
             case "Test Case":
                 if bundle == nil && loose == nil {
-                    suites.append(("Tests", []))
+                    suites.append(Suite(name: "Tests", cases: []))
                     loose = suites.count - 1
                 }
                 guard let index = bundle ?? loose else { return }
@@ -502,7 +566,11 @@ enum JUnit {
             }
         }
         for node in tests.testNodes { visit(node, bundle: nil, path: []) }
+        return suites
+    }
 
+    /// The suites as JUnit's XML.
+    static func xml(_ suites: [Suite]) -> String {
         func seconds(_ value: Double) -> String { String(format: "%.3f", value) }
         func counts(_ cases: [Case]) -> String {
             "tests=\"\(cases.count)\" failures=\"\(cases.filter { !$0.failures.isEmpty }.count)\" "
@@ -558,10 +626,16 @@ enum JUnit {
 actor XCTestRuns {
     nonisolated let tools: any XCTestTools
     nonisolated let root: String
+    /// How long a run asked for waits for the lease's last one to be
+    /// stopped (StreamedProcess's grace, and a little more) before it's
+    /// refused as busy.
+    nonisolated let stoppingWait: Duration
 
     private struct Active {
         var run: String
         var cancel: (@Sendable () -> Void)?
+        /// Its client has gone: xcodebuild is being stopped, within seconds.
+        var stopping = false
     }
 
     private var active: [String: Active] = [:]
@@ -569,17 +643,26 @@ actor XCTestRuns {
 
     enum State: Sendable { case running, done, unknown }
 
-    init(tools: any XCTestTools = Xcode(), root: String = Paths.uploads) {
+    init(tools: any XCTestTools = Xcode(), root: String = Paths.uploads, stoppingWait: Duration = .seconds(20)) {
         self.tools = tools
         self.root = root
+        self.stoppingWait = stoppingWait
     }
 
     nonisolated func folder(lease: String, run: String) -> String { "\(root)/\(lease)/xctest-\(run)" }
 
-    /// A run begun on the lease: its id. Refused (409, `busy`) while another runs.
-    func start(_ lease: String) throws -> String {
-        if let running = active[lease] {
-            throw APIError(error: "busy: lease \(lease) is running tests (run \(running.run)); one run at a time a lease", code: "busy")
+    /// A run begun on the lease: its id. Refused (409, `busy`) while
+    /// another runs; one whose client has gone (Ctrl-C, then the same
+    /// command again) is waited for while xcodebuild is stopped.
+    func start(_ lease: String) async throws -> String {
+        let clock = ContinuousClock()
+        let deadline = clock.now + stoppingWait
+        while let running = active[lease] {
+            guard running.stopping, clock.now < deadline else {
+                throw APIError(error: "busy: lease \(lease) is running tests (run \(running.run)" + (running.stopping ? ", being stopped" : "")
+                                    + "); one run at a time a lease", code: "busy")
+            }
+            try await Task.sleep(for: .milliseconds(100))
         }
         var run = Random.hex(4)
         while runs[lease]?.contains(run) == true { run = Random.hex(4) }
@@ -592,6 +675,12 @@ actor XCTestRuns {
     func attach(_ lease: String, run: String, cancel: @escaping @Sendable () -> Void) {
         guard active[lease]?.run == run else { return cancel() }
         active[lease]?.cancel = cancel
+    }
+
+    /// The run's client has gone: it's being stopped, and the next run
+    /// asked for waits for it rather than being refused.
+    func stopping(_ lease: String, run: String) {
+        if active[lease]?.run == run { active[lease]?.stopping = true }
     }
 
     /// The run ended: the lease may run another. Its files are kept, or

@@ -16,19 +16,25 @@
   XCTRunner.app (the bundle in its PlugIns, XCTest's frameworks in its
   Frameworks, its Info.plist naming it, unsigned for the simulator); the
   .xctestrun from rules_apple's template as its runner fills it in; then
-  `xcodebuild test-without-building` against the lease's simulator, the
-  result bundle and derived data in the run's folder, and JUnit made from
-  `xcresulttool`'s report of the result bundle. xcodebuild's output is
-  streamed and its status is `oss`'s.
+  `xcodebuild test-without-building` against the lease's simulator
+  (without test diagnostics: xcodebuild's `simctl diagnose` of a failing
+  or interrupted run took its whole ten minutes in a VM, and outlived it),
+  the result bundle and derived data in the run's folder, and JUnit made
+  from `xcresulttool`'s report of the result bundle. xcodebuild's output
+  is streamed and its status is `oss`'s (1 if it passed with no test run,
+  as rules_apple's runner fails it). `--only-testing` filters Swift
+  Testing's tests too (`Suite/function()`).
 - `POST /v1/machines/<id>/xctest`, upgraded to `oss-exec` as an exec is:
   its body an `XCTestRequest` (`tests`, `host`, `ui`, `onlyTesting`), made
   ready before the answer (so a bundle that isn't one is a 400, an object
   the holder hasn't got a 404), then `101` with the run's id
   (`OSS-XCTest-Run`) and frames: xcodebuild's output (`stdout`), the
   server's notes (`stderr`), xcodebuild's status (`exit`). One run at a
-  time a lease (409 `busy`); the client's connection closing ends its run,
-  xcodebuild stopped (SIGINT, then SIGKILL ten seconds on). `GET
-  …/xctest/<run>/junit` and `…/result` (the result bundle zipped,
+  time a lease (409 `busy`; one asked for while the last is being stopped,
+  its client gone, waits for it); the client's connection closing ends its
+  run, xcodebuild stopped (SIGINT, then SIGKILL ten seconds on for it and
+  everything it started). `GET …/xctest/<run>/junit` and `…/result` (the
+  result bundle zipped,
   streamed) read a run's results, kept as long as the lease. With the
   token in the lease's holder's name, or a `machine.xctest` grant (`oss
   grant machine.xctest <lease>`; it was reserved), which runs the lease's

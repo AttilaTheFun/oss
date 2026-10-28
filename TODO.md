@@ -41,12 +41,10 @@
 
 ## iOS tests
 
-- **Swift Testing's filters in the .xctestrun**: `--only-testing` is
-  xcodebuild's `-only-testing`. rules_apple writes its `--test_filter` into
-  the .xctestrun instead (`OnlyTestIdentifiers`, and from Xcode 26.4
-  `OnlyTestingIdentifiers`, which it says Swift Testing's tests are filtered
-  by); if xcodebuild's flag misses Swift Testing's tests, write the filter
-  there as rules_apple does.
+- **Test diagnostics on request**: runs pass `-collect-test-diagnostics
+  never`, as xcodebuild's `simctl diagnose` of a failing run took its whole
+  ten minutes in a macOS VM (and outlived xcodebuild). An `XCTestRequest`
+  could ask for them, with a shorter timeout.
 - **What rules_apple's runner takes and xctest doesn't**: a test's
   environment (`env`) and arguments (`command_line_args`), random order,
   coverage, a screen capture format, and attachments' lifetime: the

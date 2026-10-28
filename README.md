@@ -299,17 +299,21 @@ oss machine xctest <id> --tests=bazel-bin/app/HelloWorldUITests.zip --host=bazel
   simulator needs); the .xctestrun from rules_apple's template, as its
   runner fills it in; then `xcodebuild test-without-building` against the
   lease's simulator, `-only-testing` for each `--only-testing` (under the
-  bundle's name unless it has it), the result bundle and derived data in the
-  run's folder.
+  bundle's name unless it has it; XCTest's `Class/method` or Swift
+  Testing's `Suite/function()`), the result bundle and derived data in the
+  run's folder, and no test diagnostics (xcodebuild's `simctl diagnose` of
+  a failing run, which can take ten minutes).
 - **What comes back**: xcodebuild's output as it comes, and its exit
-  status, which is `oss`'s (0 passed, 65 a test failed). The run's result
+  status, which is `oss`'s (0 passed, 65 a test failed; 1 if it passed
+  with no test run, as rules_apple's runner fails it). The run's result
   bundle (`--result`, zipped) and its JUnit (`--junit`: each bundle a
   suite, each test a case under its suites, with its failures' messages or
   why it was skipped, from `xcresulttool`'s report of the result bundle)
   are kept as long as the lease, by the run's id.
 - **One run at a time a lease**: another is refused (409, `busy`). `oss
   machine xctest` ending (Ctrl-C) ends its run: the server stops
-  xcodebuild.
+  xcodebuild (SIGINT, then ten seconds on SIGKILL for it and what it
+  started), and a run asked for meanwhile waits for it.
 - **From a container** without the token: `oss grant machine.xctest
   <lease>` on the session's side, then `oss machine xctest --url=<grant>
   --tests=<object> …`, the bundles already in storage (put with a

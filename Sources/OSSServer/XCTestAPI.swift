@@ -81,6 +81,11 @@ enum XCTestAPI {
         }
         let runs = api.machines.xctests
         let run = try await runs.start(lease.id)
+        // Its lease ended while the last run was being stopped: its runs went with it.
+        guard let current = await api.machines.lease(lease.id), current.state == .ready else {
+            await runs.finish(lease.id, run: run, discard: true)
+            throw APIError(error: "lease \(lease.id) has ended", code: "notFound")
+        }
         let folder = runs.folder(lease: lease.id, run: run)
         let prepared: XCTestFolder.Prepared
         do {
@@ -101,16 +106,22 @@ enum XCTestAPI {
         log("lease \(lease.id): xctest run \(run): \(layout.bundle)" + (layout.host.map { " on \($0)" } ?? "") + (layout.ui ? " (UI)" : ""))
 
         // xcodebuild, its output to the client as it comes (each piece sent
-        // before the next is read); the client going ends it.
+        // before the next is read); the client going ends it, and the
+        // lease's next run waits while it's stopped.
         let tools = runs.tools
         let arguments = XCTestFolder.arguments(prepared, udid: lease.udid ?? "", folder: folder, onlyTesting: only)
         let work = Task {
-            try await tools.xcodebuild(arguments) { data in await peer.send(ExecFrame.stdout(data).encoded) }
+            try await tools.xcodebuild(arguments) { data in
+                let sent = await peer.send(ExecFrame.stdout(data).encoded)
+                if !sent { await runs.stopping(lease.id, run: run) }
+                return sent
+            }
         }
         await runs.attach(lease.id, run: run) { work.cancel() }
         // Nothing comes from the client once it is upgraded: its connection closing is its going.
         let watcher = Task {
             while await peer.next() != nil {}
+            await runs.stopping(lease.id, run: run)
             work.cancel()
         }
         var status: Int32
@@ -132,8 +143,15 @@ enum XCTestAPI {
         // Its JUnit, from the result bundle, before the client hears it ended (and asks for it).
         if FileManager.default.fileExists(atPath: prepared.resultBundle) {
             do {
-                let xml = try JUnit.xml(fromTestResults: try await tools.testResults(prepared.resultBundle))
-                try Data(xml.utf8).write(to: URL(fileURLWithPath: "\(folder)/junit.xml"))
+                let suites = try JUnit.suites(fromTestResults: try await tools.testResults(prepared.resultBundle))
+                try Data(JUnit.xml(suites).utf8).write(to: URL(fileURLWithPath: "\(folder)/junit.xml"))
+                // Passed with no test run (an --only-testing that names none, or an empty bundle): failed, as
+                // rules_apple's runner fails it (xcodebuild's status is 0).
+                if status == 0 && suites.allSatisfy({ $0.cases.isEmpty }) {
+                    status = 1
+                    let none = "oss: no tests were executed in run \(run): is the bundle empty, or does --only-testing name none of its tests?\n"
+                    _ = await peer.send(ExecFrame.stderr(Data(none.utf8)).encoded)
+                }
             } catch {
                 _ = await peer.send(ExecFrame.stderr(Data("oss: no JUnit from run \(run)'s result bundle: \(error)\n".utf8)).encoded)
             }

@@ -48,8 +48,42 @@ func theXCTestRunIsRulesApples(_ kind: String, _ host: String?, _ ui: Bool) thro
                                            onlyTesting: ["GreetingTests", "GreetingTests/testShouts()", "Hello_Tests/Formatting/rendersISO(_:)"])
     #expect(arguments == ["test-without-building", "-xctestrun", "/runs/r1/tests.xctestrun", "-destination", "id=SIM-UDID",
                           "-resultBundlePath", "/runs/r1/result.xcresult", "-derivedDataPath", "/runs/r1/derived_data",
+                          "-collect-test-diagnostics", "never",
                           "-only-testing:Hello_Tests/GreetingTests", "-only-testing:Hello_Tests/GreetingTests/testShouts()",
                           "-only-testing:Hello_Tests/Formatting/rendersISO(_:)"])
+}
+
+/// Whether a process is still there (or is a zombie its parent hasn't reaped).
+func isAlive(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 }
+
+@Test func aStoppedProgramIsKilledWithWhatItStarted() async throws {
+    // A program that ignores SIGINT, and a child of it, in a process group
+    // of its own (as xcodebuild's `simctl diagnose` is), that ignores it too.
+    let pidFile = NSTemporaryDirectory() + "oss-tree-\(UUID().uuidString)"
+    defer { try? FileManager.default.removeItem(atPath: pidFile) }
+    let script = "trap '' INT; set -m; sh -c \"trap '' INT; sleep 60\" & echo $! > '\(pidFile)'; echo started; wait"
+    let lines = Written()
+    let running = Task {
+        try await StreamedProcess.run("/bin/sh", ["-c", script], grace: 0.3) { data in
+            lines.take(.stdout(data))
+            return true
+        }
+    }
+    var child: pid_t?
+    for _ in 0..<250 where child == nil {
+        child = FileManager.default.contents(atPath: pidFile).flatMap { pid_t(String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)) }
+        if child == nil { try await Task.sleep(for: .milliseconds(20)) }
+    }
+    let started = try #require(child)
+    #expect(getpgid(started) == started)
+    #expect(ProcessTree.children(of: getpid()).count >= 1)
+
+    // Cancelled: SIGINT, which both ignore; then, the grace past, SIGKILL for both.
+    running.cancel()
+    #expect(try await running.value == 128 + SIGKILL)
+    #expect(lines.stdout == "started\n")
+    for _ in 0..<250 where isAlive(started) { try await Task.sleep(for: .milliseconds(20)) }
+    #expect(!isAlive(started))
 }
 
 // MARK: A fake Xcode
@@ -176,30 +210,51 @@ func isWritable(_ path: String) -> Bool {
 
 /// xcodebuild and xcresulttool as a test has them: a fake Xcode's folder;
 /// xcodebuild writes a line, makes the result bundle and passes, holding
-/// first while `holding` (until `release()`, or its cancellation).
+/// first while `holding` (until `release()`, or its cancellation, after
+/// which it takes `takeTime(toStop:)` to end, as xcodebuild does).
 final class FakeXcode: XCTestTools, @unchecked Sendable {
     let developer: String
     private let lock = NSLock()
     private var calls: [[String]] = []
     private var held = false
     private var cancellations = 0
+    private var stopDelay: TimeInterval = 0
+    private var log: [String] = []
+    private var results = sampleTestResults
 
     init(developer: String) { self.developer = developer }
 
     var arguments: [[String]] { lock.withLock { calls } }
     var cancelled: Int { lock.withLock { cancellations } }
+    /// What happened, in order: `started`, `cancelled`, `stopped`.
+    var events: [String] { lock.withLock { log } }
     func hold() { lock.withLock { held = true } }
     func release() { lock.withLock { held = false } }
+    func takeTime(toStop seconds: TimeInterval) { lock.withLock { stopDelay = seconds } }
 
     func developerDirectory() async throws -> String { developer }
 
     func xcodebuild(_ arguments: [String], output: @escaping @Sendable (Data) async -> Bool) async throws -> Int32 {
-        lock.withLock { calls.append(arguments) }
+        lock.withLock {
+            calls.append(arguments)
+            log.append("started")
+        }
         _ = await output(Data("Test Suite 'All tests' started\n".utf8))
         do {
             while lock.withLock({ held }) { try await Task.sleep(for: .milliseconds(20)) }
         } catch {
-            lock.withLock { cancellations += 1 }
+            let delay: TimeInterval = lock.withLock {
+                cancellations += 1
+                log.append("cancelled")
+                return stopDelay
+            }
+            // Stopping takes its time whatever is cancelled.
+            if delay > 0 {
+                await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.global().asyncAfter(deadline: .now() + delay) { done.resume() }
+                }
+            }
+            lock.withLock { log.append("stopped") }
             throw error
         }
         if let index = arguments.firstIndex(of: "-resultBundlePath") {
@@ -211,7 +266,9 @@ final class FakeXcode: XCTestTools, @unchecked Sendable {
         return 0
     }
 
-    func testResults(_ resultBundle: String) async throws -> Data { Data(sampleTestResults.utf8) }
+    func testResults(_ resultBundle: String) async throws -> Data { Data(lock.withLock { results }.utf8) }
+    /// What xcresulttool reports of the result bundle (the sample's tests unless told).
+    func report(_ json: String) { lock.withLock { results = json } }
 }
 
 /// A server on this computer's loopback whose iOS leases are adopted (each
@@ -226,14 +283,14 @@ struct XCTestServer {
     let url: URL
     let client: OSSClient
 
-    static func start() async throws -> XCTestServer {
+    static func start(stoppingWait: Duration = .seconds(20)) async throws -> XCTestServer {
         let root = NSTemporaryDirectory() + "oss-xctest-server-\(UUID().uuidString)"
         var config = ServerConfig()
         config.lends = [.ios]
         config.useUTM = false
         let xcode = FakeXcode(developer: try makeFakeXcode("\(root)/xcode"))
         let machines = MachineManager(config: config, leasesPath: "\(root)/leases.json",
-                                      xctests: XCTestRuns(tools: xcode, root: "\(root)/uploads"))
+                                      xctests: XCTestRuns(tools: xcode, root: "\(root)/uploads", stoppingWait: stoppingWait))
         let api = API(machines: machines, token: "server-token", cache: nil, storage: makeStore(),
                       grants: GrantKey(key: Data(repeating: 7, count: 32)))
         let http = try HTTPServer(port: 0, streams: Server.streams, streamer: { request, peer in
@@ -289,8 +346,8 @@ struct XCTestServer {
     }
 }
 
-func withXCTestServer(_ body: (XCTestServer) async throws -> Void) async throws {
-    let server = try await XCTestServer.start()
+func withXCTestServer(stoppingWait: Duration = .seconds(20), _ body: (XCTestServer) async throws -> Void) async throws {
+    let server = try await XCTestServer.start(stoppingWait: stoppingWait)
     do {
         try await body(server)
     } catch {
@@ -477,6 +534,65 @@ func withXCTestServer(_ body: (XCTestServer) async throws -> Void) async throws 
             }
         }
         #expect(next?.status == 0)
+    }
+}
+
+@Test func aRunThatRanNoTestsFails() async throws {
+    // xcodebuild passes with nothing run (an --only-testing that names none): failed, as rules_apple's runner fails it.
+    try await withXCTestServer { server in
+        let lease = await server.lease("x1")
+        let (tests, _) = try await server.bundles()
+        server.xcode.report(#"{"devices": [], "testPlanConfigurations": [], "testNodes": [{"name": "Test Plan", "nodeType": "Test Plan", "result": "Passed", "children": [{"name": "HelloWorldUITests", "nodeType": "UI test bundle", "result": "Passed", "children": []}]}]}"#)
+        let written = Written()
+        let run = try await server.client.xctest(lease.id, holder: "alice", XCTestRequest(tests: tests, onlyTesting: ["NoSuchTests"]),
+                                                 output: written.take)
+        #expect(run.status == 1)
+        #expect(written.stderr.contains("no tests were executed"))
+        // Its JUnit says so too: its bundle, no cases.
+        let junit = String(decoding: try await server.client.xctestJUnit(lease.id, holder: "alice", run: run.id), as: UTF8.self)
+        #expect(junit.contains("<testsuite name=\"HelloWorldUITests\" tests=\"0\""))
+
+        // A run with tests, all of them skipped, passes.
+        server.xcode.report(#"{"devices": [], "testPlanConfigurations": [], "testNodes": [{"name": "HelloWorldUITests", "nodeType": "UI test bundle", "result": "Skipped", "children": [{"name": "testLater()", "nodeType": "Test Case", "result": "Skipped"}]}]}"#)
+        #expect(try await server.client.xctest(lease.id, holder: "alice", XCTestRequest(tests: tests), output: { _ in }).status == 0)
+    }
+}
+
+@Test func aRunAskedForWhileTheLastIsStoppedWaitsForIt() async throws {
+    // Ctrl-C, then the same command at once: xcodebuild takes its time to stop, and the next run waits for it.
+    try await withXCTestServer { server in
+        let lease = await server.lease("x1")
+        let (tests, _) = try await server.bundles()
+        let request = XCTestRequest(tests: tests)
+        server.xcode.hold()
+        server.xcode.takeTime(toStop: 0.5)
+        let gone = Task { try await server.client.xctest(lease.id, holder: "alice", request, output: { _ in }) }
+        for _ in 0..<500 where server.xcode.arguments.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        gone.cancel()
+        // Once the server has seen it go (xcodebuild told to stop), the next is asked for.
+        for _ in 0..<500 where server.xcode.cancelled == 0 { try await Task.sleep(for: .milliseconds(20)) }
+        server.xcode.release()
+        let next = try await server.client.xctest(lease.id, holder: "alice", request, output: { _ in })
+        #expect(next.status == 0)
+        #expect(server.xcode.events == ["started", "cancelled", "stopped", "started"])
+    }
+
+    // One that takes longer to stop than the server waits: refused, saying so.
+    try await withXCTestServer(stoppingWait: .milliseconds(200)) { server in
+        let lease = await server.lease("x1")
+        let (tests, _) = try await server.bundles()
+        let request = XCTestRequest(tests: tests)
+        server.xcode.hold()
+        server.xcode.takeTime(toStop: 2)
+        let gone = Task { try await server.client.xctest(lease.id, holder: "alice", request, output: { _ in }) }
+        for _ in 0..<500 where server.xcode.arguments.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        gone.cancel()
+        for _ in 0..<500 where server.xcode.cancelled == 0 { try await Task.sleep(for: .milliseconds(20)) }
+        let refused = await #expect(throws: OSSError.self) { try await server.client.xctest(lease.id, holder: "alice", request, output: { _ in }) }
+        #expect(refused?.code == "busy")
+        #expect(refused?.message.contains("being stopped") == true)
+        // (The first stopped before the server goes.)
+        for _ in 0..<250 where server.xcode.events.last != "stopped" { try await Task.sleep(for: .milliseconds(20)) }
     }
 }
 #endif
