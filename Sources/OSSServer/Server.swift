@@ -865,15 +865,27 @@ public final class ServerHost: Sendable {
         ManagementKey.settle()
         let config = ServerConfig.load()
         let token = Token.ensure()
+        // Before the cache: the store's first start gives every file served before it an entry, which the cache serves by.
+        let storage = StorageStore(config: config.storage ?? StorageConfig())
         let cache = config.cache.flatMap(Server.startCache)
         let machines = MachineManager(config: config, bazelCache: cache.map { ($0.config.port, $0.readToken) }, containers: containers)
         #if os(macOS)
         Task { await Components.shared.attach(containers: containers) { platform in await machines.held(platform) } }
         #endif
-        let http = try HTTPServer(port: config.port) { request in
-            await Server.route(request, machines: machines, token: token, cache: cache)
+        let api = API(machines: machines, token: token, cache: cache, storage: storage, grants: GrantKey.ensure())
+        let http = try HTTPServer(port: config.port, streams: Server.streams, streamer: { request, peer in
+            await Server.stream(request, peer, api: api)
+        }) { request in
+            await Server.route(request, api: api)
         }
         http.start()
+        // Storage's leases that ran out end, and objects no lease holds go.
+        Task {
+            while true {
+                await storage.sweep()
+                try? await Task.sleep(for: .seconds(60))
+            }
+        }
         // Recovery and listings ask UTM, which can be slow to answer (or
         // waiting on a permission prompt): the API serves meanwhile.
         Task {
@@ -965,8 +977,9 @@ enum Server {
         while true { try await Task.sleep(for: .seconds(3600)) }
     }
 
-    static func route(_ request: HTTPRequest, machines: MachineManager, token: String, cache: CacheServer?) async -> HTTPResponse {
-        let parts = request.path.split(separator: "?")[0].split(separator: "/").map(String.init)
+    static func route(_ request: HTTPRequest, api: API) async -> HTTPResponse {
+        let machines = api.machines, cache = api.cache
+        let parts = (request.path.split(separator: "?").first ?? "").split(separator: "/").map(String.init)
         // A client below API 6 (an OSSClient before 0.9 sends no OSS-API)
         // can't read a container's platform: it is shown none.
         let seesContainers = (Int(request.header("oss-api") ?? "") ?? 0) >= 6
@@ -979,20 +992,20 @@ enum Server {
         if parts == ["v1", "hello"] {
             return .json(["server": "oss", "host": localHostName])
         }
-        let given = request.header("authorization")?.replacingOccurrences(of: "Bearer ", with: "") ?? ""
-        // The monitor token (OS Monitor's) reads and does nothing else.
-        let monitor = !constantTimeEqual(given, token)
-        if monitor {
-            guard constantTimeEqual(given, MonitorAccess.token()) else { return .error("unauthorized", status: 401) }
-            guard MonitorAccess.allows(request.method, parts) else { return .error("OS Monitor's token only reads", status: 403) }
-        }
+        // The API's token, OS Monitor's (reads only), or a grant (its one route).
+        let access = Self.access(request, parts, api: api)
+        if case .refused(let response) = access { return response }
+        var monitor = false
+        if case .monitor = access { monitor = true }
         do {
+            if let response = try await storageRoute(request, parts, access: access, api: api) { return response }
             let method = request.method
             switch (method, parts.count) {
             case ("GET", 2) where parts[1] == "status":
                 return .json(Status(server: localHostName, bases: try await machines.bases().filter { visible($0.platform) },
                                     capacity: await machines.capacity().filter { visible($0.platform) },
-                                    leases: await machines.all().filter { visible($0.platform) }))
+                                    leases: await machines.all().filter { visible($0.platform) },
+                                    storage: await api.storage.info()))
             case ("GET", 2) where parts[1] == "usage":
                 var usage = await machines.usage()
                 usage.machines = usage.machines.filter { visible($0.platform) }
@@ -1051,8 +1064,7 @@ enum Server {
             }
             return .error("no such endpoint: \(method) \(request.path)", status: 404)
         } catch let error as APIError {
-            let status = error.code == "busy" || error.error.hasPrefix("busy") ? 409 : error.code == "notLocal" ? 403 : 400
-            return HTTPResponse(status: status, body: (try? JSONEncoder.oss.encode(error)) ?? Data())
+            return response(for: error)
         } catch {
             return .error("\(error)", status: 500)
         }

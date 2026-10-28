@@ -39,17 +39,38 @@ public struct OSSHTTPResponse: Sendable {
 /// LAN without the user's leave: the CLI goes through curl).
 public protocol OSSTransport: Sendable {
     func send(_ request: OSSHTTPRequest) async throws -> OSSHTTPResponse
+    /// The same, with a file's bytes as the body, read as they're sent, and
+    /// (with `responseFile`) a 2xx answer's body written to that file, not
+    /// held: a stored object can be gigabytes. The default reads and writes
+    /// them whole, through `send(_:)`.
+    func send(_ request: OSSHTTPRequest, bodyFile: URL?, responseFile: URL?) async throws -> OSSHTTPResponse
+}
+
+extension OSSTransport {
+    public func send(_ request: OSSHTTPRequest, bodyFile: URL?, responseFile: URL?) async throws -> OSSHTTPResponse {
+        var request = request
+        if let bodyFile { request.body = try Data(contentsOf: bodyFile, options: .mappedIfSafe) }
+        var answer = try await send(request)
+        if let responseFile, (200..<300).contains(answer.status) {
+            try answer.body.write(to: responseFile)
+            answer.body = Data()
+        }
+        return answer
+    }
 }
 
 public struct URLSessionTransport: OSSTransport {
     public init() {}
 
-    public func send(_ request: OSSHTTPRequest) async throws -> OSSHTTPResponse {
+    private func urlRequest(_ request: OSSHTTPRequest) -> URLRequest {
         var urlRequest = URLRequest(url: request.url, timeoutInterval: request.timeout)
         urlRequest.httpMethod = request.method
         for (name, value) in request.headers { urlRequest.setValue(value, forHTTPHeaderField: name) }
         urlRequest.httpBody = request.body
-        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        return urlRequest
+    }
+
+    private func answer(_ data: Data, _ response: URLResponse) throws -> OSSHTTPResponse {
         guard let http = response as? HTTPURLResponse else { throw OSSError(status: 0, message: "not an HTTP answer") }
         var headers: [String: String] = [:]
         for (name, value) in http.allHeaderFields {
@@ -57,6 +78,33 @@ public struct URLSessionTransport: OSSTransport {
         }
         return OSSHTTPResponse(status: http.statusCode, headers: headers, body: data)
     }
+
+    public func send(_ request: OSSHTTPRequest) async throws -> OSSHTTPResponse {
+        let (data, response) = try await URLSession.shared.data(for: urlRequest(request))
+        return try answer(data, response)
+    }
+
+    #if !canImport(FoundationNetworking)
+    public func send(_ request: OSSHTTPRequest, bodyFile: URL?, responseFile: URL?) async throws -> OSSHTTPResponse {
+        if let bodyFile {
+            var upload = urlRequest(request)
+            upload.httpBody = nil
+            let (data, response) = try await URLSession.shared.upload(for: upload, fromFile: bodyFile)
+            return try answer(data, response)
+        }
+        guard let responseFile else { return try await send(request) }
+        let (location, response) = try await URLSession.shared.download(for: urlRequest(request))
+        defer { try? FileManager.default.removeItem(at: location) }
+        var answer = try answer(Data(), response)
+        if (200..<300).contains(answer.status) {
+            try? FileManager.default.removeItem(at: responseFile)
+            try FileManager.default.moveItem(at: location, to: responseFile)
+        } else {
+            answer.body = (try? Data(contentsOf: location)) ?? Data()
+        }
+        return answer
+    }
+    #endif
 }
 
 /// A request the server refused or couldn't answer: its message, and the
@@ -120,18 +168,27 @@ public struct OSSClient: Sendable {
 
     /// A request with this client's token; a status but 2xx thrown with the
     /// server's message. `timeout`: this one's, else the client's.
+    /// `bodyFile` and `responseFile`: the body read from a file as it's sent,
+    /// the answer's written to one (OSSTransport's).
     public func send(_ method: String, _ path: String, query: [String: String] = [:], body: Data? = nil,
-                     contentType: String = "application/json", timeout: TimeInterval? = nil) async throws -> OSSHTTPResponse {
+                     contentType: String = "application/json", headers extra: [String: String] = [:],
+                     bodyFile: URL? = nil, responseFile: URL? = nil, timeout: TimeInterval? = nil) async throws -> OSSHTTPResponse {
         var components = URLComponents(url: server, resolvingAgainstBaseURL: false)!
         components.percentEncodedPath = (components.percentEncodedPath.hasSuffix("/") ? String(components.percentEncodedPath.dropLast()) : components.percentEncodedPath)
             + path
         if !query.isEmpty { components.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) } }
         // The API level this client speaks: a server shows an older one only
         // what it knows (no containers below 6).
-        var headers = ["Authorization": "Bearer \(try await token())", "OSS-API": "\(OSS.apiLevel)"]
-        if body != nil { headers["Content-Type"] = contentType }
-        let answer = try await transport.send(OSSHTTPRequest(method: method, url: components.url!, headers: headers, body: body,
-                                                             timeout: timeout ?? self.timeout))
+        var headers = extra.merging(["Authorization": "Bearer \(try await token())", "OSS-API": "\(OSS.apiLevel)"]) { $1 }
+        if body != nil || bodyFile != nil { headers["Content-Type"] = contentType }
+        let request = OSSHTTPRequest(method: method, url: components.url!, headers: headers, body: body, timeout: timeout ?? self.timeout)
+        return try Self.checked(bodyFile == nil && responseFile == nil
+            ? await transport.send(request)
+            : await transport.send(request, bodyFile: bodyFile, responseFile: responseFile))
+    }
+
+    /// The answer, or a status but 2xx thrown with the server's message.
+    static func checked(_ answer: OSSHTTPResponse) throws -> OSSHTTPResponse {
         guard (200..<300).contains(answer.status) else {
             let refusal = try? JSONDecoder.oss.decode(APIError.self, from: answer.body)
             throw OSSError(status: answer.status, message: refusal?.error ?? String(decoding: answer.body, as: UTF8.self), code: refusal?.code)

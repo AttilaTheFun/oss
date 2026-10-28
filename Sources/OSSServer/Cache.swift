@@ -425,10 +425,13 @@ final class CacheServer: @unchecked Sendable {
         return request.keepAlive
     }
 
-    /// A served file, whole (never evicted, so no read time kept).
+    /// A served file, whole (never evicted, so no read time kept). Only one
+    /// with an entry: a holder's object in the same folder is the holder's.
     private func serveFile(_ hash: String, _ request: CacheRequest, _ peer: CachePeer,
                            refuse: (Int, String) async -> Bool) async -> Bool {
-        guard let file = FileHandle(forReadingAtPath: ServedFiles.path(hash)) else { return await refuse(404, "no file \(hash) here") }
+        guard ServedFiles.isServed(hash), let file = FileHandle(forReadingAtPath: ServedFiles.path(hash)) else {
+            return await refuse(404, "no file \(hash) here")
+        }
         defer { try? file.close() }
         guard let size = try? file.seekToEnd(), (try? file.seek(toOffset: 0)) != nil else { return await refuse(500, "unreadable file") }
         guard await peer.respond(200, length: Int64(size), close: !request.keepAlive) else { return false }
@@ -517,13 +520,18 @@ struct CacheRequest {
     }
 }
 
-/// One connection's bytes, read as they come and written in order.
+/// One connection's bytes, read as they come and written in order: the
+/// cache's, and the API's for a request whose body or answer is streamed
+/// (a stored object's), with what the API had read past its head.
 final class CachePeer: @unchecked Sendable {
     private let connection: NWConnection
-    private var buffer = Data()
+    private var buffer: Data
     private var ended = false
 
-    init(_ connection: NWConnection) { self.connection = connection }
+    init(_ connection: NWConnection, buffered: Data = Data()) {
+        self.connection = connection
+        buffer = buffered
+    }
 
     /// More bytes: false once the peer has nothing more to send.
     private func fill() async -> Bool {

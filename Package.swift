@@ -21,6 +21,8 @@ let package = Package(
         .target(name: "OSSServer", dependencies: ["OSSClient"]),
         .executableTarget(name: "OSSCLI", dependencies: ["OSSServer"]),
         .testTarget(name: "OSSClientTests", dependencies: ["OSSClient"]),
+        // The server's own parts that need no machine: storage and grants.
+        .testTarget(name: "OSSServerTests", dependencies: ["OSSServer"]),
     ]
 )
 
