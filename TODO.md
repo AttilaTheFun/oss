@@ -128,7 +128,21 @@ those run on the host Mac today. In 0.14 each GUI platform gets a
 
 The two proofs (`tools/proof.py`, `tools/monitor_proof.py`) and the QEMU
 bundler (`tools/bundle_qemu.py`) are Python; each can be an executable
-target of the package. (#30 meant to add this note.)
+target of the package. (#30 meant to add this note.) CI's proof
+(`tools/ci/proof.sh`) runs proof.py as it is and does OS Monitor's part in
+shell, cutting windows with `tools/ci/window_shot.swift`: a Swift proof
+would take both, and CI's runner would need no Pillow.
+
+## OS Server.app's beta from CI
+
+`beta` builds OS Server.app and sends it to Applications Server, whose
+Signer signs again only the executables directly in `Contents/MacOS` and
+`Contents/Helpers` (and every bundle and dylib): QEMU's
+`Helpers/qemu/bin/{qemu-system-aarch64,qemu-img}` and AXe's
+`Helpers/axe/axe` keep the build's ad hoc signature, and notarization
+refuses the app. Once the Signer signs every Mach-O executable in a bundle
+(each with its own entitlements: QEMU's `com.apple.security.hypervisor`),
+make OS Server.app's publish fatal again in ci.yml.
 
 ## A macOS lease's window server
 

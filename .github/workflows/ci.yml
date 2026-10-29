@@ -1,0 +1,157 @@
+name: CI
+# OS Server's CI, on its own self-hosted runner (label oss-ci: a Mac that
+# runs OS Server, as a user of its own), which leases what each job runs in
+# from that OS Server (README.md, "This repository's CI"):
+# - build-and-test: swift build and swift test, the App package's build and
+#   OS Monitor's Bazel build, in a macOS VM (tools/ci/mac_vm_tests.sh);
+# - linux: the command line built for Linux in a container
+#   (tools/ci/linux_build.sh), so the Linux client keeps building;
+# - proof: OS Server.app and OS Monitor built in a macOS VM and pictured
+#   with their canned servers, each picture compared with its kept one
+#   (Tests/Proof): a pull request's quick proof, main's full one
+#   (tools/ci/proof.sh), uploaded as the `proof` artifact;
+# - beta: OS Server.app and OS Monitor for the Mac built in a macOS VM of
+#   their own (tools/ci/mac_vm_package.sh), unsigned, and published to
+#   Applications Server, which signs and notarizes them: a beta for each
+#   pull request and each push to main;
+# - release: the same for a published release (its tag, vX.Y.Z, on main
+#   and OSS.version's), which the server takes as production.
+# No signing key, notary key or password here: the publishing jobs' OIDC
+# token says where their builds came from.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+# A pull request's newer push cancels its older run; main's and a release's
+# run to the end.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    # A self-hosted runner never runs a fork's code. Not for a release:
+    # main's run of its commit tested it.
+    if: >
+      github.event_name != 'release' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, oss-ci]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # A pull request's own head, not GitHub's merge of it: the commit
+          # its tests and proof are listed under.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # exec: the runner's cancel reaches the script's trap, which releases the VM.
+      - run: exec tools/ci/mac_vm_tests.sh
+
+  linux:
+    if: >
+      github.event_name != 'release' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, oss-ci]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # exec: the runner's cancel reaches oss, which releases the container.
+      - run: exec tools/ci/linux_build.sh
+
+  proof:
+    if: >
+      github.event_name != 'release' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, oss-ci]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: The apps built in a macOS VM and pictured, and the proof
+        env:
+          # The branch, for a pull request's head (its run's ref is GitHub's merge).
+          PROOF_REF: ${{ github.event.pull_request && format('refs/heads/{0}', github.head_ref) || github.ref }}
+          PROOF_KIND: ${{ github.event_name == 'pull_request' && 'quick' || 'full' }}
+        # exec: the runner's cancel reaches the script's trap, which releases its leases.
+        run: exec tools/ci/proof.sh --kind "$PROOF_KIND" --proof "$RUNNER_TEMP/proof"
+      # The proof whether every picture came or not: a broken screen is what it's for.
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: proof
+          path: ${{ runner.temp }}/proof
+          retention-days: 90
+
+  beta:
+    # After build-and-test: nothing published from a tree whose tests fail.
+    needs: build-and-test
+    if: >
+      github.event_name != 'release' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, oss-ci]
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      # The OIDC token Applications Server checks.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # OS Server's version is OSS.version, as committed; its build number
+      # the run's. exec: the runner's cancel reaches the script's trap,
+      # which releases the VM.
+      - name: Build
+        run: exec tools/ci/mac_vm_package.sh .ci/packages "$GITHUB_RUN_NUMBER"
+      # Untrusted text reaches the shell through env, never ${{ }} in run.
+      - name: Notes
+        env:
+          SUMMARY: ${{ github.event.pull_request.title || github.event.head_commit.message }}
+        run: printf '%s\n' "$SUMMARY" > "$RUNNER_TEMP/notes.md"
+      - name: Publish
+        env:
+          APPLICATIONS_CI_CODE: ${{ secrets.APPLICATIONS_CI_CODE }}
+          APPLICATIONS_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          tools/ci/publish_from_ci.sh --notes-file "$RUNNER_TEMP/notes.md" .ci/packages/OS-Monitor.zip
+          # Not fatal until Applications Server's Signer signs every nested
+          # executable of OS Server.app (README.md, "This repository's CI").
+          if ! tools/ci/publish_from_ci.sh --notes-file "$RUNNER_TEMP/notes.md" .ci/packages/OS-Server.zip; then
+            echo "::warning title=OS Server.app was not published::Applications Server's Signer re-signs only the executables directly in Contents/MacOS and Contents/Helpers, so QEMU (Helpers/qemu/bin) and AXe (Helpers/axe) keep the build's ad hoc signature, and notarization refuses the app. Not fatal until the Signer signs every nested executable."
+          fi
+
+  release:
+    if: github.event_name == 'release'
+    runs-on: [self-hosted, oss-ci]
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # The release's tag, which publishing it made, with main's history beside it.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: The tag is on main, and OSS.version's
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main || { echo "::error::$TAG is not on main"; exit 1; }
+          version="$(sed -n 's/.*public static let version = "\(.*\)".*/\1/p' Sources/OSSClient/Models.swift | head -1)"
+          [ "$TAG" = "v$version" ] || { echo "::error::$TAG is not OSS.version's tag (v$version)"; exit 1; }
+      - name: Build
+        run: exec tools/ci/mac_vm_package.sh .ci/packages "$GITHUB_RUN_NUMBER"
+      - name: Notes
+        env:
+          BODY: ${{ github.event.release.body || github.event.release.name }}
+        run: printf '%s\n' "$BODY" > "$RUNNER_TEMP/notes.md"
+      - name: Publish
+        env:
+          APPLICATIONS_CI_CODE: ${{ secrets.APPLICATIONS_CI_CODE }}
+        run: tools/ci/publish_from_ci.sh --notes-file "$RUNNER_TEMP/notes.md" .ci/packages/OS-Server.zip .ci/packages/OS-Monitor.zip

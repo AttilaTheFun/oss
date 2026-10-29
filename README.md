@@ -917,6 +917,72 @@ snapshot.
   another adb on the Mac, and keep running when the server restarts
   (launchd's job leaves its process group alone).
 
+## This repository's CI
+
+`.github/workflows/ci.yml` runs on a self-hosted runner (label `oss-ci`)
+on a Mac that runs OS Server, as a user of its own (no sudo, no keychain,
+no SSH key of its own; on its PATH, OS Server's command line with a lease
+token, bazelisk, Xcode's tools and a python3 with Pillow). Each job leases
+what it runs in from that OS Server and gives it back however it ends: a
+step that leases execs its script, so the runner's cancel reaches the
+script's trap. Every self-hosted job is skipped for a fork's pull request,
+and only the publishing jobs may ask for an OIDC token (`id-token: write`).
+
+| Job | Runs for | What it does |
+| --- | --- | --- |
+| `build-and-test` | pull requests, main | `tools/ci/mac_vm_tests.sh`, in a macOS VM (`xcode-27.0`): `swift build --build-tests`, then `swift test` one test at a time (the forwarder's tests time real sockets) with `OSS_TEST_SIMCTL=1` (real simulators of an iPad and an iPhone, made and deleted in the VM); the App package's `swift build`; OS Monitor's `bazel build` for the Mac and the iPhone's simulator |
+| `linux` | pull requests, main | `tools/ci/linux_build.sh`: `swift build --product oss` in a container of Visor's agent image (with Rosetta), the tree on its standard input, through `oss machine run container --inside` (its exec through the server's API: the runner's user can't reach a container's socket) |
+| `proof` | pull requests (quick), main (full) | `tools/ci/proof.sh` (below), uploaded as the `proof` artifact, kept 90 days |
+| `beta` | pull requests, main, after `build-and-test` | `tools/ci/mac_vm_package.sh`: OS Server.app (`App/build.sh --zip`, QEMU from Homebrew installed first) and OS Monitor for the Mac built in a macOS VM of their own, OS Monitor's icon checked for its dark appearance; then `tools/ci/publish_from_ci.sh`, which sends each, unsigned, to Applications Server with the job's OIDC token: the server signs them with Developer ID and notarizes them (com.LoganShire.OSS, com.LoganShire.OSMonitor.Mac). OS Server's version is `OSS.version`, its build number the run's |
+| `release` | a release published | the same once its tag is on main and is `v` + `OSS.version`: production |
+
+**The proof** (`tools/ci/proof.sh --kind quick|full --proof <dir>`):
+
+1. Builds `tools/ci/snapshot_diff.swift` and `tools/ci/window_shot.swift`
+   on the runner, and `tools/window_rect.swift` for the VM.
+2. Leases a macOS VM (`xcode-27.0`) with a key of the run's own, which an
+   ssh-agent of the run's holds (so `tools/proof.py`'s own `oss machine
+   ssh` reaches it); for full, a Linux and a Windows VM meanwhile.
+3. Builds OS Server.app and OS Monitor (Mac, and the iPhone's simulator)
+   in the VM, and takes them back.
+4. Runs `tools/proof.py --held <the VM> --no-build`, against the VM: OS
+   Server's window, menu bar panel, Set Up window and menu bar item, light
+   and dark; for full, the Linux and Windows guests' Screen windows too.
+   It runs as it is: `--held` because its own lease wouldn't wait for a
+   free VM, `--no-build` because the app is the VM's build, the agent for
+   its SSH, and no sudo outside the leases.
+5. OS Monitor's Mac window in the same VM (cut from the screen by its
+   frame, its corners cut away as proof.py cuts OS Server's), then its
+   four screens on an iPhone simulator leased for it.
+6. Gives every lease back, and compares each picture with the one kept
+   for it in `Tests/Proof/` (a channel more than 24 apart is a changed
+   pixel).
+
+```
+screens/<name>.png   every picture at this commit: server-*, monitor-mac-*, monitor-ios-*
+diffs/<name>.png     each that differs from Tests/Proof/<name>.png, faded to grey, its changed pixels red
+proof.json           {"commit", "ref", "kind", "run", "screens": [{"name", "changed", "changedPixels"}]}
+```
+
+Quick (18 pictures) is everything but the guests' Screen windows, which
+need a Linux and a Windows VM; full (22) has them. The job fails when the
+apps don't build or a picture doesn't come back; a changed picture is for
+review. The kept pictures are a run's screens, looked at first: a change
+that means to change a screen replaces its picture in the same pull
+request (`screens/<name>.png` from the run's artifact).
+
+**OS Server.app's beta isn't published yet.** Applications Server's
+Signer signs again, with Developer ID, the hardened runtime and a secure
+timestamp, each bundle of code, each dylib and each executable directly in
+`Contents/MacOS` or `Contents/Helpers`, keeping each one's entitlements.
+OS Server.app has three executables deeper than that: QEMU's
+`Contents/Helpers/qemu/bin/qemu-system-aarch64` (with its hypervisor
+entitlement, `App/qemu.entitlements`) and `qemu-img`, and AXe's
+`Contents/Helpers/axe/axe`. The Signer leaves them as the build signed
+them (ad hoc), so the notary service refuses the app. Until the Signer
+signs every Mach-O executable in a bundle, `beta` publishes OS Monitor and
+warns, without failing, that OS Server.app wasn't published.
+
 ## License
 
 Apache License 2.0: see [LICENSE](LICENSE).

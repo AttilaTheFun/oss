@@ -172,3 +172,29 @@ SSH, VNC and adb too. With no `client.json` it tries `127.0.0.1` only.
 - After changing oss: `App/build.sh --install`, then OS Server quit and
   opened again (when no one holds a macOS lease). A change to the API
   raises `OSS.apiLevel` and goes in CHANGELOG.md.
+
+## CI (this repository's)
+
+`.github/workflows/ci.yml`, on the self-hosted runner labelled `oss-ci`
+(README.md, "This repository's CI"): `build-and-test` (swift build and
+test, the App package, OS Monitor's Bazel build, in a macOS VM), `linux`
+(the command line in a container), `proof`, `beta` and `release` (OS
+Server.app and OS Monitor for the Mac, built in a macOS VM, published to
+Applications Server, which signs them). Every job leases from the same OS
+Server it tests, and releases however it ends.
+
+- **The proof** (`tools/ci/proof.sh`) pictures OS Server.app and OS
+  Monitor with their canned servers and compares each picture with the one
+  kept in `Tests/Proof/` (`proof.json`, `screens/`, `diffs/` in the run's
+  `proof` artifact): quick on a pull request, full (with a Linux and a
+  Windows guest's Screen window) on main. A change that means to change a
+  screen replaces its kept picture in the same pull request, from the
+  run's `screens/`, after looking at its diff. Anything that changes from
+  run to run without the app changing is held still (the fixtures' dates,
+  the status bar, the guests' clocks, the windows' corners cut away), not
+  kept as a picture.
+- tools/proof.py and tools/monitor_proof.py stay for a person's run with
+  `--publish`; CI runs proof.py as it is (`--held`, `--no-build`) and does
+  OS Monitor's part in proof.sh. Porting them to Swift is on TODO.md.
+- `swift test` there sets `OSS_TEST_SIMCTL=1`: the VM's simulators are the
+  run's own. Never set it on the server's Mac.
