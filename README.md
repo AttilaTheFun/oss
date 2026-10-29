@@ -938,8 +938,10 @@ and only the publishing jobs may ask for an OIDC token (`id-token: write`).
 
 **The proof** (`tools/ci/proof.sh --kind quick|full --proof <dir>`):
 
-1. Builds `tools/ci/snapshot_diff.swift` and `tools/ci/window_shot.swift`
-   on the runner, and `tools/window_rect.swift` for the VM.
+1. Builds `tools/ci/snapshot_diff.swift`, `tools/ci/window_shot.swift`
+   and `tools/ci/proof_baseline` on the runner, and
+   `tools/window_rect.swift` for the VM, and fetches the proof's base
+   (below) into the job's shallow checkout.
 2. Leases a macOS VM (`xcode-27.0`) with a key of the run's own, which an
    ssh-agent of the run's holds (so `tools/proof.py`'s own `oss machine
    ssh` reaches it); for full, a Linux and a Windows VM meanwhile.
@@ -955,14 +957,25 @@ and only the publishing jobs may ask for an OIDC token (`id-token: write`).
    frame, its corners cut away as proof.py cuts OS Server's), then its
    four screens on an iPhone simulator leased for it.
 6. Gives every lease back, and compares each picture with the one kept
-   for it in `Tests/Proof/` (a channel more than 24 apart is a changed
-   pixel).
+   for it in `Tests/Proof/` at the base (`git show <base>:Tests/Proof/<name>.png`;
+   a channel more than 24 apart is a changed pixel).
 
 ```
 screens/<name>.png   every picture at this commit: server-*, monitor-mac-*, monitor-ios-*
-diffs/<name>.png     each that differs from Tests/Proof/<name>.png, faded to grey, its changed pixels red
-proof.json           {"commit", "ref", "kind", "run", "screens": [{"name", "changed", "changedPixels"}]}
+before/<name>.png    each that differs from its picture at the base, as the base kept it (Tests/Proof/<name>.png
+                     there); none for a screen the base hasn't got (new, and changed)
+diffs/<name>.png     each that differs: the new picture faded to grey, its changed pixels red
+proof.json           {"commit", "ref", "kind", "run", "base": {"ref", "commit"},
+                      "screens": [{"name", "changed", "changedPixels"}]}
 ```
+
+The base is what the screens are compared with (`tools/ci/proof_baseline`,
+whose choice the package's `ProofBaselineTests` test): a pull request's
+base branch as it is (`GITHUB_BASE_REF`), a push's commit before it; by
+hand, main (a checkout that isn't shallow is fetched into without
+`--depth`). Never this tree's kept pictures: a pull request that changes
+a screen replaces its picture, and would show it unchanged. The job's
+summary says the base too.
 
 Quick (18 pictures) is everything but the guests' Screen windows, which
 need a Linux and a Windows VM; full (22) has them. The job fails when the

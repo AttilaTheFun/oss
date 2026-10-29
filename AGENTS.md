@@ -185,14 +185,17 @@ Server it tests, and releases however it ends.
 
 - **The proof** (`tools/ci/proof.sh`) pictures OS Server.app and OS
   Monitor with their canned servers and compares each picture with the one
-  kept in `Tests/Proof/` (`proof.json`, `screens/`, `diffs/` in the run's
-  `proof` artifact): quick on a pull request, full (with a Linux and a
-  Windows guest's Screen window) on main. A change that means to change a
-  screen replaces its kept picture in the same pull request, from the
-  run's `screens/`, after looking at its diff. Anything that changes from
-  run to run without the app changing is held still (the fixtures' dates,
-  the status bar, the guests' clocks, the windows' corners cut away), not
-  kept as a picture.
+  kept in `Tests/Proof/` at its base, a pull request's base branch or the
+  commit before a push (`tools/ci/proof_baseline`; `proof.json` names it,
+  and `before/` beside `screens/` and `diffs/` in the run's `proof`
+  artifact has a changed screen as it was): quick on a pull request,
+  full (with a Linux and a Windows guest's Screen window) on main. Never
+  this tree's kept pictures, which a change to a screen replaces. A
+  change that means to change a screen replaces its kept picture in the
+  same pull request, from the run's `screens/`, after looking at its
+  diff and `before/`. Anything that changes from run to run without the
+  app changing is held still (the fixtures' dates, the status bar, the
+  guests' clocks, the windows' corners cut away), not kept as a picture.
 - tools/proof.py and tools/monitor_proof.py stay for a person's run with
   `--publish`; CI runs proof.py as it is (`--held`, `--no-build`) and does
   OS Monitor's part in proof.sh. Porting them to Swift is on TODO.md.

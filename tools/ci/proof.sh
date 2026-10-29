@@ -1,7 +1,11 @@
 #!/bin/bash
 # OS Server's proof, from CI: its apps built in a macOS VM leased from OS
 # Server itself (xcode-27.0), pictured with their canned servers, and each
-# picture compared with the one kept for it (Tests/Proof).
+# picture compared with the one kept for it at the proof's base
+# (tools/ci/proof_baseline: a pull request's base branch, a push's commit
+# before; Tests/Proof there). Never this tree's kept pictures: a pull
+# request that changes a screen replaces its picture, so its own would
+# show every screen it changed as unchanged.
 #
 #   tools/ci/proof.sh --proof <dir> [--kind quick|full]
 #
@@ -20,17 +24,24 @@
 #
 # The proof, in <dir>, as Reviews reads it from the run's `proof` artifact:
 #   screens/<name>.png  every picture at this commit
-#   diffs/<name>.png    each that differs from its kept picture
-#                       (Tests/Proof/<name>.png), its changed pixels red
-#                       (tools/ci/snapshot_diff.swift, built here)
+#   before/<name>.png   each that changed, as the base kept it
+#                       (Tests/Proof/<name>.png there); none for a screen
+#                       the base hasn't got (new, and changed)
+#   diffs/<name>.png    each that changed, faded grey with its changed
+#                       pixels red (tools/ci/snapshot_diff.swift, built
+#                       here)
 #   proof.json          {"commit", "ref", "kind", "run",
+#                        "base": {"ref", "commit"},
 #                        "screens": [{"name", "changed", "changedPixels"}]}
-# The script fails when the apps don't build or a picture doesn't come
-# back; pictures that differ are for review, not failures.
+# The script fails when the apps don't build, a picture doesn't come back
+# or the base can't be fetched; pictures that differ are for review, not
+# failures.
 #
 #   PROOF_REF     the ref the proof is of (default: GITHUB_REF, else the branch)
 #   PROOF_PYTHON  the python3 that runs tools/proof.py, with Pillow (default:
 #                 the PATH's)
+#   GITHUB_EVENT_NAME, GITHUB_BASE_REF, GITHUB_REF_NAME  what the base is
+#                 (by hand, none: main)
 #
 # From a CI runner's own user: no sudo here (only in the leases, as their
 # runner), and no SSH key of its own. Every lease is made with the run's
@@ -89,11 +100,29 @@ lease_other() {
 }
 others="$work/lease-linux $work/lease-windows $work/lease-ios"
 
-# The tools first, nothing leased if one doesn't build: the diff and the
-# window cutter here, the window's frame in the VM.
+# The tools and the proof's base first, nothing leased if a tool doesn't
+# build or the base can't be fetched: the diff, the window cutter and the
+# base's chooser here, the window's frame in the VM.
 xcrun swiftc -O -o "$work/snapshot_diff" "$ROOT/tools/ci/snapshot_diff.swift"
 xcrun swiftc -O -o "$work/window_shot" "$ROOT/tools/ci/window_shot.swift"
+xcrun swiftc -O -o "$work/proof_baseline" "$ROOT/tools/ci/proof_baseline/Baseline.swift" "$ROOT/tools/ci/proof_baseline/main.swift"
 xcrun swiftc -O -target arm64-apple-macos14 -o "$work/vm/window_rect" "$ROOT/tools/window_rect.swift"
+# A release's base is the release before: its tags, asked of origin.
+tags=""
+[ "${GITHUB_EVENT_NAME:-}" != release ] || tags="$(git -C "$ROOT" ls-remote --tags --refs origin 'v*' | sed 's#.*refs/tags/##')"
+# shellcheck disable=SC2086 # the tags, a word each
+baseline="$("$work/proof_baseline" "${GITHUB_EVENT_NAME:-}" "${GITHUB_BASE_REF:-}" "${GITHUB_REF_NAME:-}" "$commit" $tags)"
+{ read -r base_ref; read -r base_revision; read -r base_fetch; } <<< "$baseline"
+# CI's checkout is shallow, and the base comes as shallow; a whole one
+# (run by hand) stays whole: its fetch without --depth.
+if [ "$(git -C "$ROOT" rev-parse --is-shallow-repository)" != true ]; then
+    # shellcheck disable=SC2086 # git fetch's arguments, a word each
+    base_fetch="$(printf '%s\n' $base_fetch | grep -v '^--depth=' | tr '\n' ' ')"
+fi
+# shellcheck disable=SC2086 # git fetch's arguments, a word each
+git -C "$ROOT" fetch --quiet $base_fetch
+base_commit="$(git -C "$ROOT" rev-parse --verify "$base_revision^{commit}")"
+echo "proof.sh: the proof compares with $base_ref ($base_commit)"
 
 mac_vm_steps << 'STEPS'
     package)
@@ -226,9 +255,9 @@ fi
 on_cleanup
 echo "::endgroup::"
 
-# The proof, from the pictures and the kept ones of the same commit.
+# The proof, from the pictures and the ones kept at the base.
 json() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-mkdir -p "$proof/screens" "$proof/diffs"
+mkdir -p "$proof/screens" "$proof/diffs" "$proof/before" "$work/base"
 screens=""
 summary=""
 count=0
@@ -236,9 +265,18 @@ for picture in "$recorded"/*.png; do
     [ -e "$picture" ] || continue
     name="$(basename "$picture" .png)"
     cp "$picture" "$proof/screens/$name.png"
-    pixels="$("$work/snapshot_diff" "$ROOT/Tests/Proof/$name.png" "$picture" "$proof/diffs/$name.png")"
+    # Its picture at the base, if the base has one: one it hasn't is new,
+    # and every pixel of it changed.
+    kept="$work/base/$name.png"
+    rm -f "$kept"
+    if git -C "$ROOT" cat-file -e "$base_commit:Tests/Proof/$name.png" 2> /dev/null; then
+        git -C "$ROOT" show "$base_commit:Tests/Proof/$name.png" > "$kept"
+    fi
+    pixels="$("$work/snapshot_diff" "$kept" "$picture" "$proof/diffs/$name.png")"
     changed=false
     [ "$pixels" -eq 0 ] || changed=true
+    # A changed screen as it was, to be seen beside it.
+    if [ "$changed" = true ] && [ -e "$kept" ]; then cp "$kept" "$proof/before/$name.png"; fi
     count=$((count + 1))
     screens="$screens${screens:+,}
     {\"name\": \"$(json "$name")\", \"changed\": $changed, \"changedPixels\": $pixels}"
@@ -251,13 +289,15 @@ cat > "$proof/proof.json" << EOF
   "ref": "$(json "$ref")",
   "kind": "$kind",
   "run": ${GITHUB_RUN_ID:-null},
+  "base": {"ref": "$(json "$base_ref")", "commit": "$base_commit"},
   "screens": [$screens
   ]
 }
 EOF
 cat "$proof/proof.json"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    printf '### Proof (%s) of %s\n\n| Screen | Against its kept picture |\n| --- | --- |\n%s' "$kind" "${commit:0:7}" "$summary" >> "$GITHUB_STEP_SUMMARY"
+    printf '### Proof (%s) of %s\n\n| Screen | Against %s (%s) |\n| --- | --- |\n%s' "$kind" "${commit:0:7}" "$base_ref" "${base_commit:0:7}" \
+        "$summary" >> "$GITHUB_STEP_SUMMARY"
 fi
 
 # Every picture: OS Server's 8 (12 with the guests'), OS Monitor's 2 on the Mac and 8 on the iPhone.

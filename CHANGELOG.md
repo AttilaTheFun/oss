@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.14.0 (unreleased)
+
+- **The proof compares with its base**, not this tree's kept pictures
+  (which a pull request that changes a screen replaces, so its own showed
+  it unchanged): each picture with the one in `Tests/Proof/` at a pull
+  request's base branch as it is, or at the commit before a push
+  (`tools/ci/proof_baseline`, fetched into the job's shallow checkout;
+  tested in the package's `ProofBaselineTests`). A changed screen's
+  picture at the base is the artifact's `before/<name>.png`, beside
+  `screens/` and `diffs/`; proof.json and the job's summary say the base
+  (`"base": {"ref", "commit"}`).
+
 ## 0.13.0
 
 - **An iOS lease of any device type** (API 11): `oss machine lease ios
@@ -46,7 +58,6 @@
   artifact, quick for a pull request, full for main), `beta` and `release`
   (both apps built in a macOS VM and published to Applications Server,
   which signs and notarizes them). README.md, "This repository's CI".
-
 - **iOS tests on a lease's simulator** (API 10): `oss machine xctest <ios
   lease> --tests=<object | file> [--host=<object | file>] [--ui]
   [--only-testing=X]… [--result=out.xcresult.zip] [--junit=out.xml]` runs
