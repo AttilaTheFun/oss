@@ -41,7 +41,8 @@ those run on the host Mac today. In 0.14 each GUI platform gets a
   itself is unwell (the simulator service or the window server stuck, memory
   short with no lease to blame), besides the reset when idle.
 - **CI's Mac work on the primary**: CI's runners become containers of their
-  own, one a job (no `ci` user on the Mac), and their Mac steps use the
+  own, one a job (no `ci` user on the Mac: "CI runners in containers"
+  below), and their Mac steps use the
   primary's slots, not a whole VM: test bundles built on Linux, run with
   `oss machine xctest`, their snapshot pictures brought back as attachments
   or through a files call. Not runners inside the primary: a job runs a pull
@@ -55,6 +56,62 @@ those run on the host Mac today. In 0.14 each GUI platform gets a
   desktop, so its GUI work takes turns as the Mac's does.
 - Order: the macOS primary with `ios` leases and xctest moved into it, then
   `macos-app` slots, then the secondaries' queue, then Linux and Windows.
+
+## 0.14: CI runners in containers
+
+CI's self-hosted runners are long-lived processes on the Mac today, one a
+repository, each registered by hand with a token and an administrator's
+`sudo` (a hidden `ci` user's LaunchDaemons), running one job at a time and
+seen in OS Server only through the leases their jobs take. In 0.14 OS
+Server runs CI itself: a container for each job, made when GitHub queues
+it and deleted when it ends.
+
+- **One GitHub App for every repository.** The owner makes one App (Actions
+  read, Administration read and write, Metadata read; no webhook) and
+  installs it on all their repositories; OS Server keeps its private key
+  and client id (`~/.config/oss/ci-github-app.{pem,json}`, mode 600) and
+  mints installation tokens from them. Nothing of the App reaches a job.
+- **Jobs found by polling, not webhooks**: OS Server has no public address,
+  so it asks each installed repository for its queued runs every few
+  seconds (`GET /repos/{repo}/actions/runs?status=queued`, conditional on
+  the last answer's ETag, so an unchanged answer costs no rate limit), and
+  for each queued job whose labels it serves (`self-hosted` and
+  `<repo>-ci`, the labels workflows use today, so none change) it makes a
+  runner for that job alone.
+- **A runner a job**: a just-in-time runner
+  (`POST /repos/{repo}/actions/runners/generate-jitconfig`, the job's
+  labels) in a container leased with kind `ci`, from an image with the
+  runner and what CI's jobs need (the agent image plus actions/runner),
+  started `run.sh --jitconfig`: it takes one job, runs it, exits, and the
+  container is deleted. Its registration is GitHub's to clean up; a
+  container whose job never came (GitHub gave the job to another runner) is
+  deleted after a few minutes.
+- **Concurrent jobs**: up to N at once (a setting; by default from the
+  Mac's cores and memory), each container with its own CPU and memory
+  limits, the rest queued in the order GitHub queued them, across
+  repositories.
+- **What a job may do**: it holds no OS Server token. OS Server gives its
+  container a grant scoped to its own lease: leasing machines beneath it
+  (released with it), storage, and the Bazel cache read; the cache's write
+  only for a push to the default branch. GitHub's own secrets and its OIDC
+  token reach the job as on any runner, so Applications Server's signing
+  stays as it is. A public repository's workflows keep fork pull requests
+  off self-hosted runners.
+- **Seen in OS Server**: a CI view (in the app, `oss ci list`,
+  `GET /v1/ci/jobs`) of every job: its repository, workflow, job, branch or
+  pull request, commit, how long it waited and ran, its container's CPU,
+  memory and disk over time, the leases it holds, and a link to its run on
+  GitHub; running jobs first, the last week's after.
+- **Onboarding a repository** is installing the App on it (already: all
+  repositories) and a workflow asking for `<repo>-ci`: no token, no `sudo`,
+  nothing on the Mac.
+- **Then retire** the runners on the Mac: the `ci` user's LaunchDaemons
+  (`com.<owner>.ci-runner.<repo>`), `/Users/Shared/ci`, the `ci` user
+  itself, and the runners that run as a login user; one `sudo` script, the
+  last.
+- Order: before the primary VMs (it needs no new Mac): the poller and JIT
+  runners for one repository beside its old runner (a label of its own),
+  then every repository, the CI view, then retiring the old runners.
 
 ## Storage
 
