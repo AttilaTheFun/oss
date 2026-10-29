@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.13.0 (unreleased)
+## 0.13.0
 
 - **An iOS lease of any device type** (API 11): `oss machine lease ios
   --device="iPad Pro 13-inch (M5)" [--runtime="iOS 27.0"]`, and `run`'s

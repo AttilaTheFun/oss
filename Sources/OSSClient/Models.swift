@@ -807,7 +807,7 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
 
 public enum OSS {
     /// This build's version, and the API level it speaks.
-    public static let version = "0.12.1"
+    public static let version = "0.13.0"
     /// 8 from 0.13.0: who a lease is for (`Lease.kind`: `ci`, `session`,
     /// `agent` or `manual`, with a `label` and a `link`), asked for in a
     /// `LeaseRequest` or taken from its holder, and carried by a lease's
