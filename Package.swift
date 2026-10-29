@@ -23,6 +23,10 @@ let package = Package(
         .testTarget(name: "OSSClientTests", dependencies: ["OSSClient"]),
         // The server's own parts that need no machine: storage and grants.
         .testTarget(name: "OSSServerTests", dependencies: ["OSSServer"]),
+        // What CI's proof compares its screens with (tools/ci/proof.sh builds
+        // the folder with swiftc, main.swift too): here for its tests.
+        .target(name: "ProofBaseline", path: "tools/ci/proof_baseline", exclude: ["main.swift"]),
+        .testTarget(name: "ProofBaselineTests", dependencies: ["ProofBaseline"]),
     ]
 )
 

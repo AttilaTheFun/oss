@@ -7,8 +7,10 @@ name: CI
 # - linux: the command line built for Linux in a container
 #   (tools/ci/linux_build.sh), so the Linux client keeps building;
 # - proof: OS Server.app and OS Monitor built in a macOS VM and pictured
-#   with their canned servers, each picture compared with its kept one
-#   (Tests/Proof): a pull request's quick proof, main's full one
+#   with their canned servers, each picture compared with the one kept at
+#   the proof's base (Tests/Proof at a pull request's base branch, or at
+#   the commit before a push, fetched into the shallow checkout by the
+#   script): a pull request's quick proof, main's full one
 #   (tools/ci/proof.sh), uploaded as the `proof` artifact;
 # - beta: OS Server.app and OS Monitor for the Mac built in a macOS VM of
 #   their own (tools/ci/mac_vm_package.sh), unsigned, and published to
