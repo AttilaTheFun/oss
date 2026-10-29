@@ -42,7 +42,8 @@ and two emulators. All of it is configurable.
 
 A simulator's and an emulator's status bar is held still from the moment
 it's ready (9:41, full Wi-Fi and battery; on iOS full signal and no
-carrier, on Android no cellular network and no notifications), so
+carrier, and on an iPad, which shows the date, 9 January 2007; on Android
+no cellular network and no notifications), so
 screenshots of the same screen match from run to run.
 `oss machine simctl <id> status_bar clear`, or on Android `oss machine adb
 <id> shell am broadcast -a com.android.systemui.demo -e command exit`,
@@ -74,6 +75,7 @@ OS Server's client for iPhone, iPad and Mac (`Monitor/`, its README).
 oss machine lease linux                        # an Ubuntu VM for an hour; prints how to reach it
 oss machine lease macos --config=xcode-27.0 --minutes=120   # a base of the server's own (oss status lists them)
 oss machine lease ios                          # an iPhone simulator
+oss machine lease ios --device="iPad Pro 13-inch (M5)"      # an iPad (any type the server's Xcode has; below)
 oss machine lease android --wait               # an emulator, waiting for a free one
 oss machine renew <id | platform> --minutes=60
 oss machine release <id | platform>            # deleted; the place is free
@@ -106,6 +108,22 @@ cloned from. oss makes vanilla bases (below); a server can have as many
 more as its owner builds. A lease that isn't renewed is released when its
 time runs out (60 minutes unless asked otherwise, at most 480). `renew`
 and `release` take the lease's id, or its platform when you hold just one.
+
+An **iOS lease of another device type** (API 11): `--device` takes any
+iPhone or iPad the server's Xcode has (`xcrun simctl list devicetypes`),
+by its name (`"iPad Pro 13-inch (M5)"`, `"iPhone 18 Pro"`) or its
+identifier (`com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB`,
+or just `iPad-Pro-13-inch-M5-12GB`), in any case; `--runtime` an iOS
+runtime it has (`"iOS 27.0"`, `27.0` or its identifier). The simulator is
+made of that type, on that runtime (else the config's base's), and set up
+as the config's base was (its first boot, the script the base was built
+with, the status bar held still); without either, it's a clone of the base,
+as before, and so is one that asks for the base's own type. It takes
+longer than a clone (a first boot: about a minute). A type the server
+hasn't got, or one the runtime doesn't run, is refused with the close ones
+(`"ipad pro"`: every iPad Pro), or every iPhone and iPad the runtime runs.
+`oss machine list`, the lease's JSON (`device`, `runtime`), OS Server's
+window and OS Monitor say which each iOS lease is.
 
 Every lease says who it is for (API 8), so a server's leases can be told
 apart wherever they're shown (`oss machine list` and `oss status`, OS
@@ -534,8 +552,8 @@ containers, which it couldn't read.
 | `GET /v1/capabilities` | its version, API level, features and platforms |
 | `GET /v1/status` | bases, capacity, leases |
 | `GET /v1/doctor` | whether the server can drive UTM, simulators and emulators |
-| `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?, "container"?, "kind"?, "label"?, "link"?}` | a lease (state `creating`; poll it until `ready`). A container's `container` is a `ContainerSpec` (`image`, `cpus`, `memoryBytes`, `diskBytes`, `mounts`, `volumes`, `rosetta`, `environment`, `workingDirectory`, `command`); `minutes: 0` holds it until released; only a client on the server's Mac gets one. `kind` is `ci`, `session`, `agent` or `manual` (one a server doesn't know reads as `manual`; without one, the holder's: a `visor:` holder's container `session`, its other machines `agent`, anyone else's `manual`); `label` is kept to one line of at most 200 characters; `link` must be http or https (400 otherwise) |
-| `GET /v1/machines`, `GET /v1/machines/<id>` | leases (each with its `kind`, `label` and `link`); one lease: ports, VNC password, UDID, adb port…; a container's forwarded ports (`ports`: `{"port", "host", "hostPort"}`, `host` the server as the asker reached it) |
+| `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?, "container"?, "kind"?, "label"?, "link"?, "device"?, "runtime"?}` | a lease (state `creating`; poll it until `ready`). A container's `container` is a `ContainerSpec` (`image`, `cpus`, `memoryBytes`, `diskBytes`, `mounts`, `volumes`, `rosetta`, `environment`, `workingDirectory`, `command`); `minutes: 0` holds it until released; only a client on the server's Mac gets one. `kind` is `ci`, `session`, `agent` or `manual` (one a server doesn't know reads as `manual`; without one, the holder's: a `visor:` holder's container `session`, its other machines `agent`, anyone else's `manual`); `label` is kept to one line of at most 200 characters; `link` must be http or https (400 otherwise). An iOS lease's `device` (a device type's name or identifier) and `runtime` (an iOS runtime's name, version or identifier), any case (API 11): its simulator made of them, the config's base's for the one not given; one the server's Xcode hasn't got, or a type the runtime doesn't run, is 400 `noDevice`, naming the close ones |
+| `GET /v1/machines`, `GET /v1/machines/<id>` | leases (each with its `kind`, `label` and `link`; an iOS lease's `device` and `runtime`, by name); one lease: ports, VNC password, UDID, adb port…; a container's forwarded ports (`ports`: `{"port", "host", "hostPort"}`, `host` the server as the asker reached it) |
 | `POST /v1/machines/<id>/renew` `{"minutes"?}` | its time set again |
 | `DELETE /v1/machines/<id>` | released |
 | `PUT /v1/machines/<id>/files/<name>` (raw body) | a file for its commands, as `@<name>` (a `.zip` is unpacked: an `.app`) |
@@ -795,7 +813,11 @@ script with its UDID in `OSS_UDID`, and shuts it down. Without a script
 it's a vanilla simulator. In a script: `xcrun simctl install "$OSS_UDID"
 My.app`, `xcrun simctl privacy "$OSS_UDID" grant photos com.example.app`,
 `xcrun simctl addmedia "$OSS_UDID" photo.jpg`. A lease is `simctl clone`
-of it (an APFS clone of the device's directory).
+of it (an APFS clone of the device's directory). The script's path is
+kept (`Simulators/<config>.json` in OS Server's folder): a lease of
+another device type or runtime (`--device`, `--runtime`) is a new
+simulator, which the same script sets up after its first boot, so keep it
+where it is, and write it for any iPhone or iPad.
 
 ### Android emulators
 

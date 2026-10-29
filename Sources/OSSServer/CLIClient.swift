@@ -209,7 +209,10 @@ extension OSSClient {
             env["OSS_VNC_PASSWORD"] = lease.vncPassword ?? ""
             env["OSS_VNC"] = "vnc://\(host):\(lease.vncPort ?? 0)"
         }
-        if lease.platform == .ios { env["OSS_UDID"] = lease.udid ?? "" }
+        if lease.platform == .ios {
+            env["OSS_UDID"] = lease.udid ?? ""
+            if let device = lease.device { env["OSS_DEVICE"] = device }
+        }
         if lease.platform == .android {
             env["OSS_ADB"] = "\(host):\(lease.adbPort ?? 0)"
             env["OSS_ADB_PORT"] = String(lease.adbPort ?? 0)

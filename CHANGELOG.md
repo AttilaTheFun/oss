@@ -2,6 +2,38 @@
 
 ## 0.13.0 (unreleased)
 
+- **An iOS lease of any device type** (API 11): `oss machine lease ios
+  --device="iPad Pro 13-inch (M5)" [--runtime="iOS 27.0"]`, and `run`'s
+  and `oss mcp`'s `oss_lease` too; `LeaseRequest.device` and `runtime`.
+  A device type by its name or identifier (or the identifier's last part),
+  in any case, among the iPhones and iPads of `simctl list devicetypes`; a
+  runtime by its name, version or identifier. The simulator is made of
+  that type on that runtime (the config's base's for the one not asked
+  for) and set up as the base was: its first boot, the script the base was
+  built with (`oss image build ios --script` keeps its path,
+  `Simulators/<config>.json` in OS Server's folder) with the device's UDID
+  in OSS_UDID, then booted again, and the status bar held still. One that
+  asks for neither, or for the base's own type and runtime, is a clone of
+  the base, as before. A type the server's Xcode hasn't got is refused
+  (400 `noDevice`) with the close ones (its words together in their names,
+  else each of them somewhere), or every iPhone and iPad the runtime runs;
+  so is a type the runtime doesn't run, and a runtime it hasn't got. A
+  client asks a server before API 11 for neither (it would make its base's).
+- Every iOS lease says what it is (`Lease.device` and `runtime`, by name;
+  a clone its base's): `oss machine list` (`ios/iphone (iPad Pro 13-inch
+  (M5))`), the lease's JSON, `oss machine lease`'s description and
+  `--exports` (`OSS_DEVICE`), OS Server's window and menu bar panel, and
+  OS Monitor; the canned servers' iOS lease is an iPhone 18 Pro.
+- An iPad's status bar is held still too: it shows the date beside the
+  time, so every iOS lease's `--time` is 9:41 on 9 January 2007 in the
+  Mac's time zone (an ISO 8601 date with fractional seconds, the only kind
+  simctl takes; plain 9:41 where it takes none).
+- Tests: device types by name and identifier in any case, the close ones
+  and the full list for unknown ones, types a runtime doesn't run,
+  runtimes, and what a lease is made of, against simctl's lists; with
+  OSS_TEST_SIMCTL=1 (a leased macOS VM's simulators), real simulators of
+  an iPad and an iPhone made, checked and deleted.
+
 - **iOS tests on a lease's simulator** (API 10): `oss machine xctest <ios
   lease> --tests=<object | file> [--host=<object | file>] [--ui]
   [--only-testing=X]… [--result=out.xcresult.zip] [--junit=out.xml]` runs

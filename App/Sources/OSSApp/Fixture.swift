@@ -94,8 +94,14 @@ enum Fixture {
                   minutesAgo: 31, minutesLeft: 29, cpus: 6, memory: 16 * gb),
             lease("a90c3e17", .linux, "dev", "ci@runner", .ci, label: "example/app · CI #18342034123 · test",
                   link: "https://github.com/example/app/actions/runs/18342034123", minutesAgo: 12, minutesLeft: 48, cpus: 6, memory: 16 * gb),
-            lease("c44d8a20", .ios, "iphone", "visor:session-b", .agent, label: "Onboarding screens",
-                  minutesAgo: 8, minutesLeft: 52, cpus: nil, memory: nil),
+            {
+                // A simulator of a device type of its own (API 11), on its config's runtime.
+                var simulator = lease("c44d8a20", .ios, "iphone", "visor:session-b", .agent, label: "Onboarding screens",
+                                      minutesAgo: 8, minutesLeft: 52, cpus: nil, memory: nil)
+                simulator.device = "iPhone 18 Pro"
+                simulator.runtime = "iOS 27.0"
+                return simulator
+            }(),
             lease("e5f61b39", .android, "phone", "dev@workstation", .manual, minutesAgo: 6, minutesLeft: 54, cpus: 4, memory: 4 * gb),
             {
                 // A session's own container, held until it is released.
