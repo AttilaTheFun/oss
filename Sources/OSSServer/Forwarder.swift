@@ -40,6 +40,9 @@ final class Forwarder: @unchecked Sendable {
         listener.start(queue: queue)
     }
 
+    /// The port it listens on, once it does (`port` 0: one the system chose).
+    var boundPort: Int? { listener.port.map { Int($0.rawValue) }.flatMap { $0 == 0 ? nil : $0 } }
+
     func retarget(_ target: String, _ targetPort: Int) {
         lock.withLock { destination = (target, targetPort) }
     }
@@ -49,17 +52,43 @@ final class Forwarder: @unchecked Sendable {
     }
 }
 
-/// One client connection and its `nc` to the guest, each fed from the other
-/// until either side closes.
+/// One client connection and its `nc` to the guest. Each direction is
+/// carried until its sender ends it, and its end passed on rather than
+/// cutting the other short: the client's end of input closes nc's stdin, so
+/// nc shuts its connection to the guest for writing and goes on reading the
+/// guest's answer; the guest's end is nc's output read to its end (nc may
+/// have exited by then: what it wrote is still in the pipe), sent to the
+/// client after everything before it as the end of the stream. Once both
+/// have ended the relay closes (a client that keeps its side open after the
+/// guest's end is given `linger` to close it); either side failing closes it
+/// at once. Each direction reads no more until the other side has taken what
+/// it has, so a slow reader holds back its sender, not this process's memory.
 private final class Relay: @unchecked Sendable {
     let connection: NWConnection
     let process = Process()
     let toGuest = Pipe()
     let fromGuest = Pipe()
+    /// The connection's events, nc's output and the relay's state, in order.
     let queue: DispatchQueue
+    /// nc's stdin written: a write waits while nc can't take more.
+    private let writes = DispatchQueue(label: "oss.relay.write")
     let vncPassword: String?
     private var closed = false
     private var clientBuffer = Data()
+    /// Each direction's end: the client's reached nc's stdin; the guest's
+    /// sent to the client, after all it sent.
+    private var clientEnded = false
+    private var guestEnded = false
+    /// nc's output as it comes, paused while the client takes the last of it.
+    private var guestReads: DispatchSourceRead?
+    private var guestPaused = false
+    /// On `writes`: nc's stdin closed (the client's end, or nc gone, after
+    /// which what the client sends has nowhere to go).
+    private var stdinClosed = false
+
+    /// How long a client keeps its side once the guest has ended theirs and
+    /// it has had all the guest sent: what it sends meanwhile goes nowhere.
+    static let linger: DispatchTimeInterval = .seconds(30)
 
     /// Relays held until they close (their handlers hold them only weakly).
     private nonisolated(unsafe) static var active: [ObjectIdentifier: Relay] = [:]
@@ -76,13 +105,14 @@ private final class Relay: @unchecked Sendable {
         process.standardError = FileHandle.nullDevice
     }
 
+    /// On `queue` (the forwarder's, whose listener hands the connection over).
     func start() {
         Relay.lock.lock(); Relay.active[ObjectIdentifier(self)] = self; Relay.lock.unlock()
-        process.terminationHandler = { [weak self] _ in self?.queue.async { self?.close() } }
+        // nc's exit ends nothing by itself: its output is read to its end, and that is the guest's end.
         do { try process.run() } catch { close(); return }
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
-            case .failed, .cancelled: self?.queue.async { self?.close() }
+            case .failed, .cancelled: self?.close()
             default: break
             }
         }
@@ -98,25 +128,15 @@ private final class Relay: @unchecked Sendable {
         }
     }
 
-    /// Each side's bytes to the other until either closes.
+    /// Each side's bytes to the other, on `queue`.
     private func pipe() {
         guard !closed else { return }
         if !clientBuffer.isEmpty {
-            guard (try? toGuest.fileHandleForWriting.write(contentsOf: clientBuffer)) != nil else { close(); return }
+            let early = clientBuffer
             clientBuffer.removeAll()
+            writes.async { self.writeGuest(early) }
         }
-        fromGuest.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard let self else { return }
-            if data.isEmpty {
-                // The guest closed: what was sent goes out first, then the client's side closes.
-                handle.readabilityHandler = nil
-                self.connection.send(content: nil, contentContext: .finalMessage, isComplete: true,
-                                     completion: .contentProcessed { _ in self.queue.async { self.close() } })
-                return
-            }
-            self.connection.send(content: data, completion: .contentProcessed { _ in })
-        }
+        carryGuest()
         receive()
     }
 
@@ -179,30 +199,133 @@ private final class Relay: @unchecked Sendable {
         return true
     }
 
+    // MARK: The client to the guest
+
+    /// The client's next bytes to nc's stdin, and only then the next read;
+    /// its end of input, nc's stdin closed.
     private func receive() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] data, _, complete, error in
-            guard let self else { return }
-            if let data, !data.isEmpty {
-                // The relay gone (the guest closed its side): the client's side closes too.
-                guard (try? self.toGuest.fileHandleForWriting.write(contentsOf: data)) != nil else {
-                    self.close()
-                    return
-                }
-            }
-            if complete || error != nil {
+            guard let self, !self.closed else { return }
+            if error != nil {
                 self.close()
-            } else {
-                self.receive()
+                return
+            }
+            self.writes.async {
+                if let data, !data.isEmpty { self.writeGuest(data) }
+                // nc then shuts its connection to the guest for writing, and the guest's answer still comes.
+                if complete { self.closeStdin() }
+                self.queue.async {
+                    guard !self.closed else { return }
+                    if complete {
+                        self.clientEnded = true
+                        self.finishIfEnded()
+                    } else {
+                        self.receive()
+                    }
+                }
             }
         }
     }
 
+    /// On `writes`. A write that fails is nc gone (the guest closed): the
+    /// client's bytes from then on are dropped.
+    private func writeGuest(_ data: Data) {
+        guard !stdinClosed else { return }
+        if (try? toGuest.fileHandleForWriting.write(contentsOf: data)) == nil { closeStdin() }
+    }
+
+    /// On `writes`.
+    private func closeStdin() {
+        guard !stdinClosed else { return }
+        stdinClosed = true
+        try? toGuest.fileHandleForWriting.close()
+    }
+
+    // MARK: The guest to the client
+
+    /// nc's output to the client as it comes, each piece taken by the
+    /// connection before the next is read; at its end (nc gone, all of it
+    /// read), the end of the stream, sent after it.
+    private func carryGuest() {
+        let descriptor = fromGuest.fileHandleForReading.fileDescriptor
+        // An event with nothing to read (or a read racing one) waits for the next, not blocking the queue.
+        _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK)
+        let source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
+        source.setEventHandler { [weak self] in
+            guard let self, !self.closed else { return }
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            if count < 0, errno == EAGAIN || errno == EINTR { return }
+            if count <= 0 {
+                self.stopGuestReads()
+                self.connection.send(content: nil, contentContext: .finalMessage, isComplete: true,
+                                     completion: .contentProcessed { [weak self] error in
+                    guard let self, !self.closed else { return }
+                    if error != nil {
+                        self.close()
+                        return
+                    }
+                    self.guestEnded = true
+                    self.finishIfEnded()
+                })
+                return
+            }
+            self.pauseGuestReads()
+            self.connection.send(content: Data(buffer[0..<count]), completion: .contentProcessed { [weak self] error in
+                guard let self, !self.closed else { return }
+                if error != nil {
+                    self.close()
+                    return
+                }
+                self.resumeGuestReads()
+            })
+        }
+        // Its descriptor open until the source has let it go (the pipe closes it when released).
+        let handle = fromGuest.fileHandleForReading
+        source.setCancelHandler { withExtendedLifetime(handle) {} }
+        guestReads = source
+        source.resume()
+    }
+
+    private func pauseGuestReads() {
+        guard let guestReads, !guestPaused else { return }
+        guestPaused = true
+        guestReads.suspend()
+    }
+
+    private func resumeGuestReads() {
+        guard let guestReads, guestPaused else { return }
+        guestPaused = false
+        guestReads.resume()
+    }
+
+    /// (A source is resumed before it's cancelled: one released suspended traps.)
+    private func stopGuestReads() {
+        resumeGuestReads()
+        guestReads?.cancel()
+        guestReads = nil
+    }
+
+    // MARK: The end
+
+    /// Both directions ended: closed. The guest's alone: the client has all
+    /// it sent and is given `linger` to close its side.
+    private func finishIfEnded() {
+        if clientEnded && guestEnded {
+            close()
+        } else if guestEnded {
+            queue.asyncAfter(deadline: .now() + Self.linger) { [weak self] in self?.close() }
+        }
+    }
+
+    /// On `queue`: nc ended (a write waiting on its stdin returns), the
+    /// connection cancelled.
     private func close() {
         guard !closed else { return }
         closed = true
-        try? toGuest.fileHandleForWriting.close()
+        stopGuestReads()
         if process.isRunning { process.terminate() }
-        fromGuest.fileHandleForReading.readabilityHandler = nil
+        writes.async { self.closeStdin() }
         connection.cancel()
         Relay.lock.lock(); Relay.active[ObjectIdentifier(self)] = nil; Relay.lock.unlock()
     }

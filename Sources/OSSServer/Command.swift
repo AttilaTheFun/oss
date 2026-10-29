@@ -120,7 +120,8 @@ let usage = """
 
     Configs: what the server has bases for (oss status lists them); oss makes vanilla ones. Settings:
     ~/.config/oss/client.json {"servers": [...]} (or OSS_SERVERS), tried in order; the token in ~/.config/oss/token
-    (or OSS_TOKEN). Holder: OSS_HOLDER, else user@host.
+    (or OSS_TOKEN). Holder: OSS_HOLDER, else user@host. --url=GRANT: a grant's URL, or its path alone (oss grant
+    --json's), on the first of those servers that answers.
     """
 
 struct Arguments {
@@ -496,31 +497,30 @@ public enum OSSCommand {
                     exit(try await ExecCommand.run(socket: socket, arguments))
                 }
                 #endif
-                // A grant's URL given: it is the credential (and names the lease).
+                // A grant given (its URL, or its path alone on the first of this computer's servers that
+                // answers): it is the credential (and names the lease).
                 if sub == "install", let url = arguments.options["url"] {
-                    guard let grant = URL(string: url), let object = target else { fail("oss machine install --url=GRANT <sha256 | name>") }
-                    printInstalled(try await OSSGrantClient(url: grant, transport: cliTransport()).install(object: object))
+                    guard let object = target else { fail("oss machine install --url=GRANT <sha256 | name>") }
+                    printInstalled(try await OSSGrantClient.cli(url).install(object: object))
                     exit(0)
                 }
                 if sub == "xctest", let url = arguments.options["url"] {
-                    guard let grant = URL(string: url) else { fail("oss machine xctest --url=GRANT --tests=<object> …") }
-                    let client = OSSGrantClient(url: grant, transport: cliTransport())
+                    let client = try await OSSGrantClient.cli(url)
                     exit(try await xctestCommand(arguments, put: nil, run: { try await client.xctest($0, output: $1) },
                                                  junit: { try await client.xctestJUnit(run: $0) },
                                                  result: { try await client.downloadXCTestResult(run: $0, to: $1) }))
                 }
                 if sub == "exec", let url = arguments.options["url"] {
-                    guard let grant = URL(string: url) else { fail("oss machine exec --url=GRANT -- command…") }
-                    let client = OSSGrantClient(url: grant, transport: cliTransport())
+                    let client = try await OSSGrantClient.cli(url)
                     exit(try await ExecCommand.run(arguments) { request, input, output in
                         try await client.exec(request, input: input, output: output)
                     })
                 }
                 if sub == "upload" || sub == "download", let url = arguments.options["url"] {
-                    guard let grant = URL(string: url), arguments.positional.count >= 4 else {
+                    guard arguments.positional.count >= 4 else {
                         fail("oss machine upload --url=GRANT <local> <remote> | download --url=GRANT <remote> <local>")
                     }
-                    let client = OSSGrantClient(url: grant, transport: cliTransport())
+                    let client = try await OSSGrantClient.cli(url)
                     try await containerTransfer(sub!, arguments.positional[2], arguments.positional[3], mode: arguments.options["mode"],
                                                 id: "<id>", put: { try await client.uploadFile($0, to: $1, mode: $2) },
                                                 get: { try await client.downloadFile($0, to: $1) })
@@ -779,15 +779,14 @@ public enum OSSCommand {
                 let holder = arguments.options["holder"] ?? holderName()
                 // A grant's URL given: it is the credential, and says the holder, the object, the name and the TTL.
                 if let url = arguments.options["url"] {
-                    guard let grantURL = URL(string: url) else { fail("--url=<a grant's URL>") }
-                    let grant = OSSGrantClient(url: grantURL, transport: cliTransport())
+                    let grant = try await OSSGrantClient.cli(url)
                     switch sub {
                     case "put":
                         guard let file = target, FileManager.default.fileExists(atPath: file) else { fail("oss storage put <file> --url=GRANT") }
                         let put = try await grant.put(file: URL(fileURLWithPath: file))
                         if arguments.flags.contains("json") { try printJSON(put) } else { print(describe(put.lease)) }
                     case "get":
-                        let out = target ?? grantURL.lastPathComponent
+                        let out = target ?? grant.url.lastPathComponent
                         try await grant.get(to: URL(fileURLWithPath: out))
                         print(out)
                     default:
@@ -991,6 +990,9 @@ public enum OSSCommand {
                 forwarder.start()
                 log("forwarding :\(local) to \(arguments.positional[2]):\(port)")
                 while true { try await Task.sleep(for: .seconds(3600)) }
+            #else
+            case "serve", "forward":
+                fail("oss \(command) runs on a Mac (the server's): oss here is a client of one")
             #endif
 
             #if canImport(CommonCrypto)

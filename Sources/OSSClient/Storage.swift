@@ -289,6 +289,22 @@ public struct OSSGrantClient: Sendable {
         self.transport = transport
     }
 
+    /// A grant given as its URL, or as its path alone (`Grant.path`,
+    /// `/v1/…?grant=…`, the same grant at any of the server's addresses) on
+    /// the first of `servers` that answers, as a client with the token finds
+    /// its server: a grant asked for on the server's Mac names it as that Mac
+    /// reached it (`127.0.0.1`), which a container or another computer
+    /// reaches by another address.
+    public static func resolving(_ grant: String, servers: [URL], transport: any OSSTransport = URLSessionTransport()) async throws
+        -> OSSGrantClient {
+        if let url = URL(string: grant), url.scheme != nil, url.host != nil { return OSSGrantClient(url: url, transport: transport) }
+        guard grant.hasPrefix("/") else { throw OSSError(status: 0, message: "a grant is its URL (http://…) or its path (/v1/…?grant=…)") }
+        var base = try await OSSClient.firstAnswering(servers, transport: transport).absoluteString
+        while base.hasSuffix("/") { base.removeLast() }
+        guard let url = URL(string: base + grant) else { throw OSSError(status: 0, message: "no URL from \(base) and the grant's path") }
+        return OSSGrantClient(url: url, transport: transport)
+    }
+
     /// A request to the grant's URL, with `query` beside its own (a file's
     /// path), or to a path below its own (`below`: an xctest run's
     /// `<run>/junit`), its grant kept.

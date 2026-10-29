@@ -3,8 +3,8 @@ import PackageDescription
 
 let package = Package(
     name: "oss",
-    // OSSClient's floor (async URLSession, Task.sleep(for:)); the server and
-    // its CLI run on macOS 15 and Linux.
+    // OSSClient's floor (async URLSession, Task.sleep(for:)); the server runs
+    // on macOS 15, its CLI there and, as a client, on Linux.
     platforms: [.macOS(.v13), .iOS(.v16), .tvOS(.v16), .watchOS(.v9), .visionOS(.v1)],
     products: [
         // The API's types and an async client for it: what an application

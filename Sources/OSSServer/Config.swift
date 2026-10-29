@@ -246,8 +246,8 @@ enum GuestPasswords {
 struct ClientConfig: Codable, Sendable {
     var servers: [String] = ["http://127.0.0.1:7480"]
 
-    static func load() -> ClientConfig {
-        if let env = ProcessInfo.processInfo.environment["OSS_SERVERS"] {
+    static func load(environment: [String: String] = ProcessInfo.processInfo.environment) -> ClientConfig {
+        if let env = environment["OSS_SERVERS"] {
             return ClientConfig(servers: env.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) })
         }
         guard let data = FileManager.default.contents(atPath: Paths.clientConfig),

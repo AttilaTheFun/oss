@@ -126,6 +126,18 @@ func cliTransport() -> any OSSTransport {
     ProcessInfo.processInfo.environment["OSS_TRANSPORT"] == "urlsession" ? URLSessionTransport() : CurlTransport()
 }
 
+extension OSSGrantClient {
+    /// `--url`: a grant's URL, or its path alone (`oss grant --json`'s
+    /// `path`) on the first of this computer's servers that answers
+    /// (`~/.config/oss/client.json`'s, or OSS_SERVERS), as the commands with
+    /// the token find theirs.
+    static func cli(_ grant: String, environment: [String: String] = ProcessInfo.processInfo.environment) async throws
+        -> OSSGrantClient {
+        try await resolving(grant, servers: ClientConfig.load(environment: environment).servers.compactMap(URL.init(string:)),
+                            transport: cliTransport())
+    }
+}
+
 extension OSSClient {
     /// The server this computer uses: the first of `~/.config/oss/client.json`'s
     /// servers (or OSS_SERVERS) that answers, with `~/.config/oss/token` (or OSS_TOKEN).

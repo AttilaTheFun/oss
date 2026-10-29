@@ -104,3 +104,22 @@ func status(_ platform: Platform, limit: Int, leased: Int) -> Status {
     #expect(lease.ports == nil)
     #expect(ForwardedPort(port: 8080, host: "server.local", hostPort: 47512).description == "8080 → server.local:47512")
 }
+
+@Test func aGrantsPathGoesToTheFirstServerThatAnswers() async throws {
+    // A grant asked for on the server's Mac names it as 127.0.0.1; its path
+    // alone is the same grant wherever the server is reached.
+    let fake = FakeServers(hosts: ["192.168.1.3": ("lan", status(.container, limit: 1, leased: 0))])
+    let path = "/v1/machines/a1/exec?grant=e30.c2ln"
+    let servers = [URL(string: "http://127.0.0.1:7480")!, URL(string: "http://192.168.1.3:7480/")!]
+    let client = try await OSSGrantClient.resolving(path, servers: servers, transport: fake)
+    #expect(client.url.absoluteString == "http://192.168.1.3:7480" + path)
+    // A whole URL as it is, no server asked.
+    let whole = "http://100.64.0.2:7480" + path
+    #expect(try await OSSGrantClient.resolving(whole, servers: [], transport: fake).url.absoluteString == whole)
+    // No server answering, or neither a URL nor a path: said so.
+    let none = await #expect(throws: OSSError.self) {
+        try await OSSGrantClient.resolving(path, servers: [URL(string: "http://127.0.0.1:7480")!], transport: fake)
+    }
+    #expect(none?.message.contains("no oss server answered") == true)
+    await #expect(throws: OSSError.self) { try await OSSGrantClient.resolving("v1/machines/a1/exec", servers: servers, transport: fake) }
+}

@@ -1,8 +1,8 @@
-import CryptoKit
 import Foundation
 import OSSClient
 
 #if canImport(Network)
+import CryptoKit
 
 /// What the API's routes reach: the machines, the store, the Bazel cache,
 /// the API's token and the grants' key.

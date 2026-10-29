@@ -1,4 +1,6 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#endif
 import Foundation
 import OSSClient
 
@@ -46,13 +48,7 @@ public enum ServedFiles {
     static func add(_ source: String, into directory: String = directory) throws -> Entry {
         guard let handle = FileHandle(forReadingAtPath: source) else { throw ShellError(description: "can't read \(source)") }
         defer { try? handle.close() }
-        var hasher = SHA256()
-        var bytes: Int64 = 0
-        while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty {
-            hasher.update(data: chunk)
-            bytes += Int64(chunk.count)
-        }
-        let hash = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        let (hash, bytes) = try digest(handle)
         Paths.ensure(directory)
         let entry = Entry(sha256: hash, name: URL(fileURLWithPath: source).lastPathComponent, bytes: bytes, added: Date())
         let hadEntry = FileManager.default.fileExists(atPath: entryPath(hash, in: directory))
@@ -72,6 +68,22 @@ public enum ServedFiles {
             }
         }
         return entry
+    }
+
+    /// A file's SHA-256 and size, read a few megabytes at a time: with
+    /// CryptoKit, so on the server's Mac (an `oss` elsewhere is its client).
+    private static func digest(_ handle: FileHandle) throws -> (hash: String, bytes: Int64) {
+        #if canImport(CryptoKit)
+        var hasher = SHA256()
+        var bytes: Int64 = 0
+        while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+            bytes += Int64(chunk.count)
+        }
+        return (hasher.finalize().map { String(format: "%02x", $0) }.joined(), bytes)
+        #else
+        throw ShellError(description: "files are served from the server's Mac: oss files add runs there")
+        #endif
     }
 
     /// The served files: those with an entry (a holder's objects beside them aren't).

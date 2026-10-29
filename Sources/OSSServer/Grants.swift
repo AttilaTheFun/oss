@@ -1,4 +1,6 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#endif
 import Foundation
 import OSSClient
 
@@ -14,6 +16,7 @@ struct GrantClaims: Codable, Sendable, Equatable {
     var objectTTL: TimeInterval?
 }
 
+#if canImport(CryptoKit)
 /// Grants (`POST /v1/grants`): a URL that does one thing without the API's
 /// token, for a client that has only it (an agent in a container, its
 /// session's Visor holding the token). Its `grant` query parameter is the
@@ -147,6 +150,7 @@ struct GrantKey: Sendable {
         return Grant(verb: request.verb, url: url, path: full, expires: Date(timeIntervalSince1970: TimeInterval(claims.expires)))
     }
 }
+#endif
 
 extension Data {
     /// Base64 with `-` and `_`, unpadded: safe in a URL's query.

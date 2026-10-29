@@ -94,6 +94,17 @@ those run on the host Mac today. In 0.14 each GUI platform gets a
   through exec, which needs `tar` in the image. The files route could take
   an archive and unpack it.
 - **UDP ports**: `--port` forwards TCP alone, as VMs' forwards do.
+- **A container's CPUs as it counts them**: one leased with `--cpus=6`
+  sees 7 (`nproc`, `/proc/cpuinfo`), while its cgroup's `cpu.max` (`600000
+  100000`) holds it to 6. It's Containerization's: `LinuxContainer` gives
+  the VM one CPU more than the container's (`cpuOverhead`, 1 by default:
+  "a core for the guest agent outside of the container"), and limits the
+  container by a CFS quota alone, no cpuset, so it sees every CPU the VM
+  has. A tool that sizes its work by the CPUs it sees (`make -j$(nproc)`)
+  runs one job more than its quota; one that reads the cgroup counts what
+  was asked. Ask upstream for a cpuset of the container's own CPUs, or set
+  `cpuOverhead` to 0 in the helper (`Helper.boot`), the guest agent then
+  sharing the container's CPUs.
 
 ## iOS tests
 
