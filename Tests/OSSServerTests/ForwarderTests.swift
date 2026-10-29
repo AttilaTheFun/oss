@@ -133,6 +133,11 @@ final class RelayClient: @unchecked Sendable {
     private let queue = DispatchQueue(label: "oss.test.client")
     /// Times the connection waited and was started again, on `queue`.
     private var waits = 0
+    /// The other side's end, once a read has carried it (alone or with the
+    /// last bytes): no more is read, as a read past it fails (ENODATA).
+    private var ended = false
+    /// A failure that came with bytes: thrown by the read after them.
+    private var failure: Error?
 
     private init(_ connection: NWConnection) { self.connection = connection }
 
@@ -177,19 +182,24 @@ final class RelayClient: @unchecked Sendable {
         }
     }
 
-    /// What comes next: nil at the other side's end.
+    /// What comes next: nil at the other side's end. Network may hand over
+    /// the last bytes and the end together; the end is kept for the next read.
     func receive() async throws -> Data? {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data?, Error>) in
+        if let failure { throw failure }
+        if ended { return nil }
+        let (data, complete, error) = await withCheckedContinuation {
+            (continuation: CheckedContinuation<(Data?, Bool, NWError?), Never>) in
             connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { data, _, complete, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else if let data, !data.isEmpty {
-                    continuation.resume(returning: data)
-                } else {
-                    continuation.resume(returning: complete ? nil : Data())
-                }
+                continuation.resume(returning: (data, complete, error))
             }
         }
+        if complete { ended = true }
+        guard let data, !data.isEmpty else {
+            if let error { throw error }
+            return complete ? nil : Data()
+        }
+        failure = error
+        return data
     }
 
     /// Everything until the other side's end.
