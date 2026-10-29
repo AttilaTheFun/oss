@@ -131,6 +131,8 @@ func forwarding(to guest: RelayGuest) async throws -> (Forwarder, Int) {
 final class RelayClient: @unchecked Sendable {
     let connection: NWConnection
     private let queue = DispatchQueue(label: "oss.test.client")
+    /// Times the connection waited and was started again, on `queue`.
+    private var waits = 0
 
     private init(_ connection: NWConnection) { self.connection = connection }
 
@@ -142,7 +144,13 @@ final class RelayClient: @unchecked Sendable {
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready: once.run { continuation.resume() }
-                case .failed(let error), .waiting(let error): once.run { continuation.resume(throwing: error) }
+                case .failed(let error): once.run { continuation.resume(throwing: error) }
+                case .waiting(let error):
+                    // A loopback connect can find its 4-tuple still closing from an
+                    // earlier connection (EADDRINUSE): Network waits; try again soon.
+                    client.waits += 1
+                    guard client.waits <= 50 else { once.run { continuation.resume(throwing: error) }; return }
+                    client.queue.asyncAfter(deadline: .now() + .milliseconds(20)) { connection.restart() }
                 case .cancelled: once.run { continuation.resume(throwing: APIError(error: "cancelled")) }
                 default: break
                 }
