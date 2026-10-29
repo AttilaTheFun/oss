@@ -208,7 +208,10 @@ if lease_other ios; then
             "$OSS" machine simctl "$ios" launch com.LoganShire.OSMonitor -fixture YES -appearance "$appearance" $arguments > /dev/null
             sleep 4
             for _ in $(seq 1 "$swipes"); do
-                "$OSS" machine swipe "$ios" 600 2000 600 900 --ms=300
+                # Once more after a pause: the server lending the simulator may be older
+                # than this tree's, which retries AXe itself (Input.swift).
+                "$OSS" machine swipe "$ios" 600 2000 600 900 --ms=300 \
+                    || { sleep 5; "$OSS" machine swipe "$ios" 600 2000 600 900 --ms=300; }
                 sleep 1
             done
             [ "$swipes" -eq 0 ] || sleep 1.5
