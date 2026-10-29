@@ -28,6 +28,11 @@
   time, so every iOS lease's `--time` is 9:41 on 9 January 2007 in the
   Mac's time zone (an ISO 8601 date with fractional seconds, the only kind
   simctl takes; plain 9:41 where it takes none).
+- An iOS lease's input (`oss machine tap|swipe|type|key`) is tried up to
+  three times, two seconds apart, when AXe timed out creating the
+  simulator's remote automation session: a busy simulator (just booted,
+  or in a VM under load) is slow to make it, and the same input goes
+  through a moment later.
 - Tests: device types by name and identifier in any case, the close ones
   and the full list for unknown ones, types a runtime doesn't run,
   runtimes, and what a lease is made of, against simctl's lists; with

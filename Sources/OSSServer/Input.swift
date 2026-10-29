@@ -100,8 +100,21 @@ enum MachineInput {
                 arguments = ["key", String(code)]
             }
         }
-        let result = try await Shell.run(axe, arguments + ["--udid", udid], timeout: 60)
-        guard result.ok else { throw APIError(error: "axe \(arguments[0]): \(result.error)\(result.output)") }
+        // AXe drives the simulator through its remote automation session,
+        // which a busy simulator (just booted, or in a VM under load) can be
+        // slow to make: AXe then times out, and the same input a moment later
+        // goes through.
+        var attempt = 1
+        while true {
+            let result = try await Shell.run(axe, arguments + ["--udid", udid], timeout: 60)
+            if result.ok { return }
+            let words = "\(result.error)\(result.output)"
+            guard attempt < 3, words.contains("remote automation session") else {
+                throw APIError(error: "axe \(arguments[0]): \(words)")
+            }
+            attempt += 1
+            try await Task.sleep(for: .seconds(2))
+        }
     }
 
     // MARK: VMs (VNC)
