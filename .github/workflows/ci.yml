@@ -118,13 +118,7 @@ jobs:
         env:
           APPLICATIONS_CI_CODE: ${{ secrets.APPLICATIONS_CI_CODE }}
           APPLICATIONS_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          tools/ci/publish_from_ci.sh --notes-file "$RUNNER_TEMP/notes.md" .ci/packages/OS-Monitor.zip
-          # Not fatal until Applications Server's Signer signs every nested
-          # executable of OS Server.app (README.md, "This repository's CI").
-          if ! tools/ci/publish_from_ci.sh --notes-file "$RUNNER_TEMP/notes.md" .ci/packages/OS-Server.zip; then
-            echo "::warning title=OS Server.app was not published::Applications Server's Signer re-signs only the executables directly in Contents/MacOS and Contents/Helpers, so QEMU (Helpers/qemu/bin) and AXe (Helpers/axe) keep the build's ad hoc signature, and notarization refuses the app. Not fatal until the Signer signs every nested executable."
-          fi
+        run: tools/ci/publish_from_ci.sh --notes-file "$RUNNER_TEMP/notes.md" .ci/packages/OS-Server.zip .ci/packages/OS-Monitor.zip
 
   release:
     if: github.event_name == 'release'

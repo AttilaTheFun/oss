@@ -971,17 +971,11 @@ review. The kept pictures are a run's screens, looked at first: a change
 that means to change a screen replaces its picture in the same pull
 request (`screens/<name>.png` from the run's artifact).
 
-**OS Server.app's beta isn't published yet.** Applications Server's
-Signer signs again, with Developer ID, the hardened runtime and a secure
-timestamp, each bundle of code, each dylib and each executable directly in
-`Contents/MacOS` or `Contents/Helpers`, keeping each one's entitlements.
-OS Server.app has three executables deeper than that: QEMU's
-`Contents/Helpers/qemu/bin/qemu-system-aarch64` (with its hypervisor
-entitlement, `App/qemu.entitlements`) and `qemu-img`, and AXe's
-`Contents/Helpers/axe/axe`. The Signer leaves them as the build signed
-them (ad hoc), so the notary service refuses the app. Until the Signer
-signs every Mach-O executable in a bundle, `beta` publishes OS Monitor and
-warns, without failing, that OS Server.app wasn't published.
+Applications Server signs again, with Developer ID, the hardened runtime
+and a secure timestamp, every Mach-O in each app, deepest first, each with
+its own entitlements: OS Server.app's QEMU (`Contents/Helpers/qemu/bin`,
+with its hypervisor entitlement, `App/qemu.entitlements`) and AXe
+(`Contents/Helpers/axe/axe`) among them, and has the app notarized.
 
 ## License
 

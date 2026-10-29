@@ -40,8 +40,7 @@
   in a macOS VM and pictured, compared with `Tests/Proof/`; the `proof`
   artifact, quick for a pull request, full for main), `beta` and `release`
   (both apps built in a macOS VM and published to Applications Server,
-  which signs them; OS Server.app's not fatal until its Signer signs QEMU's
-  and AXe's executables). README.md, "This repository's CI".
+  which signs and notarizes them). README.md, "This repository's CI".
 
 - **iOS tests on a lease's simulator** (API 10): `oss machine xctest <ios
   lease> --tests=<object | file> [--host=<object | file>] [--ui]
