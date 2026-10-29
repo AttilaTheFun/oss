@@ -6,6 +6,10 @@ let usage = """
 
     Machines (a VM, a simulator, an emulator or a container of your own until you release it or its time runs out):
       oss machine lease <macos|ios|android|linux|windows> [--config=NAME] [--minutes=N] [--wait] [--json | --exports]
+      oss machine lease ios [--device="iPad Pro 13-inch (M5)"] [--runtime="iOS 27.0"]
+                                                            a simulator of that device type (its name or identifier),
+                                                            on that runtime (else the config's), set up as the config's
+                                                            base; unknown ones refused with the close ones
       oss machine lease container --image=REF [--cpus=N] [--memory=GB] [--disk=GB] [--mount=/mac/path:/path[:ro]]…
                                   [--volume=NAME:/path:GB[:keep]]… [--port=N]… [--rosetta] [--env=NAME=VALUE]…
                                   [--workdir=DIR] [--command="…"] [--minutes=0]
@@ -76,8 +80,8 @@ let usage = """
       oss machine upload --url=GRANT <local> <remote>       a container's, with a machine.upload grant, no token
       oss machine download --url=GRANT <remote> <local>     a container's, with a machine.download grant, no token
       oss machine run <platform> [--config=NAME] [--minutes=N] -- command…   (a 5-minute lease renewed while it runs;
-                                                            SIGTERM releases it at once; --kind, --label and --link as
-                                                            lease's)
+                                                            SIGTERM releases it at once; --kind, --label, --link,
+                                                            --device and --runtime as lease's)
       oss machine run container --image=REF [lease options…] --inside [--cache=HOST] [--netrc=HOST]… [--env=…] -- command…
                                                             the command in the container, in this folder (mount it
                                                             at its own path, on the server's Mac), the lease released
@@ -193,7 +197,8 @@ func describe(_ lease: Lease, _ client: OSSClient) -> String {
         lines.append("  ssh:  \(env["OSS_SSH"]!)")
         lines.append("  vnc:  \(env["OSS_VNC"]!)  password \(lease.vncPassword ?? "")")
     case .ios:
-        lines.append("  simulator \(lease.udid ?? "") on \(client.host)")
+        let kind = [lease.device, lease.runtime].compactMap { $0 }.joined(separator: ", ")
+        lines.append("  simulator \(lease.udid ?? "")\(kind.isEmpty ? "" : " (\(kind))") on \(client.host)")
         lines.append("  oss machine simctl \(lease.id) install ./My.app | launch <bundle id> | openurl <url> | ...")
         lines.append("  oss machine xctest \(lease.id) --tests=<Tests.zip> [--host=<App.ipa>] [--ui]")
         if client.host == "127.0.0.1" { lines.append("  (on this Mac: xcrun simctl … \(lease.udid ?? ""))") }
@@ -247,9 +252,13 @@ func leaseRequest(_ args: Arguments, platformArgument: String?) -> LeaseRequest 
     let keyPath = args.options["key"] ?? defaultKey()
     let key = keyPath.flatMap { FileManager.default.contents(atPath: $0) }
         .map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+    if platform != .ios, args.options["device"] != nil || args.options["runtime"] != nil {
+        fail("--device and --runtime are for an ios lease")
+    }
     var request = LeaseRequest(platform: platform, config: args.options["config"], minutes: args.options["minutes"].flatMap(Int.init),
                                holder: args.options["holder"] ?? holderName(), sshPublicKey: platform == .container ? nil : key,
-                               container: platform == .container ? containerSpec(args) : nil)
+                               container: platform == .container ? containerSpec(args) : nil,
+                               device: args.options["device"], runtime: args.options["runtime"])
     describeOrigin(&request, args, environment: ProcessInfo.processInfo.environment)
     return request
 }
@@ -280,10 +289,11 @@ func describeOrigin(_ request: inout LeaseRequest, _ args: Arguments, environmen
     }
 }
 
-/// A lease in a line: its id, machine, state, kind, holder, end and label.
+/// A lease in a line: its id, machine (a simulator's device type), state,
+/// kind, holder, end and label.
 func leaseLine(_ lease: Lease) -> String {
-    "\(lease.id)  \(lease.platform.rawValue)/\(lease.config)  \(lease.state.rawValue)  \(lease.kind?.rawValue ?? "-")  \(lease.holder)  "
-        + "until \(iso(lease.expires))" + (lease.label.map { "  \($0)" } ?? "")
+    "\(lease.id)  \(lease.platform.rawValue)/\(lease.config)\(lease.device.map { " (\($0))" } ?? "")  \(lease.state.rawValue)  "
+        + "\(lease.kind?.rawValue ?? "-")  \(lease.holder)  until \(iso(lease.expires))" + (lease.label.map { "  \($0)" } ?? "")
 }
 
 /// A container lease's spec from its options; GB as 2³⁰ bytes.

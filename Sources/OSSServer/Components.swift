@@ -198,6 +198,7 @@ public actor Components {
             try? FileManager.default.removeItem(atPath: config.androidSDK)
         case "ios":
             for base in await Simulators.bases() { _ = try? await Simulators.simctl(["delete", base.name]) }
+            try? FileManager.default.removeItem(atPath: Paths.simulators)
         default:
             throw ShellError(description: "no component \(id)")
         }

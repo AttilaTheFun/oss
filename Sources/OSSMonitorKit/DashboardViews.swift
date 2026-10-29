@@ -182,7 +182,7 @@ struct MachinesCard: View {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: Format.symbol(row.lease.platform)).frame(width: 22).foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("\(Format.platform(row.lease.platform)) · \(row.lease.config)").font(.body.weight(.medium))
+                            Text(Format.machine(row.lease)).font(.body.weight(.medium))
                             HStack(spacing: 6) {
                                 if let kind = row.lease.kind { KindBadge(kind) }
                                 Text(row.lease.holder).lineLimit(1)
@@ -523,6 +523,12 @@ public enum Format {
 
     public static func minutes(_ seconds: TimeInterval) -> String {
         "\(max(0, Int((seconds / 60).rounded()))) min"
+    }
+
+    /// A lease's machine: its platform and config, and a simulator's device
+    /// type ("iOS · iphone · iPad Pro 13-inch (M5)").
+    public static func machine(_ lease: Lease) -> String {
+        ([platform(lease.platform), lease.config] + [lease.device].compactMap { $0 }).joined(separator: " · ")
     }
 
     public static func platform(_ platform: Platform) -> String {

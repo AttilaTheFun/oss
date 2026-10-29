@@ -57,7 +57,8 @@ enum MCPServer {
             """,
              ["platform": ["type": "string", "enum": Platform.allCases.filter { $0 != .container }.map { $0.rawValue }],
               "config": ["type": "string", "description": "its base: VMs vanilla, dev (the default), xcode-<version> (macOS); oss_status lists them"],
-              "minutes": ["type": "integer", "description": "how long it is yours (default 60, at most 480); renew to keep it longer"]],
+              "minutes": ["type": "integer", "description": "how long it is yours (default 60, at most 480); renew to keep it longer"],
+              "device": ["type": "string", "description": "iOS: a device type, by name or identifier (\"iPad Pro 13-inch (M5)\", \"iPhone 18 Pro\"); the config's otherwise"]],
              required: ["platform"]),
         tool("oss_renew", "Keep a lease: its time set to `minutes` from now.",
              ["id": leaseID, "minutes": ["type": "integer", "description": "default 60, at most 480"]], required: ["id"]),
@@ -119,7 +120,8 @@ enum MCPServer {
                 // A program that speaks MCP to lease a machine is an agent at work.
                 let lease = try await client.lease(LeaseRequest(platform: platform, config: arguments["config"] as? String,
                                                                 minutes: (arguments["minutes"] as? NSNumber)?.intValue,
-                                                                holder: holderName(), sshPublicKey: key, kind: .agent))
+                                                                holder: holderName(), sshPublicKey: key, kind: .agent,
+                                                                device: platform == .ios ? arguments["device"] as? String : nil))
                 return text(describe(lease, client))
             case "oss_renew":
                 let renewed = try await client.renew(try await lease().id, minutes: (arguments["minutes"] as? NSNumber)?.intValue)

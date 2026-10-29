@@ -200,11 +200,17 @@ actor MachineManager {
         } else if request.minutes == 0 {
             throw APIError(error: "only a container is held until it is released (minutes: 0)")
         }
+        if request.platform != .ios, request.device != nil || request.runtime != nil {
+            throw APIError(error: "a device type and runtime are for an iOS lease", code: "noDevice")
+        }
         let config = request.config ?? self.config.defaultConfig(request.platform)
         guard let base = await findBase(request.platform, config) else {
             let offered = knownBases.filter { $0.platform == request.platform }.map(\.config)
             throw APIError(error: "no \(request.platform.rawValue) base \(config) (there are: \(offered.joined(separator: ", ")))")
         }
+        // A simulator of a device type or runtime of its own: chosen now, so
+        // one the server's Xcode hasn't got is refused before anything's made.
+        let simulator = request.platform == .ios ? try await Simulators.choose(device: request.device, runtime: request.runtime, base: base) : nil
         let held = leases.values.filter { $0.platform == request.platform && $0.state != .failed }.count
         guard held < self.config.limit(request.platform) else {
             throw APIError(error: "busy: \(held) of \(self.config.limit(request.platform)) \(request.platform.rawValue) machines are leased", code: "busy")
@@ -218,20 +224,23 @@ actor MachineManager {
                           expires: untilReleased ? .distantFuture : Date().addingTimeInterval(TimeInterval(minutes * 60)))
         if request.platform.isVM { lease.sshUser = self.config.guestUser }
         lease.container = request.container
+        lease.device = simulator?.deviceType.name
+        lease.runtime = simulator?.runtime.name
         lease.take(origin)
         leases[id] = lease
         save()
-        log("lease \(id): \(base.name) for \(lease.holder) (\(origin.kind.rawValue)), \(untilReleased ? "until released" : "\(minutes) min")")
-        Task { await self.create(id, from: base, holderKey: request.sshPublicKey) }
+        log("lease \(id): \(simulator.map { "\($0.deviceType.name) on \($0.runtime.name), set up as \(base.name)" } ?? base.name) "
+            + "for \(lease.holder) (\(origin.kind.rawValue)), \(untilReleased ? "until released" : "\(minutes) min")")
+        Task { await self.create(id, from: base, holderKey: request.sshPublicKey, simulator: simulator) }
         return lease
     }
 
-    private func create(_ id: String, from base: Base, holderKey: String?) async {
+    private func create(_ id: String, from base: Base, holderKey: String?, simulator: Simulators.Choice?) async {
         guard let lease = leases[id] else { return }
         do {
             switch lease.platform {
             case .macos, .linux, .windows: try await createVM(id, lease: lease, base: base, holderKey: holderKey)
-            case .ios: try await createSimulator(id, lease: lease, base: base)
+            case .ios: try await createSimulator(id, lease: lease, base: base, choice: simulator)
             case .android: try await createEmulator(id, lease: lease, base: base)
             case .container: try await createContainer(id, lease: lease)
             }
@@ -242,10 +251,22 @@ actor MachineManager {
         }
     }
 
-    private func createSimulator(_ id: String, lease: Lease, base: Base) async throws {
-        let udid = try await Simulators.lease(base: base, name: lease.name)
+    /// A clone of the base; or, of a device type or runtime of its own
+    /// (`choice`), a new simulator set up as the base was.
+    private func createSimulator(_ id: String, lease: Lease, base: Base, choice: Simulators.Choice?) async throws {
+        let udid: String
+        if let choice {
+            udid = try await Simulators.create(name: lease.name, choice: choice, config: base.config)
+        } else {
+            udid = try await Simulators.lease(base: base, name: lease.name)
+        }
         leases[id]?.udid = udid
         guard leases[id]?.state == .creating else { await Simulators.release(udid: udid); return }
+        if choice == nil {
+            let (device, runtime) = await Simulators.describe(udid: udid)
+            leases[id]?.device = device
+            leases[id]?.runtime = runtime
+        }
         await Simulators.holdStatusBarStill(udid: udid)
         leases[id]?.state = .ready
         save()

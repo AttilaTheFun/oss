@@ -30,6 +30,7 @@ containers for agents are Visor's (`visor machine …` leases through it).
 oss status                                       # bases (configs), capacity, leases (how many of each kind)
 oss machine lease <macos|ios|android|linux|windows> [--config=NAME] [--minutes=N] [--wait]
                   [--kind=ci|session|agent|manual] [--label="what for"] [--link=URL]
+oss machine lease ios --device="iPad Pro 13-inch (M5)" [--runtime="iOS 27.0"]   # any iPhone or iPad its Xcode has
 oss machine list                                 # every lease: kind, holder, time, label
 oss machine ssh <id> -- <command>                # VMs: as runner; sudo needs no password
 oss machine simctl <id> install ./My.app         # iOS: local paths uploaded first
@@ -73,6 +74,10 @@ as it comes with only what oss needs (no Git, no package manager): the
 place to prove something needs nothing else. A server's owner builds
 others on top (tools, Xcode versions); pick the lowest that has what you
 need. For simulator-only work, lease `ios`: it's seconds, not a VM.
+An iPad, or another iPhone, is `--device=<its name or identifier>`
+(`xcrun simctl list devicetypes` names them; an unknown one is refused
+with the close ones): a new simulator set up as the config's base, in
+about a minute rather than seconds.
 
 Inside VMs: macOS and Ubuntu SSH into zsh/bash as `runner`; on macOS use
 `zsh -lc '…'` so a layer's tools are on PATH. Windows SSHes into

@@ -333,6 +333,10 @@ public struct Lease: Codable, Sendable {
 
     // iOS simulators
     public var udid: String?
+    /// Its device type's and runtime's names (API 11): `iPad Pro 13-inch
+    /// (M5)`, `iOS 27.0`; a clone of its config's base has the base's.
+    public var device: String?
+    public var runtime: String?
 
     // Android emulators
     /// The emulator's console port on the server's Mac (its adb port is one more).
@@ -390,9 +394,19 @@ public struct LeaseRequest: Codable, Sendable {
     public var kind: LeaseKind?
     public var label: String?
     public var link: URL?
+    /// An iOS lease's device type, by its name (`iPad Pro 13-inch (M5)`) or
+    /// its identifier (`com.apple.CoreSimulator.SimDeviceType.…`), either
+    /// in any case, and its runtime (`iOS 27.0`, its identifier, or `27.0`)
+    /// (API 11). Either given, its simulator is made of that type on that
+    /// runtime (the config's base's for the one not given) and set up as
+    /// the base was; neither, a clone of the base. A type or runtime the
+    /// server's Xcode hasn't got is refused (400), naming the close ones.
+    public var device: String?
+    public var runtime: String?
 
     public init(platform: Platform, config: String? = nil, minutes: Int? = nil, holder: String? = nil, sshPublicKey: String? = nil,
-                container: ContainerSpec? = nil, kind: LeaseKind? = nil, label: String? = nil, link: URL? = nil) {
+                container: ContainerSpec? = nil, kind: LeaseKind? = nil, label: String? = nil, link: URL? = nil,
+                device: String? = nil, runtime: String? = nil) {
         self.platform = platform
         self.config = config
         self.minutes = minutes
@@ -402,6 +416,8 @@ public struct LeaseRequest: Codable, Sendable {
         self.kind = kind
         self.label = label
         self.link = link
+        self.device = device
+        self.runtime = runtime
     }
 }
 
@@ -778,7 +794,9 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
     /// `noFile` (a container's file that isn't there: 404); from API 10
     /// `busy` also for an xctest on a lease running one, `notReady` for a
     /// run's results while it runs, `noFile` for a run's JUnit or result
-    /// bundle that wasn't made.
+    /// bundle that wasn't made; from API 11 `noDevice` (an iOS lease's
+    /// device type or runtime the server's Xcode hasn't got, or a type
+    /// that runtime doesn't run: 400).
     public var code: String?
     public var description: String { error }
     public init(error: String, code: String? = nil) {
@@ -806,6 +824,9 @@ public enum OSS {
     /// exec: rules_apple's test bundle and host from storage, run by
     /// xcodebuild; `GET …/xctest/<run>/junit` and `/result`), and their
     /// grant (`machine.xctest`).
+    /// 11 from 0.13.0: an iOS lease of a device type and runtime of its
+    /// own (`LeaseRequest.device` and `runtime`), and every iOS lease's
+    /// (`Lease.device`, `Lease.runtime`).
     /// 7 from 0.13.0: storage (`/v1/storage/…`: objects by their SHA-256,
     /// kept while a holder's lease on them lasts), grants (`/v1/grants`: a
     /// URL that does one thing without the token), an iOS lease's app
@@ -826,7 +847,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 10
+    public static let apiLevel = 11
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
 }

@@ -248,7 +248,18 @@ public struct OSSClient: Sendable {
     public func lease(_ id: String) async throws -> Lease { try await json("GET", "/v1/machines/\(id)") }
 
     /// A lease asked for (its state `creating` until it is ready; see `lease(_:waitForCapacity:progress:)`).
-    public func requestLease(_ request: LeaseRequest) async throws -> Lease { try await json("POST", "/v1/machines", body: request) }
+    /// A device type or runtime asked of a server before API 11, which
+    /// would make its base's instead, is refused here.
+    public func requestLease(_ request: LeaseRequest) async throws -> Lease {
+        if request.device != nil || request.runtime != nil {
+            let api = try await capabilities().api
+            guard api >= 11 else {
+                throw OSSError(status: 0, message: "this server (API \(api)) makes no simulator of another device type or runtime: "
+                                                 + "that's OS Server 0.13.0's (API 11)")
+            }
+        }
+        return try await json("POST", "/v1/machines", body: request)
+    }
 
     /// A lease asked for and waited on until it is ready, or (with
     /// `waitForCapacity`) first until the platform has room. `progress` hears

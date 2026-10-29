@@ -45,6 +45,9 @@ enum Paths {
     /// The macOS VMs' bases (OS Server's own, run by Apple's
     /// Virtualization framework) and their leases' clones.
     static let machines = "\(share)/Machines"
+    /// The iOS bases' setup scripts, by path (`<config>.json`): what a
+    /// lease of another device type is set up with.
+    static let simulators = "\(share)/Simulators"
     /// The containers' kernel, images and root filesystems
     /// (Containerization's store).
     static let containers = "\(share)/Containers"

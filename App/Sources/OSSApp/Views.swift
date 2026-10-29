@@ -154,7 +154,7 @@ struct MachinesSection: View {
                             HStack(spacing: 8) {
                                 Image(systemName: Format.symbol(row.lease.platform)).frame(width: 18)
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text("\(Format.platform(row.lease.platform)) · \(row.lease.config)")
+                                    Text(Format.machine(row.lease))
                                     Text(row.lease.id).font(.caption.monospaced()).foregroundStyle(.secondary)
                                 }
                             }
@@ -394,6 +394,12 @@ enum Format {
         return minutes < 60 ? "\(minutes) min" : "\(minutes / 60) h \(minutes % 60) min"
     }
 
+    /// A lease's machine: its platform and config, and a simulator's device
+    /// type ("iOS · iphone · iPad Pro 13-inch (M5)").
+    static func machine(_ lease: Lease) -> String {
+        ([platform(lease.platform), lease.config] + [lease.device].compactMap { $0 }).joined(separator: " · ")
+    }
+
     static func platform(_ platform: Platform) -> String {
         switch platform {
         case .macos: "macOS"
@@ -460,7 +466,7 @@ struct MenuBarView: View {
                     HStack(spacing: 8) {
                         Image(systemName: Format.symbol(row.lease.platform)).frame(width: 18)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text("\(Format.platform(row.lease.platform)) · \(row.lease.config)").lineLimit(1)
+                            Text(Format.machine(row.lease)).lineLimit(1)
                             // Its kind, and what it's for where it says (a session's title), else its holder.
                             HStack(spacing: 5) {
                                 if let kind = row.lease.kind { KindBadge(kind) }
