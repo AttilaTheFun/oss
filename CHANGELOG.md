@@ -149,6 +149,40 @@
   panel and in OS Monitor, with its label (a link to its page where it has
   one), and beside a volume's lease. The canned servers of the proofs have
   one lease of each kind.
+- **A forwarded port carries everything the guest sends before it
+  closes.** The relay behind every forwarded port (a container's `--port`,
+  a VM's SSH and VNC) closed as soon as its `nc` exited, which it does once
+  the guest has closed: the last of the guest's bytes, still in nc's pipe
+  or waiting to be sent, were dropped with the client's connection. A 1 MB
+  download through a container's port came back short most times (every
+  time over the LAN), and some small pages empty. nc's exit now ends
+  nothing by itself: its output is read to its end, all of it sent, then
+  the end of the stream, and the relay closes once the client has closed
+  its side too (or 30 seconds on). Each direction reads no more until the
+  other side has taken what it has, so a slow client holds back the guest,
+  not the server's memory.
+- **A client that shuts its side for writing gets its answer.** A client
+  that sends its request and then its end of input (`printf … | nc host
+  port`) ended the relay, and nc with it, before the guest answered. Its
+  end now closes only nc's stdin, so nc shuts its connection to the guest
+  for writing (the guest sees the client's end, as it would directly), and
+  the guest's answer comes until the guest closes.
+- **`oss` builds and runs on Linux** (Swift 6.4, aarch64), as a client:
+  `lease`, `exec`, `upload` and `download`, `storage`, `grant`, `xctest`,
+  `status` and the rest, as Visor puts it in its container sessions. What
+  needs CryptoKit (`oss files add`'s hashing, storage's routes, grants'
+  keys) is the server's, on its Mac; `oss serve` and `oss forward` off a
+  Mac say that they run on one.
+- **`--url` takes a grant's path**: `oss storage put|get`, `oss machine
+  install|xctest|exec|upload|download` take the grant's `path`
+  (`/v1/…?grant=…`, from `oss grant --json`) as well as its URL, on the
+  first of this computer's servers that answers (`client.json`, or
+  `OSS_SERVERS`), as the commands with the token find theirs. A grant asked
+  for on the server's Mac names it `127.0.0.1` in its `url`, the address it
+  was asked at, which a container or another computer reaches by another;
+  its path is the same grant wherever the server is reached. OSSClient's
+  `OSSGrantClient.resolving(_:servers:)`, and `OSSClient.firstAnswering(_:)`,
+  the first of a list of servers that answers.
 
 ## 0.12.1
 

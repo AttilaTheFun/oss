@@ -475,6 +475,30 @@ func grantParameter(_ grant: Grant) -> String {
     }
 }
 
+@Test func aGrantsPathAloneGoesToTheFirstOfOSSServersThatAnswers() async throws {
+    try await withContainerServer(ports: 38713...38714) { server in
+        let lease = try await server.lease()
+        let grant = try await server.client.grant(GrantRequest(verb: "machine.exec", lease: lease.id), holder: "alice")
+
+        // `oss machine exec --url=<its path>` with OSS_SERVERS: one that
+        // doesn't answer, then this server, which the path is taken to.
+        let servers = ["OSS_SERVERS": "http://127.0.0.1:1, \(server.url.absoluteString)"]
+        let client = try await OSSGrantClient.cli(grant.path, environment: servers)
+        #expect(client.url.absoluteString == server.url.absoluteString + grant.path)
+        let written = Written()
+        let status = try await client.exec(ExecRequest(arguments: ["sh", "-c", "echo by its path"]), input: input(.closeStdin),
+                                           output: written.take)
+        #expect(status == 0)
+        #expect(written.stdout == "by its path\n")
+
+        // Its whole URL is taken as it is; its path with no server answering is refused, saying so.
+        let nowhere = ["OSS_SERVERS": "http://127.0.0.1:1"]
+        #expect(try await OSSGrantClient.cli(grant.url.absoluteString, environment: nowhere).url == grant.url)
+        let refused = await #expect(throws: OSSError.self) { try await OSSGrantClient.cli(grant.path, environment: nowhere) }
+        #expect(refused?.message.contains("no oss server answered") == true)
+    }
+}
+
 @Test func aMountIsForAClientOnTheServersMacAlone() async throws {
     try await withContainerServer(ports: 38706...38707) { server in
         let mounted = LeaseRequest(platform: .container, holder: "alice",

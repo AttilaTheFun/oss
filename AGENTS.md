@@ -114,8 +114,12 @@ grant's URL instead (`oss grant <verb> …` on its side): `oss storage put
 install --url=<grant> <object>`, `oss machine xctest --url=<grant>
 --tests=<object> …` (its bundles put first), and for a container lease of yours `oss
 machine exec --url=<grant> -- <command>`, `oss machine upload --url=<grant>
-<file> <path>`, `oss machine download --url=<grant> <path> <file>`. A
-grant is a secret for a few minutes: don't paste it anywhere else.
+<file> <path>`, `oss machine download --url=<grant> <path> <file>`.
+`--url` takes the grant's path alone too (`/v1/…?grant=…`, `oss grant
+--json`'s `path`), on the first of your servers that answers: a grant
+asked for on the server's Mac names `127.0.0.1`, which a container reaches
+otherwise. A grant is a secret for a few minutes: don't paste it anywhere
+else.
 
 ## The Bazel cache
 

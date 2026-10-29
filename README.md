@@ -267,6 +267,13 @@ server has. It works any number of times until it expires, on that route
 alone (an xctest's, and its runs' results below it); anything else gets the
 same 403, whatever was wrong.
 
+Its `url` names the server as the grant's asker reached it (`127.0.0.1` on
+the server's Mac); its `path` (`oss grant --json`) is the same grant at any
+of the server's addresses. `--url` takes either: a path goes to the first
+of the computer's servers that answers (`client.json`, or `OSS_SERVERS`), as
+the commands with the token do, so a grant made on the server's Mac works
+from its containers and from other computers.
+
 ### iOS tests
 
 A Linux container builds rules_apple's iOS targets (with

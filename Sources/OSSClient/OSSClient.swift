@@ -163,11 +163,17 @@ public struct OSSClient: Sendable {
     /// The first of `servers` that answers as an oss server (nearest first:
     /// this computer, the LAN, a VPN).
     public static func connect(servers: [URL], token: String, transport: any OSSTransport = URLSessionTransport()) async throws -> OSSClient {
+        OSSClient(server: try await firstAnswering(servers, transport: transport), token: token, transport: transport)
+    }
+
+    /// The first of `servers` that answers as an oss server, in order
+    /// (`GET /v1/hello`, which needs no token: a grant's client asks it too).
+    public static func firstAnswering(_ servers: [URL], transport: any OSSTransport = URLSessionTransport()) async throws -> URL {
         for server in servers {
             let probe = OSSHTTPRequest(method: "GET", url: server.appendingPathComponent("v1/hello"), timeout: 4)
             if let answer = try? await transport.send(probe), answer.status == 200,
                String(decoding: answer.body, as: UTF8.self).contains("\"oss\"") {
-                return OSSClient(server: server, token: token, transport: transport)
+                return server
             }
         }
         throw OSSError(status: 0, message: "no oss server answered (tried \(servers.map(\.absoluteString).joined(separator: ", ")))")
