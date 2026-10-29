@@ -33,6 +33,15 @@
   runtimes, and what a lease is made of, against simctl's lists; with
   OSS_TEST_SIMCTL=1 (a leased macOS VM's simulators), real simulators of
   an iPad and an iPhone made, checked and deleted.
+- **CI** (`.github/workflows/ci.yml`, on a self-hosted runner that leases
+  from OS Server itself): `build-and-test` (swift build and test, the App
+  package, OS Monitor's Bazel build, in a macOS VM), `linux` (the command
+  line built in a container), `proof` (OS Server.app and OS Monitor built
+  in a macOS VM and pictured, compared with `Tests/Proof/`; the `proof`
+  artifact, quick for a pull request, full for main), `beta` and `release`
+  (both apps built in a macOS VM and published to Applications Server,
+  which signs them; OS Server.app's not fatal until its Signer signs QEMU's
+  and AXe's executables). README.md, "This repository's CI".
 
 - **iOS tests on a lease's simulator** (API 10): `oss machine xctest <ios
   lease> --tests=<object | file> [--host=<object | file>] [--ui]

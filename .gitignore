@@ -12,3 +12,6 @@ __pycache__/
 # settings (the signing team: tools/signing).
 /bazel-*
 .bazelrc.user
+
+# CI: the packages a job builds (tools/ci/mac_vm_package.sh).
+/.ci/
