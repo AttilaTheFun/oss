@@ -149,6 +149,10 @@ enum Paths {
 struct ServerConfig: Codable, Sendable {
     /// The API's port, on every interface.
     var port: Int = 7480
+    /// The MCP server's port (API 12), on every interface: oss's tools for
+    /// agents over Streamable HTTP, each call made with its caller's key.
+    /// 0 for none.
+    var mcpPort: Int = 7481
     /// How many leases of each platform may exist at once.
     var capacity: [String: Int] = ["macos": 2, "windows": 2, "linux": 2, "ios": 4, "android": 2, "container": 4]
     var defaultMinutes: Int = 60
@@ -199,6 +203,7 @@ struct ServerConfig: Codable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = ServerConfig()
         port = try c.decodeIfPresent(Int.self, forKey: .port) ?? d.port
+        mcpPort = try c.decodeIfPresent(Int.self, forKey: .mcpPort) ?? d.mcpPort
         capacity = d.capacity.merging(try c.decodeIfPresent([String: Int].self, forKey: .capacity) ?? [:]) { $1 }
         defaultMinutes = try c.decodeIfPresent(Int.self, forKey: .defaultMinutes) ?? d.defaultMinutes
         maxMinutes = try c.decodeIfPresent(Int.self, forKey: .maxMinutes) ?? d.maxMinutes

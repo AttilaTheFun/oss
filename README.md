@@ -642,10 +642,25 @@ The Bazel cache is on a port of its own (7490): `GET`, `HEAD` and `PUT` of
 `Authorization: Bearer <token>` or as Basic's password (what Bazel sends
 from a `.netrc`).
 
-`oss mcp` serves the machine commands as [Model Context
-Protocol](https://modelcontextprotocol.io) tools on stdio (`oss_status`,
-`oss_lease`, `oss_renew`, `oss_release`, `oss_ssh`, `oss_simctl`,
-`oss_adb`, `oss_screenshot`), for programs that speak it.
+The machine commands are [Model Context
+Protocol](https://modelcontextprotocol.io) tools too: `oss_status`,
+`oss_lease`, `oss_container_lease`, `oss_renew`, `oss_release`, `oss_ssh`
+(a VM), `oss_exec`, `oss_upload` and `oss_download` (a container's small
+files), `oss_simctl`, `oss_adb`, `oss_install`, `oss_storage`,
+`oss_grant` (a URL for what is too big for a call), `oss_screenshot`,
+`oss_tap`, `oss_swipe`, `oss_type`, `oss_key` and `oss_usage`.
+
+- `oss mcp` serves them on stdio, as this computer's client.
+- The server serves them on a port of its own (API 12; `mcpPort` in
+  server.json, 7481, 0 for none): Streamable HTTP, JSON-RPC `POST`ed and
+  answered as JSON, no stream of its own. Every message carries an
+  application's key (`API_KEY`, or as the bearer) and may carry
+  `CLIENT_ID`; each call is made with them through the server's API, at
+  the host the caller reached the MCP port by (so a grant's URL is one it
+  can reach), a VM reached with the server's own key. A caller's files
+  come by storage and grants (`oss_grant`), never paths of its own.
+  Visor's MCP proxy passes it on to sessions with a Visor's key and
+  `CLIENT_ID: $SESSION_ID`.
 
 ## Setting it up (the server's Mac)
 
