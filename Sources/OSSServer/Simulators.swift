@@ -188,7 +188,18 @@ enum Simulators {
     }
 
     static func bases() async -> [Base] {
-        ((try? await devices()) ?? []).compactMap { Base(name: $0.name) }.filter { $0.platform == .ios }
+        (try? await inventory().get()) ?? []
+    }
+
+    /// The bases, or why simctl couldn't list them (it failed or timed out:
+    /// Xcode mid-update, CoreSimulator waiting on its first launch), which a
+    /// lease's refusal says rather than "no ios base".
+    static func inventory() async -> Result<[Base], Error> {
+        do {
+            return .success(try await devices().compactMap { Base(name: $0.name) }.filter { $0.platform == .ios })
+        } catch {
+            return .failure(error)
+        }
     }
 
     static func simctl(_ arguments: [String], timeout: TimeInterval = 300) async throws -> ProcessResult {

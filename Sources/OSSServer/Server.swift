@@ -204,6 +204,12 @@ actor MachineManager {
             throw APIError(error: "a device type and runtime are for an iOS lease", code: "noDevice")
         }
         let config = request.config ?? self.config.defaultConfig(request.platform)
+        // Simulators that couldn't be listed are no answer about the base.
+        if request.platform == .ios, case .failure(let error) = await Simulators.inventory() {
+            log("an ios lease refused: simctl couldn't list the simulators: \(error)")
+            throw APIError(error: "this server couldn't list its simulators (\(error)): no ios lease until simctl answers",
+                           code: "noInventory")
+        }
         guard let base = await findBase(request.platform, config) else {
             let offered = knownBases.filter { $0.platform == request.platform }.map(\.config)
             throw APIError(error: "no \(request.platform.rawValue) base \(config) (there are: \(offered.joined(separator: ", ")))")

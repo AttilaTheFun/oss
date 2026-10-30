@@ -2,6 +2,10 @@
 
 ## 0.14.0 (unreleased)
 
+- **An iOS lease while simctl can't list the simulators** (it failed or
+  timed out: Xcode mid-update, CoreSimulator waiting on its first launch)
+  is refused with why (400 `noInventory`), and OS Server's log says so,
+  rather than "no ios base iphone (there are: )".
 - **API keys, each an application's** (API 12): `user`, `ci`, a Visor
   server's (`mac-mini-visor`), made on the server's Mac with `oss keys
   create <application>` (piped; shown once, kept as its SHA-256 in
