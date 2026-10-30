@@ -188,8 +188,9 @@ Server it tests, and releases however it ends.
   kept in `Tests/Proof/` at its base, a pull request's base branch or the
   commit before a push (`tools/ci/proof_baseline`; `proof.json` names it,
   and `before/` beside `screens/` and `diffs/` in the run's `proof`
-  artifact has a changed screen as it was): quick on a pull request,
-  full (with a Linux and a Windows guest's Screen window) on main. Never
+  artifact has a changed screen as it was): after each merge to main, full
+  (with a Linux and a Windows guest's Screen window); a pull request gets
+  its build and tests alone, and a release is reviewed by its commit's proof. Never
   this tree's kept pictures, which a change to a screen replaces. A
   change that means to change a screen replaces its kept picture in the
   same pull request, from the run's `screens/`, after looking at its
