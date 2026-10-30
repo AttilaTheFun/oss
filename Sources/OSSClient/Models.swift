@@ -317,6 +317,11 @@ public struct Lease: Codable, Sendable {
     /// repository, workflow, run and job), and a page about it (the run's).
     public var label: String?
     public var link: URL?
+    /// Names and values its holder gave it, kept with it and shown with it
+    /// (API 12; nil from an older server, or given none): a program that
+    /// leases finds its own by them (`oss container-host`'s, Visor's
+    /// session and server).
+    public var labels: [String: String]?
 
     // VMs
     /// The guest's address on the VMs' network (reached from the server's Mac only).
@@ -394,6 +399,10 @@ public struct LeaseRequest: Codable, Sendable {
     public var kind: LeaseKind?
     public var label: String?
     public var link: URL?
+    /// Names and values kept with the lease (API 12): at most 32, a name
+    /// of letters, digits and `. _ - /` of at most 100 characters, a value
+    /// one line of at most 200.
+    public var labels: [String: String]?
     /// An iOS lease's device type, by its name (`iPad Pro 13-inch (M5)`) or
     /// its identifier (`com.apple.CoreSimulator.SimDeviceType.…`), either
     /// in any case, and its runtime (`iOS 27.0`, its identifier, or `27.0`)
@@ -406,7 +415,7 @@ public struct LeaseRequest: Codable, Sendable {
 
     public init(platform: Platform, config: String? = nil, minutes: Int? = nil, holder: String? = nil, sshPublicKey: String? = nil,
                 container: ContainerSpec? = nil, kind: LeaseKind? = nil, label: String? = nil, link: URL? = nil,
-                device: String? = nil, runtime: String? = nil) {
+                device: String? = nil, runtime: String? = nil, labels: [String: String]? = nil) {
         self.platform = platform
         self.config = config
         self.minutes = minutes
@@ -418,6 +427,7 @@ public struct LeaseRequest: Codable, Sendable {
         self.link = link
         self.device = device
         self.runtime = runtime
+        self.labels = labels
     }
 }
 

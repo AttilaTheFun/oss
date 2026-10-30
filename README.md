@@ -134,6 +134,10 @@ Server's window and menu bar, OS Monitor, a volume's lease):
   session leased for its work) or `manual` (someone's at a terminal).
 - **A label**, a short line (a session's title, a CI job's name), and **a
   link** to a page about it (the CI run's).
+- **Labels** (API 12), names and values its holder gave it, kept with it
+  and returned with it: what a program that leases finds its own by
+  (`oss container-host`'s, Visor's session and server). At most 32; a name
+  is letters, digits and `. _ - /`, at most 100 of them; a value one line.
 
 `oss machine lease` and `oss machine run` take `--kind`, `--label` and
 `--link`. In a GitHub Actions job a lease with no `--kind` is `ci`,
@@ -226,6 +230,41 @@ oss volume delete app-build
 - What it runs: the image's own environment and working directory, the
   lease's over them, and by default a process that waits (`--command`
   names another): the work is done with exec.
+
+#### A container host for Visor
+
+`oss container-host` is OS Server as a Visor Server's container host
+(Visor's [docs/container-host.md](https://github.com/AttilaTheFun/visor/blob/main/docs/container-host.md)):
+set in Visor Server's settings (`visor-server containers host
+/usr/local/bin/oss container-host`), its sessions' containers are this
+server's container leases, so they are counted and shown with
+everything else it lends.
+
+```sh
+oss container-host health                      # {"ok", "version", "api": 1, "limits"}: needs API 12
+oss container-host create < request.json       # {"id", …}: a container lease, once its network resolves names
+oss container-host exec <id> [--tty] [--workdir=DIR] [--env-file=F] -- command…   # oss machine exec's
+oss container-host put <id> <path> [--mode=600] < bytes
+oss container-host rm <id> [--volumes]         # released, and gone, before it answers
+oss container-host ls                          # its containers, with their labels
+oss container-host network <id>                # {"ok", "dns", "reach", "detail"}
+```
+
+- Each container is a lease held until released (`minutes: 0`), its kind
+  `session`, its holder the container's name (with a key,
+  `<name>@<application>`), its volumes kept when it goes, so one made
+  again by the same name finds them.
+- It is labelled with the request's labels (`visor.session`,
+  `visor.server`) and two of the host's (`oss.container-host.name`, the
+  request's digest), by which `ls` finds them and `create` asked again
+  answers the one the same request made (another of that name is
+  `exists`).
+- It uses this computer's client settings (`~/.config/oss/client.json`,
+  its key or token), never Visor's, unless `--server=URL` and
+  `--key-file=FILE` (before the operation) name a server and a key. A
+  session's folder is a mount, which needs the server's own Mac: where the
+  settings name another server first, give this Mac's
+  (`--server=http://127.0.0.1:7480`).
 
 ### Storage
 
@@ -567,8 +606,8 @@ containers, which it couldn't read.
 | `GET /v1/status` | bases, capacity, leases |
 | `GET /v1/doctor` | whether the server can drive UTM, simulators and emulators |
 | `GET /v1/keys`, `POST /v1/keys` `{"application"}`, `DELETE /v1/keys/<application>` | the applications with keys (`application`, `created`; never a key); a new key for one, replacing its old one (`{"application", "key"}`, shown this once, kept as its SHA-256); its key taken away. On the server's own Mac and as `user` only (API 12) |
-| `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?, "container"?, "kind"?, "label"?, "link"?, "device"?, "runtime"?}` | a lease (state `creating`; poll it until `ready`). A container's `container` is a `ContainerSpec` (`image`, `cpus`, `memoryBytes`, `diskBytes`, `mounts`, `volumes`, `rosetta`, `environment`, `workingDirectory`, `command`); `minutes: 0` holds it until released; only a client on the server's Mac gets one. `kind` is `ci`, `session`, `agent` or `manual` (one a server doesn't know reads as `manual`; without one, the holder's: a `visor:` holder's container `session`, its other machines `agent`, anyone else's `manual`); `label` is kept to one line of at most 200 characters; `link` must be http or https (400 otherwise). An iOS lease's `device` (a device type's name or identifier) and `runtime` (an iOS runtime's name, version or identifier), any case (API 11): its simulator made of them, the config's base's for the one not given; one the server's Xcode hasn't got, or a type the runtime doesn't run, is 400 `noDevice`, naming the close ones |
-| `GET /v1/machines`, `GET /v1/machines/<id>` | leases (each with its `kind`, `label` and `link`; an iOS lease's `device` and `runtime`, by name); one lease: ports, VNC password, UDID, adb port…; a container's forwarded ports (`ports`: `{"port", "host", "hostPort"}`, `host` the server as the asker reached it) |
+| `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?, "container"?, "kind"?, "label"?, "link"?, "labels"?, "device"?, "runtime"?}` | a lease (state `creating`; poll it until `ready`). A container's `container` is a `ContainerSpec` (`image`, `cpus`, `memoryBytes`, `diskBytes`, `mounts`, `volumes`, `rosetta`, `environment`, `workingDirectory`, `command`); `minutes: 0` holds it until released; only a client on the server's Mac gets one. `kind` is `ci`, `session`, `agent` or `manual` (one a server doesn't know reads as `manual`; without one, the holder's: a `visor:` holder's container `session`, its other machines `agent`, anyone else's `manual`); `label` is kept to one line of at most 200 characters; `link` must be http or https (400 otherwise); `labels` (API 12), at most 32 names (letters, digits, `. _ - /`, at most 100) and one-line values, kept with the lease. An iOS lease's `device` (a device type's name or identifier) and `runtime` (an iOS runtime's name, version or identifier), any case (API 11): its simulator made of them, the config's base's for the one not given; one the server's Xcode hasn't got, or a type the runtime doesn't run, is 400 `noDevice`, naming the close ones |
+| `GET /v1/machines`, `GET /v1/machines/<id>` | leases (each with its `kind`, `label`, `link` and `labels`; an iOS lease's `device` and `runtime`, by name); one lease: ports, VNC password, UDID, adb port…; a container's forwarded ports (`ports`: `{"port", "host", "hostPort"}`, `host` the server as the asker reached it) |
 | `POST /v1/machines/<id>/renew` `{"minutes"?}` | its time set again |
 | `DELETE /v1/machines/<id>` | released |
 | `PUT /v1/machines/<id>/files/<name>` (raw body) | a file for its commands, as `@<name>` (a `.zip` is unpacked: an `.app`) |

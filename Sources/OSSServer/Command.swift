@@ -124,6 +124,11 @@ let usage = """
       oss files add <path>                                  hashed and kept (never evicted); prints its URL
       oss files list                                        what this server serves
       oss files remove <sha256>
+    A container host for Visor (Visor's docs/container-host.md): its containers this server's container leases, held until
+    released and found again by their labels, with this computer's client settings:
+      oss container-host [--server=URL] [--key-file=F] health | create < request | ls | network <id> | rm <id> [--volumes]
+      oss container-host put <id> <path> [--mode=600] < bytes
+      oss container-host exec <id> [--tty] [--workdir=DIR] [--env-file=F] -- command…   (oss machine exec's)
     Tools for programs that speak the Model Context Protocol:
       oss mcp                                               an MCP server on stdio: lease, use and release machines
 
@@ -491,7 +496,7 @@ public enum OSSCommand {
                                            "api", "tag", "copy", "image", "cpus", "memory", "disk", "mount", "volume", "env", "env-file", "workdir",
                                            "command", "socket", "iso", "edition", "file", "netrc", "cache", "name", "ttl", "url",
                                            "object-ttl", "kind", "label", "link", "port", "mode", "tests", "host", "only-testing",
-                                           "result", "junit"])
+                                           "result", "junit", "server", "key-file"])
         let command = arguments.positional.first ?? "help"
         let sub = arguments.positional.count > 1 ? arguments.positional[1] : nil
         let target = arguments.positional.count > 2 ? arguments.positional[2] : nil
@@ -505,6 +510,8 @@ public enum OSSCommand {
 
         do {
             switch command {
+            case "container-host":
+                await ContainerHostCommand.run(arguments)
             case "machine":
                 #if canImport(Network)
                 // A container's socket given: straight to it, no server (nor token) needed.
