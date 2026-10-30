@@ -9,10 +9,15 @@ struct LeaseOrigin: Equatable {
     var kind: LeaseKind
     var label: String?
     var link: URL?
+    /// The names and values its holder gave it (API 12).
+    var labels: [String: String]?
 
     /// A label longer than this is cut (it is a line beside a lease, not a
     /// description).
     static let maxLabel = 200
+    /// The most labels a lease may have, and the longest name one may have.
+    static let maxLabels = 32
+    static let maxLabelName = 100
 
     init(_ request: LeaseRequest) throws {
         kind = request.kind ?? Self.kind(holder: request.holder ?? "unknown", platform: request.platform)
@@ -22,6 +27,18 @@ struct LeaseOrigin: Equatable {
                 throw APIError(error: "a lease's link is an http or https URL")
             }
             self.link = link
+        }
+        if let given = request.labels, !given.isEmpty {
+            guard given.count <= Self.maxLabels else { throw APIError(error: "at most \(Self.maxLabels) labels a lease") }
+            var labels: [String: String] = [:]
+            for (name, value) in given {
+                guard !name.isEmpty, name.count <= Self.maxLabelName,
+                      name.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "._-/".contains($0)) }) else {
+                    throw APIError(error: "a label's name is letters, digits, . _ - and /, at most \(Self.maxLabelName) of them: \(name)")
+                }
+                labels[name] = Self.line(value) ?? ""
+            }
+            self.labels = labels
         }
     }
 
@@ -56,6 +73,7 @@ extension Lease {
         kind = origin.kind
         label = origin.label
         link = origin.link
+        labels = origin.labels
     }
 }
 

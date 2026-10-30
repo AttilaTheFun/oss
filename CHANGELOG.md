@@ -23,6 +23,15 @@
   `oss_exec`, `oss_upload`, `oss_download`, `oss_install`, `oss_storage`,
   `oss_grant`; `oss_lease` takes a `label`. Over HTTP a VM is reached with
   the server's own key, and the caller's files come by storage and grants.
+- **Labels on a lease** (API 12): `LeaseRequest.labels`, names and values
+  kept with the lease and returned with it (at most 32; a name of letters,
+  digits and `. _ - /`; a value one line), by which a program that leases
+  finds its own.
+- **`oss container-host`**: OS Server as a Visor Server's container host
+  (Visor's docs/container-host.md, version 1): `health`, `create` (a
+  container lease held until released, labelled, handed over once its
+  network resolves names, safe to ask again by name), `exec` (`oss
+  machine exec`'s), `put`, `rm [--volumes]`, `ls`, `network`.
 - **The shared token stands for `user`** through 0.14: everything works
   with it as before (a `CLIENT_ID` with it makes the holder
   `<CLIENT_ID>@user`); 0.15 takes it away.
