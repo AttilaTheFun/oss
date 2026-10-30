@@ -110,6 +110,11 @@ let usage = """
       oss image provision-macos --vm=NAME [--install]       a UTM VM's (before OS Server ran its own)
     OS Monitor (OS Server's client: reads what the server is doing, nothing else):
       oss monitor code [--new]                              its connection code (piped, never shown; --new: a new token)
+    API keys (each an application's: user, ci, a Visor's; the server's Mac only, as user):
+      oss keys [list]                                       the applications with keys
+      oss keys create <application> | <what keeps it>       a new key (replacing its old one; piped, shown once)
+      oss keys remove <application>                         its key no longer works
+      A client uses one by OSS_API_KEY or ~/.config/oss/key, acting for OSS_CLIENT_ID (its leases <id>@<application>)
     The Bazel cache (a server's with "cache" in its server.json; its populate job writes, everyone else reads):
       oss cache status                                      its size, and how many lookups it answered
       oss cache use [--remove]                              this computer's Bazel reads it (~/.bazelrc, the token in ~/.netrc)
@@ -939,6 +944,26 @@ public enum OSSCommand {
                         print("  \(m.id)  \(m.platform.rawValue)/\(m.config)  CPU \(cpu)\(cpus), memory \(memory)\(limit)  \(m.holder)"
                               + (m.kind.map { " (\($0.rawValue))" } ?? ""))
                     }
+                }
+
+            case "keys":
+                // The applications' API keys (API 12), on the server's Mac.
+                let client = try await OSSClient.connect()
+                switch sub ?? "list" {
+                case "list":
+                    let keys = try await client.keys()
+                    if keys.isEmpty { print("no keys: oss keys create <application>") }
+                    for key in keys { print("\(key.application)  made \(iso(key.created))") }
+                case "create":
+                    guard let application = target else { fail("oss keys create <application> (user, ci, mac-mini-visor, …)") }
+                    refuseTerminal("a key is a secret, shown once: pipe it into what keeps it (oss keys create \(application) | …)")
+                    print(try await client.makeKey(application).key)
+                case "remove":
+                    guard let application = target else { fail("oss keys remove <application>") }
+                    try await client.removeKey(application)
+                    print("\(application)'s key no longer works")
+                default:
+                    fail("oss keys [list] | create <application> | remove <application>")
                 }
 
             case "cache":

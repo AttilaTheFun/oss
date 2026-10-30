@@ -5,23 +5,39 @@ import OSSClient
 import CryptoKit
 
 /// What the API's routes reach: the machines, the store, the Bazel cache,
-/// the API's token and the grants' key.
+/// the API's token and keys, and the grants' key.
 struct API: Sendable {
     let machines: MachineManager
     let token: String
     let cache: CacheServer?
     let storage: StorageStore
     let grants: GrantKey
+    var keys = APIKeys()
 }
 
-/// Who a request comes from: the API's token (anything, for any holder it
-/// names), OS Monitor's (reads only), or a grant's URL (its one route, in
-/// its holder's name); or refused, with the answer.
+/// Who a request comes from: the API's shared token (anything, for any
+/// holder it names; the `user` application's through 0.14), an
+/// application's key (anything, its holders `<CLIENT_ID>@<application>`),
+/// OS Monitor's (reads only), or a grant's URL (its one route, in its
+/// holder's name); or refused, with the answer.
 enum Access: Sendable {
     case token
+    case key(String)
     case monitor
     case grant(GrantClaims)
     case refused(HTTPResponse)
+
+    /// Whether it may do anything (lease, store, grant): the token or a key.
+    var mayAct: Bool { application != nil }
+
+    /// The application it is: a key's, or `user` for the shared token.
+    var application: String? {
+        switch self {
+        case .token: "user"
+        case .key(let application): application
+        default: nil
+        }
+    }
 }
 
 /// A request's body as it arrives.
@@ -83,18 +99,44 @@ extension Server {
             }
             return .grant(claims)
         }
+        // An application's key, in its own header or as the bearer.
+        if let key = request.header(OSSHeaders.apiKey), !key.isEmpty {
+            guard let application = api.keys.application(for: key) else { return .refused(.error("unauthorized", status: 401)) }
+            return .key(application)
+        }
         let given = authorization?.replacingOccurrences(of: "Bearer ", with: "") ?? ""
         if constantTimeEqual(given, api.token) { return .token }
+        if let application = api.keys.application(for: given) { return .key(application) }
         // The monitor token (OS Monitor's) reads and does nothing else.
         guard constantTimeEqual(given, MonitorAccess.token()) else { return .refused(.error("unauthorized", status: 401)) }
         guard MonitorAccess.allows(request.method, parts) else { return .refused(.error("OS Monitor's token only reads", status: 403)) }
         return .monitor
     }
 
-    /// The holder a storage request is for: a grant's, or the one it names.
+    /// The holder a storage request is for: a grant's, or the one it acts
+    /// for (`actingHolder`).
     static func holder(_ access: Access, _ request: HTTPRequest) throws -> String {
         if case .grant(let claims) = access { return claims.holder }
-        return try StorageStore.holder(request.header(OSSHeaders.holder))
+        return try StorageStore.holder(actingHolder(access, request, named: request.header(OSSHeaders.holder)))
+    }
+
+    /// Who a request acts for (API 12). With a key, `<CLIENT_ID>@<application>`:
+    /// the holder it names stands in for a client id it doesn't give, and
+    /// with neither it is the application's own. With the shared token, the
+    /// holder it names, or `<CLIENT_ID>@user` when it gives a client id.
+    static func actingHolder(_ access: Access, _ request: HTTPRequest, named: String?) -> String? {
+        let client = request.header(OSSHeaders.clientID)?.trimmingCharacters(in: .whitespaces)
+        let given = client?.isEmpty == false ? client : nil
+        switch access {
+        case .key(let application):
+            let suffix = "@" + application
+            let base = given ?? named.map { $0.hasSuffix(suffix) ? String($0.dropLast(suffix.count)) : $0 }
+            return base.map { $0 + suffix } ?? application
+        case .token:
+            return given.map { $0 + "@user" } ?? named
+        default:
+            return named
+        }
     }
 
     /// Whether a request may read the served files through the API: by
@@ -260,7 +302,7 @@ extension Server {
             try await api.storage.release(parts[3], holder: try holder(access, request))
             return .json(["released": parts[3]])
         case ("POST", 2) where parts[1] == "grants":
-            guard case .token = access else { return .error("a grant is asked for with the API's token", status: 403) }
+            guard access.mayAct else { return .error("a grant is asked for with the API's token or a key", status: 403) }
             let body = try JSONDecoder.oss.decode(GrantRequest.self, from: request.body)
             var lease: Lease?
             if let id = body.lease { lease = await api.machines.lease(id) }

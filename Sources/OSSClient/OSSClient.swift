@@ -143,6 +143,10 @@ public struct OSSClient: Sendable {
     let transport: any OSSTransport
     /// Seconds a request may take, but a long poll's (its wait and a minute more).
     public var timeout: TimeInterval
+    /// Who the client acts for within its key's application (API 12, the
+    /// `CLIENT_ID` header): a CI job, a Visor session. What it leases and
+    /// stores is then `<clientID>@<application>`'s.
+    public var clientID: String?
 
     /// The server's host: SSH, VNC and adb to a lease go to it too.
     public var host: String { server.host ?? "127.0.0.1" }
@@ -208,7 +212,9 @@ public struct OSSClient: Sendable {
     /// The token, and the API level this client speaks: a server shows an
     /// older one only what it knows (no containers below 6).
     func authorization() async throws -> [String: String] {
-        ["Authorization": "Bearer \(try await token())", "OSS-API": "\(OSS.apiLevel)"]
+        var headers = ["Authorization": "Bearer \(try await token())", "OSS-API": "\(OSS.apiLevel)"]
+        if let clientID, !clientID.isEmpty { headers[OSSHeaders.clientID] = clientID }
+        return headers
     }
 
     /// The answer, or a status but 2xx thrown with the server's message.

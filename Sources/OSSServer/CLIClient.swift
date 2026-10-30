@@ -140,13 +140,16 @@ extension OSSGrantClient {
 
 extension OSSClient {
     /// The server this computer uses: the first of `~/.config/oss/client.json`'s
-    /// servers (or OSS_SERVERS) that answers, with `~/.config/oss/token` (or OSS_TOKEN).
+    /// servers (or OSS_SERVERS) that answers, with an API key or the token
+    /// (Token.read), acting for OSS_CLIENT_ID when it is set.
     static func connect() async throws -> OSSClient {
         guard let token = Token.read() else {
-            throw OSSError(status: 0, message: "no token: put the server's in \(Paths.clientToken) (or OSS_TOKEN)")
+            throw OSSError(status: 0, message: "no key or token: put an API key in \(Paths.clientKey) (or OSS_API_KEY), or the server's token in \(Paths.clientToken) (or OSS_TOKEN)")
         }
         let servers = ClientConfig.load().servers.compactMap(URL.init(string:))
-        return try await connect(servers: servers, token: token, transport: cliTransport())
+        var client = try await connect(servers: servers, token: token, transport: cliTransport())
+        client.clientID = Token.clientID()
+        return client
     }
 
     /// A lease waited on, telling the terminal how it goes.

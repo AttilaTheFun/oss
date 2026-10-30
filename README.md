@@ -447,8 +447,12 @@ used for the API, SSH, VNC and adb:
 {"servers": ["http://127.0.0.1:7480", "http://<server>.local:7480", "http://<server's VPN address>:7480"]}
 ```
 
-The API's token goes in `~/.config/oss/token` (mode 600), copied from the
-server's. Keep it secret.
+An application's API key goes in `~/.config/oss/key` (mode 600) or
+`OSS_API_KEY`, made on the server's Mac with `oss keys create
+<application> | …` (piped: it is shown once); `OSS_CLIENT_ID` says whom
+the client acts for (`oss` sends it as `CLIENT_ID`). Through 0.14 the
+server's shared token still works in `~/.config/oss/token` (or
+`OSS_TOKEN`), as the `user` application. Keep either secret.
 
 ### From a program: OSSClient
 
@@ -531,8 +535,18 @@ more). Errors are `OSSError`, with the server's own message.
 
 ## The API
 
-Every request but `/v1/hello` and `/v1/capabilities` carries
-`Authorization: Bearer <token>`: the server's. The monitor token (OS
+Every request but `/v1/hello` and `/v1/capabilities` carries an
+application's API key (API 12: in an `API_KEY` header, or as
+`Authorization: Bearer <key>`), or the server's shared token as the
+bearer, which stands for the `user` application through 0.14. With a key,
+`CLIENT_ID` says whom the request acts for within its application (a CI
+job, a Visor session): what it leases and stores is
+`<CLIENT_ID>@<application>`'s (the holder it names stands in for a client
+id it doesn't give; with neither, the application's own), and a lease's
+kind follows from it (`…@ci` is `ci`; a Visor's application, `…-visor`,
+gives its containers `session` and its other machines `agent`; any other
+`manual`). With the token, a `CLIENT_ID` makes the holder
+`<CLIENT_ID>@user`. The monitor token (OS
 Monitor's, from its connection code) is accepted for `GET /v1/status`,
 `/v1/usage`, `/v1/usage/history`, `/v1/volumes` and `/v1/cache` (without
 the cache's read token) and refused for everything else. A grant's URL
@@ -552,6 +566,7 @@ containers, which it couldn't read.
 | `GET /v1/capabilities` | its version, API level, features and platforms |
 | `GET /v1/status` | bases, capacity, leases |
 | `GET /v1/doctor` | whether the server can drive UTM, simulators and emulators |
+| `GET /v1/keys`, `POST /v1/keys` `{"application"}`, `DELETE /v1/keys/<application>` | the applications with keys (`application`, `created`; never a key); a new key for one, replacing its old one (`{"application", "key"}`, shown this once, kept as its SHA-256); its key taken away. On the server's own Mac and as `user` only (API 12) |
 | `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?, "container"?, "kind"?, "label"?, "link"?, "device"?, "runtime"?}` | a lease (state `creating`; poll it until `ready`). A container's `container` is a `ContainerSpec` (`image`, `cpus`, `memoryBytes`, `diskBytes`, `mounts`, `volumes`, `rosetta`, `environment`, `workingDirectory`, `command`); `minutes: 0` holds it until released; only a client on the server's Mac gets one. `kind` is `ci`, `session`, `agent` or `manual` (one a server doesn't know reads as `manual`; without one, the holder's: a `visor:` holder's container `session`, its other machines `agent`, anyone else's `manual`); `label` is kept to one line of at most 200 characters; `link` must be http or https (400 otherwise). An iOS lease's `device` (a device type's name or identifier) and `runtime` (an iOS runtime's name, version or identifier), any case (API 11): its simulator made of them, the config's base's for the one not given; one the server's Xcode hasn't got, or a type the runtime doesn't run, is 400 `noDevice`, naming the close ones |
 | `GET /v1/machines`, `GET /v1/machines/<id>` | leases (each with its `kind`, `label` and `link`; an iOS lease's `device` and `runtime`, by name); one lease: ports, VNC password, UDID, adb port…; a container's forwarded ports (`ports`: `{"port", "host", "hostPort"}`, `host` the server as the asker reached it) |
 | `POST /v1/machines/<id>/renew` `{"minutes"?}` | its time set again |

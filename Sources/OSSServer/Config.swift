@@ -20,6 +20,8 @@ enum Paths {
     static let clientDirectory = "\(home)/.config/oss"
     static let clientConfig = "\(clientDirectory)/client.json"
     static let clientToken = "\(clientDirectory)/token"
+    /// A client's API key (API 12): an application's, in place of the token.
+    static let clientKey = "\(clientDirectory)/key"
     static let clientState = "\(home)/.local/state/oss"
 
     // The server's.
@@ -35,6 +37,8 @@ enum Paths {
     static let share = support
     #endif
     static let token = "\(config)/token"
+    /// The API keys' digests (APIKeys).
+    static let keys = "\(config)/keys.json"
     static let serverConfig = "\(config)/server.json"
     static let leases = "\(state)/leases.json"
     /// UTM's VM bases as last listed.
@@ -260,12 +264,24 @@ struct ClientConfig: Codable, Sendable {
 }
 
 enum Token {
-    /// The API's shared secret, as a client finds it: `OSS_TOKEN`, else
-    /// `~/.config/oss/token`, else (on the server's own computer) the
-    /// server's.
+    /// What a client shows the API, as it finds it: an API key
+    /// (`OSS_API_KEY`, else `~/.config/oss/key`), else the shared token
+    /// (`OSS_TOKEN`, else `~/.config/oss/token`, else on the server's own
+    /// computer the server's), which stands for the `user` application
+    /// through 0.14.
     static func read() -> String? {
-        if let env = ProcessInfo.processInfo.environment["OSS_TOKEN"], !env.isEmpty { return env }
+        let environment = ProcessInfo.processInfo.environment
+        if let key = environment["OSS_API_KEY"], !key.isEmpty { return key }
+        if let key = file(Paths.clientKey) { return key }
+        if let env = environment["OSS_TOKEN"], !env.isEmpty { return env }
         return file(Paths.clientToken) ?? file(Paths.token)
+    }
+
+    /// Who the client acts for within its application (`OSS_CLIENT_ID`): a
+    /// CI job, a session; what it leases is `<CLIENT_ID>@<application>`'s.
+    static func clientID() -> String? {
+        guard let id = ProcessInfo.processInfo.environment["OSS_CLIENT_ID"]?.trimmingCharacters(in: .whitespaces), !id.isEmpty else { return nil }
+        return id
     }
 
     private static func file(_ path: String) -> String? {

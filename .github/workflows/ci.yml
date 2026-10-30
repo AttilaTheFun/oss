@@ -33,6 +33,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
+# Whom the jobs' leases are for (API 12): with the runner's `ci` key
+# (~/.config/oss/key), each lease is `<job>-<run>@ci`.
+env:
+  OSS_CLIENT_ID: ${{ github.job }}-${{ github.run_id }}
 
 jobs:
   build-and-test:

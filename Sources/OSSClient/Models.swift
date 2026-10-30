@@ -827,6 +827,11 @@ public enum OSS {
     /// 11 from 0.13.0: an iOS lease of a device type and runtime of its
     /// own (`LeaseRequest.device` and `runtime`), and every iOS lease's
     /// (`Lease.device`, `Lease.runtime`).
+    /// 12 from 0.14.0: API keys, each an application's (`API_KEY`, or a
+    /// key as the bearer; `/v1/keys` on the server's Mac), and `CLIENT_ID`:
+    /// a keyed request's leases and stored objects are
+    /// `<CLIENT_ID>@<application>`'s, and their kind follows from it. The
+    /// shared token stands for the `user` application through 0.14.
     /// 7 from 0.13.0: storage (`/v1/storage/…`: objects by their SHA-256,
     /// kept while a holder's lease on them lasts), grants (`/v1/grants`: a
     /// URL that does one thing without the token), an iOS lease's app
@@ -847,7 +852,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 11
+    public static let apiLevel = 12
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
 }
