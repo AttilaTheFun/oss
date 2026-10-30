@@ -967,6 +967,8 @@ public final class ServerHost: Sendable {
     public let port: Int
     let machines: MachineManager
     private let http: HTTPServer
+    /// The MCP server (API 12), on its own port; nil when it has none.
+    private let mcp: HTTPServer?
     private let cache: CacheServer?
 
     /// Starts it: listening once this returns; recovery (leases a restart
@@ -996,6 +998,13 @@ public final class ServerHost: Sendable {
             await Server.route(request, api: api)
         }
         http.start()
+        // oss's tools for agents, on a port of their own (API 12).
+        var mcp: HTTPServer?
+        if config.mcpPort > 0 {
+            let apiPort = config.port
+            mcp = try HTTPServer(port: config.mcpPort) { request in await Server.mcpRoute(request, api: api, apiPort: apiPort) }
+            mcp?.start()
+        }
         // Storage's leases that ran out end, and objects no lease holds go.
         Task {
             while true {
@@ -1029,8 +1038,8 @@ public final class ServerHost: Sendable {
                 try? await Task.sleep(for: .seconds(60))
             }
         }
-        log("oss serving on :\(config.port); capacity \(config.capacity)")
-        return ServerHost(port: config.port, machines: machines, http: http, cache: cache)
+        log("oss serving on :\(config.port)" + (mcp == nil ? "" : ", MCP on :\(config.mcpPort)") + "; capacity \(config.capacity)")
+        return ServerHost(port: config.port, machines: machines, http: http, mcp: mcp, cache: cache)
     }
 
     /// Every lease ended and everything the server keeps on this Mac
@@ -1056,10 +1065,11 @@ public final class ServerHost: Sendable {
     /// Where containers keep their kernel, images and root filesystems.
     public static var containersDirectory: String { Paths.containers }
 
-    private init(port: Int, machines: MachineManager, http: HTTPServer, cache: CacheServer?) {
+    private init(port: Int, machines: MachineManager, http: HTTPServer, mcp: HTTPServer?, cache: CacheServer?) {
         self.port = port
         self.machines = machines
         self.http = http
+        self.mcp = mcp
         self.cache = cache
     }
 }

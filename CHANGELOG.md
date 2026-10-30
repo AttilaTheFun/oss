@@ -15,6 +15,14 @@
   Monitor show `<job id>@ci` or `<session id>@mac-mini-visor`, and a
   lease's kind follows from it (`…@ci` is `ci`, a `…-visor` application's
   containers `session` and its other machines `agent`).
+- **An MCP server on a port of its own** (API 12; `mcpPort`, 7481): oss's
+  tools over Streamable HTTP, each message with an application's key and
+  its `CLIENT_ID`, each call made through the server's API as that caller
+  (its leases `<CLIENT_ID>@<application>`'s), at the host the caller
+  reached it by. New tools there and in `oss mcp`: `oss_container_lease`,
+  `oss_exec`, `oss_upload`, `oss_download`, `oss_install`, `oss_storage`,
+  `oss_grant`; `oss_lease` takes a `label`. Over HTTP a VM is reached with
+  the server's own key, and the caller's files come by storage and grants.
 - **The shared token stands for `user`** through 0.14: everything works
   with it as before (a `CLIENT_ID` with it makes the holder
   `<CLIENT_ID>@user`); 0.15 takes it away.
