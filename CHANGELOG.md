@@ -2,6 +2,23 @@
 
 ## 0.14.0 (unreleased)
 
+- **API keys, each an application's** (API 12): `user`, `ci`, a Visor
+  server's (`mac-mini-visor`), made on the server's Mac with `oss keys
+  create <application>` (piped; shown once, kept as its SHA-256 in
+  `keys.json` in OS Server's folder, its owner's alone), listed and taken
+  away with `oss keys` and `remove`, or `/v1/keys` (on the server's Mac,
+  as `user`). A request carries one in an `API_KEY` header or as its
+  bearer; a client finds it in `OSS_API_KEY` or `~/.config/oss/key`.
+- **`CLIENT_ID`**: whom a keyed request acts for within its application
+  (`OSS_CLIENT_ID`, `OSSClient.clientID`). What it leases and stores is
+  `<CLIENT_ID>@<application>`'s, so `oss status`, OS Server's window and OS
+  Monitor show `<job id>@ci` or `<session id>@mac-mini-visor`, and a
+  lease's kind follows from it (`…@ci` is `ci`, a `…-visor` application's
+  containers `session` and its other machines `agent`).
+- **The shared token stands for `user`** through 0.14: everything works
+  with it as before (a `CLIENT_ID` with it makes the holder
+  `<CLIENT_ID>@user`); 0.15 takes it away.
+
 - **The proof compares with its base**, not this tree's kept pictures
   (which a pull request that changes a screen replaces, so its own showed
   it unchanged): each picture with the one in `Tests/Proof/` at a pull

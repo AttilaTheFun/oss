@@ -262,11 +262,11 @@ extension Server {
         switch access {
         case .grant(let claims):
             holder = claims.holder
-        case .token:
-            guard let named = request.header(OSSHeaders.holder), !named.isEmpty else {
+        case .token, .key:
+            guard let acting = actingHolder(access, request, named: request.header(OSSHeaders.holder)), !acting.isEmpty else {
                 throw APIError(error: "\(what) its holder's: name the holder in \(OSSHeaders.holder)")
             }
-            holder = named
+            holder = acting
         default:
             throw APIError(error: "OS Monitor's token only reads", code: "forbidden")
         }

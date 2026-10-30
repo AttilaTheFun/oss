@@ -26,13 +26,17 @@ struct LeaseOrigin: Equatable {
     }
 
     /// The kind of a lease that says none (a client before API 8, or one
-    /// that left it out). Visor leases in a session's name, `visor:<session>`:
-    /// a session's own machine is the container it runs in, and an agent in
-    /// it leases anything but containers, so a `visor:` holder's container is
-    /// a session's and its other machines an agent's. Any other holder's is
-    /// manual.
+    /// that left it out). Visor leases in a session's name — `visor:<session>`,
+    /// or with a key `<session>@<a Visor's application>` (API 12; such an
+    /// application is named `…-visor`): a session's own machine is the
+    /// container it runs in, and an agent in it leases anything but
+    /// containers, so a Visor holder's container is a session's and its other
+    /// machines an agent's. The `ci` application's are CI's; any other
+    /// holder's is manual.
     static func kind(holder: String, platform: Platform) -> LeaseKind {
-        guard holder.hasPrefix("visor:") else { return .manual }
+        let application = holder.split(separator: "@").count > 1 ? holder.split(separator: "@").last.map(String.init) : nil
+        if application == "ci" { return .ci }
+        guard holder.hasPrefix("visor:") || application?.hasSuffix("-visor") == true || application == "visor" else { return .manual }
         return platform == .container ? .session : .agent
     }
 

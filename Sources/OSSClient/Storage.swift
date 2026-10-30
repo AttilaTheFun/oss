@@ -166,6 +166,10 @@ public enum OSSHeaders {
     /// An xctest's run (API 10), in its `101 Switching Protocols`: the id
     /// its JUnit and result bundle are read by.
     public static let xctestRun = "OSS-XCTest-Run"
+    /// An application's API key (API 12), in place of the bearer token.
+    public static let apiKey = "API_KEY"
+    /// Who a keyed request acts for within its application (API 12).
+    public static let clientID = "CLIENT_ID"
 }
 
 extension OSSClient {

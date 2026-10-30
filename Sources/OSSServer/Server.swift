@@ -1140,6 +1140,7 @@ enum Server {
         if case .monitor = access { monitor = true }
         do {
             if let response = try await storageRoute(request, parts, access: access, api: api) { return response }
+            if parts.count >= 2, parts[1] == "keys" { return try keysRoute(request, parts, access: access, api: api) }
             let method = request.method
             switch (method, parts.count) {
             case ("GET", 2) where parts[1] == "status":
@@ -1170,8 +1171,10 @@ enum Server {
                               "simctl": simctl ? "ok" : "no Xcode (iOS simulators off)",
                               "emulator": emulator ? "ok" : "no Android SDK: oss setup android"])
             case ("POST", 2) where parts[1] == "machines":
-                return .json(reached(try await machines.lease(try JSONDecoder.oss.decode(LeaseRequest.self, from: request.body),
-                                                      local: LocalNetworks.isThisMac(request.remoteAddress))), status: 201)
+                var asked = try JSONDecoder.oss.decode(LeaseRequest.self, from: request.body)
+                // Leased for whom the request acts for (API 12).
+                asked.holder = Self.actingHolder(access, request, named: asked.holder)
+                return .json(reached(try await machines.lease(asked, local: LocalNetworks.isThisMac(request.remoteAddress))), status: 201)
             case ("GET", 2) where parts[1] == "machines":
                 return .json(await machines.all().filter { visible($0.platform) }.map(reached))
             case ("GET", 3) where parts[1] == "machines":
