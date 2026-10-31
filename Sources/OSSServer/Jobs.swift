@@ -6,9 +6,11 @@ import Foundation
 /// OS Server quits, restarts or is updated. Its plist is written beside the
 /// machine; the job lasts until it's booted out or the Mac restarts.
 public enum LaunchdJobs {
-    /// Started (any job of that label before booted out first).
-    public static func start(label: String, plist: String, program: [String], log: String) async throws {
-        let job: [String: Any] = [
+    /// Started (any job of that label before booted out first). A
+    /// `keepAlive` job (the containers' network's owner) is started again by
+    /// launchd whenever it ends, until it's booted out.
+    public static func start(label: String, plist: String, program: [String], log: String, keepAlive: Bool = false) async throws {
+        var job: [String: Any] = [
             "Label": label,
             "ProgramArguments": program,
             "RunAtLoad": true,
@@ -18,6 +20,11 @@ public enum LaunchdJobs {
             "StandardOutPath": log,
             "StandardErrorPath": log,
         ]
+        if keepAlive {
+            job["KeepAlive"] = true
+            // launchd's default is 10 seconds between starts; a helper waits 30 for it.
+            job["ThrottleInterval"] = 5
+        }
         try PropertyListSerialization.data(fromPropertyList: job, format: .xml, options: 0).write(to: URL(fileURLWithPath: plist))
         await stop(label: label)
         let bootstrap = try await launchctl(["bootstrap", "gui/\(getuid())", plist])

@@ -173,12 +173,21 @@ SSH, VNC and adb too. With no `client.json` it tries `127.0.0.1` only.
 - The server is OS Server, the app (since 0.7: in the app's own process,
   `App/`). Its files are `~/Library/Application Support/OS Server`
   (server.json, the token, `State/leases.json`, the macOS bases in
-  `Machines/`, served and stored files in `Files/sha256/` with storage's
-  leases in `State/storage-leases.json`); its log `~/Library/Logs/OS Server.log`. Every lease's
+  `Machines/`, the containers in `Containers/`, served and stored files in
+  `Files/sha256/` with storage's leases in `State/storage-leases.json`, the
+  containers' network in `Network/`: `network.json`, `addresses.json` (each
+  container's address and MAC address), `network.sock`, `launchd.plist`,
+  `network.log`); its log `~/Library/Logs/OS Server.log`. Every lease's
   machine runs outside its process (since 0.10): macOS VMs and containers
   in `oss-machine` helpers (launchd jobs `oss.machine.<name>`,
   `oss.container.<name>`), Linux and Windows VMs in QEMU processes (or
   UTM's on a server from before 0.9), simulators and emulators the Mac's.
+  Every container is on one vmnet network (since 0.14), kept by
+  `oss-machine network` (the launchd job `oss.network`, KeepAlive),
+  started before the first container's helper and never stopped while
+  containers are lent: never boot it out by hand, as that takes every
+  container's network down with it (README.md, "The containers' network
+  has one owner").
   A restart keeps the leases, starts again from its disk any machine
   whose process is gone, and deletes clones nobody holds.
 - Still ask before restarting or quitting OS Server while others hold

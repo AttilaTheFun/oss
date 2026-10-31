@@ -10,6 +10,28 @@
   their first call. A request that waited more than 2 s for a thread, and
   the server's tasks waking late, are logged, so what holds Swift's threads
   shows in OS Server's log.
+- **One network for every container**, kept by a process of its own
+  (`oss-machine network`, the launchd job `oss.network`, KeepAlive), so a
+  lease ending takes no network down. Until now each container's helper
+  made a vmnet network of its own and took it down when it ended; macOS
+  puts each on a bridge (`bridge100`, `bridge101`…), and taking one down
+  could take another live network's bridge address and route with it,
+  leaving its container with a gateway that answered nothing (no DNS, no
+  internet) — seen when a container was made again, and when Apple's
+  container restarted its builder. The owner makes one shared-mode
+  network on server.json's `containerSubnet` (`192.168.127.0/24` by
+  default: clear of Apple's container's 192.168.64.0/24 and of the /24s
+  vmnet takes after it) and answers helpers on a Unix socket in OS Server's
+  folder (`Network/`): the network's serialization, each container's
+  address and MAC address (kept in `addresses.json`, so a helper started
+  again gets its container's own; given round the subnet), and their
+  release when a lease ends. A helper attaches from the serialization and
+  never makes a network of its own: with no owner answering in 30 seconds,
+  its container doesn't start, and says why. OS Server starts the owner
+  before the first container's helper. Containers running when OS Server
+  0.14 first starts keep their own networks until their leases end.
+  `oss-machine network-check` tries it for real (CI's macOS VM runs it).
+  No API change.
 - **CI's jobs in containers, for the repositories named** (API 13; the
   first step of TODO.md's "CI runners in containers"): with a GitHub
   App's id and key in `~/.config/oss/ci-github-app.json` and
