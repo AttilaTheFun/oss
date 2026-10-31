@@ -33,10 +33,14 @@ public struct HelperSpec: Codable, Sendable {
     public var environment: [String: String]
     public var workingDirectory: String?
     public var command: [String]?
+    /// The containers' network's socket (its owner's, ContainerNetwork),
+    /// which OS Server writes each time it starts the helper; a spec from
+    /// before 0.14 has none, and the helper takes ContainerNetwork.socket.
+    public var network: String?
 
     public init(name: String, kernel: String, initfs: String, rootfs: String, socket: String, cpus: Int, memoryBytes: Int64,
                 rosetta: Bool, mounts: [ContainerMount], volumes: [Volume], image: ImageConfig?, environment: [String: String],
-                workingDirectory: String?, command: [String]?) {
+                workingDirectory: String?, command: [String]?, network: String? = nil) {
         self.name = name
         self.kernel = kernel
         self.initfs = initfs
@@ -51,6 +55,7 @@ public struct HelperSpec: Codable, Sendable {
         self.environment = environment
         self.workingDirectory = workingDirectory
         self.command = command
+        self.network = network
     }
 
     /// The file beside `helper.json` the helper writes the container's IPv4

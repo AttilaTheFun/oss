@@ -25,6 +25,12 @@ import Virtualization
 ///
 /// Its commands' sockets are in the user's temporary folder (`oss/`): a
 /// Unix socket's path has at most 104 bytes.
+///
+/// Every container is on one network (0.14), which a process of its own
+/// keeps (`oss-machine network`, the launchd job `oss.network`: OSSServer's
+/// ContainerNetwork), started before the first helper and never stopped
+/// while containers are lent: a container's lease ending gives back its
+/// address and takes down no network.
 @available(macOS 26, *)
 actor ContainerEngine: ContainerBackend {
     /// Containerization's guest init, the version of the package built in.
@@ -123,6 +129,8 @@ actor ContainerEngine: ContainerBackend {
 
     func stop(name: String, spec: ContainerSpec?) async {
         await bootout(name)
+        // Its address given back (a lease from before 0.14 had a network of its own, and none).
+        await NetworkOwnerClient.release(name: name)
         try? FileManager.default.removeItem(at: folder(name))
         try? FileManager.default.removeItem(atPath: socket(name))
         for volume in spec?.volumes ?? [] where !volume.keep {
@@ -137,6 +145,13 @@ actor ContainerEngine: ContainerBackend {
             await bootout(name)
             try? FileManager.default.removeItem(at: containers.appendingPathComponent(name))
             try? FileManager.default.removeItem(atPath: socket(name))
+        }
+        // The addresses of containers no longer here given back (one deleted
+        // while the network's owner didn't answer kept its own until now).
+        // An owner that isn't running isn't started for it: nothing answers.
+        let left = Set((try? FileManager.default.contentsOfDirectory(atPath: containers.path)) ?? [])
+        if let released = await NetworkOwnerClient.keep(left), !released.isEmpty {
+            ServerLog.write("containers' network: gave back the addresses of \(released.joined(separator: ", ")): no container holds them")
         }
         // Unpacked images no container was made from in two weeks (a container's clone doesn't need its template).
         let templates = root.appendingPathComponent("templates")
@@ -178,6 +193,8 @@ actor ContainerEngine: ContainerBackend {
 
     func removeEverything() async {
         await prune(keeping: [])
+        // Its network last, once no container is on it.
+        await ContainerNetworkOwner.shared.remove()
         store = nil
         try? FileManager.default.removeItem(at: root)
     }
@@ -242,6 +259,18 @@ actor ContainerEngine: ContainerBackend {
         let directory = folder(name)
         try? FileManager.default.removeItem(atPath: socket(name))
         do {
+            // The containers' network's owner first: the helper attaches to
+            // its network and won't start without it. Its socket goes in the
+            // helper's spec (into one written before 0.14 too, started again
+            // after the Mac's restart).
+            try await ContainerNetworkOwner.shared.ensure(helper: helper)
+            let specFile = directory.appendingPathComponent("helper.json")
+            if var spec = try? JSONDecoder().decode(HelperSpec.self, from: Data(contentsOf: specFile)), spec.network != ContainerNetwork.socket {
+                spec.network = ContainerNetwork.socket
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                try encoder.encode(spec).write(to: specFile)
+            }
             try await LaunchdJobs.start(label: label(name), plist: directory.appendingPathComponent("launchd.plist").path,
                                         program: [helper, "container", directory.appendingPathComponent("helper.json").path],
                                         log: directory.appendingPathComponent("helper.log").path)

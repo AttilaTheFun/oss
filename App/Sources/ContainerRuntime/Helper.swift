@@ -3,6 +3,8 @@ import ContainerizationOS
 import Foundation
 import Network
 import OSSClient
+import OSSServer
+import vmnet
 
 /// A container's helper (`oss-machine container <helper.json>`): it boots the
 /// container's VM (Apple's Containerization, in this process), runs its
@@ -60,19 +62,26 @@ public enum ContainerHelper {
         let vmm = VZVirtualMachineManager(kernel: Kernel(path: URL(fileURLWithPath: spec.kernel), platform: .linuxArm),
                                           initialFilesystem: .block(format: "ext4", source: spec.initfs, destination: "/", options: ["ro"]),
                                           rosetta: spec.rosetta)
-        // A network of its own, shared (NAT) with the Mac's.
-        var network = try VmnetNetwork()
+        // On OS Server's one containers' network (shared, NAT, with the
+        // Mac's), from its owner: the container's address and card, kept
+        // for it across restarts, and the network's serialization. Never
+        // a network of the helper's own (made and taken down with each
+        // container, as before 0.14, those broke their neighbours'
+        // bridges): with no owner answering, the container doesn't start.
+        let attachment = try await NetworkOwnerClient.attach(name: spec.name, socket: spec.network ?? ContainerNetwork.socket)
+        let network = try SharedVmnet.attach(attachment.serialization)
+        let interface = try SharedVmnet.interface(attachment, network: network)
         var config = LinuxContainer.Configuration()
         if let image = spec.image { config.process = LinuxProcessConfiguration(from: image) }
         // Its address, for OS Server to forward the lease's ports to: written
         // before its socket answers, written again each time it starts.
         let addressFile = directory.appendingPathComponent(HelperSpec.addressFile)
         try? FileManager.default.removeItem(at: addressFile)
-        if let interface = try network.createInterface(spec.name) {
-            config.interfaces = [interface]
-            if let gateway = interface.ipv4Gateway { config.dns = DNS(nameservers: [gateway.description]) }
-            try? Data(interface.ipv4Address.address.description.utf8).write(to: addressFile, options: .atomic)
-        }
+        config.interfaces = [interface]
+        // vmnet's DNS proxy, on the Mac's address.
+        config.dns = DNS(nameservers: [attachment.gateway])
+        try? Data(attachment.address.utf8).write(to: addressFile, options: .atomic)
+        say("\(spec.name): \(attachment.cidr) on the containers' network \(attachment.subnet)")
         config.cpus = spec.cpus
         config.memoryInBytes = UInt64(spec.memoryBytes)
         config.hostname = spec.name
@@ -103,8 +112,9 @@ public enum ContainerHelper {
 struct RunningContainer: Sendable {
     let container: LinuxContainer
     let process: LinuxProcessConfiguration
-    /// Kept for the container's life: its interface's network.
-    let network: VmnetNetwork
+    /// Kept for the container's life: its reference to the containers'
+    /// network (the owner's; this one going takes nothing down).
+    nonisolated(unsafe) let network: vmnet_network_ref
 }
 
 /// The container's commands: one a connection, its `ExecFrame`s both ways.
