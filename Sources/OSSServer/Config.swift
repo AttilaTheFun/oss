@@ -156,8 +156,24 @@ struct ServerConfig: Codable, Sendable {
     /// agents over Streamable HTTP, each call made with its caller's key.
     /// 0 for none.
     var mcpPort: Int = 7481
-    /// How many leases of each platform may exist at once.
-    var capacity: [String: Int] = ["macos": 2, "windows": 2, "linux": 2, "ios": 4, "android": 2, "container": 4]
+    /// Each type's count cap (`limits`; read from `capacity` too, its name
+    /// before 0.14): at most that many of its leases at once. A type with
+    /// none is limited by the budget alone. macOS's default is two, Apple's
+    /// limit of macOS VMs a Mac runs at once; `null` takes a default cap
+    /// away, 0 lends none.
+    var limits: [String: Int] = ServerConfig.defaultLimits
+    static let defaultLimits = ["macos": 2]
+    /// The memory every lease together may take of the Mac, less what
+    /// containers OS Server didn't make take (BudgetSettings; by default
+    /// from the Mac's: LeasePolicy.defaultMemory).
+    var budget: BudgetSettings?
+    /// The most CPUs one VM or container may have (a lease asking for more
+    /// is refused): by default the Mac's active cores. CPUs are shared out,
+    /// not budgeted.
+    var maxCPUs: Int?
+    /// The memory taken for the leases nothing measures, by type
+    /// (`{"ios": {"memoryGB": 2}}`; LeasePolicy.defaultEstimates).
+    var sizes: [String: SizeSettings] = [:]
     var defaultMinutes: Int = 60
     var maxMinutes: Int = 8 * 60
     /// The range forwarded ports are taken from.
@@ -210,7 +226,18 @@ struct ServerConfig: Codable, Sendable {
         let d = ServerConfig()
         port = try c.decodeIfPresent(Int.self, forKey: .port) ?? d.port
         mcpPort = try c.decodeIfPresent(Int.self, forKey: .mcpPort) ?? d.mcpPort
-        capacity = d.capacity.merging(try c.decodeIfPresent([String: Int].self, forKey: .capacity) ?? [:]) { $1 }
+        // The caps, from `capacity` (before 0.14) and then `limits`, over
+        // the defaults: a type named with a number is capped at it, one
+        // named with null not at all.
+        let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+        limits = d.limits
+        for named in [try legacy.decodeIfPresent([String: Int?].self, forKey: .capacity),
+                      try c.decodeIfPresent([String: Int?].self, forKey: .limits)] {
+            for (name, cap) in named ?? [:] { limits[name] = cap }
+        }
+        budget = try c.decodeIfPresent(BudgetSettings.self, forKey: .budget)
+        maxCPUs = try c.decodeIfPresent(Int.self, forKey: .maxCPUs)
+        sizes = try c.decodeIfPresent([String: SizeSettings].self, forKey: .sizes) ?? [:]
         defaultMinutes = try c.decodeIfPresent(Int.self, forKey: .defaultMinutes) ?? d.defaultMinutes
         maxMinutes = try c.decodeIfPresent(Int.self, forKey: .maxMinutes) ?? d.maxMinutes
         firstPort = try c.decodeIfPresent(Int.self, forKey: .firstPort) ?? d.firstPort
@@ -233,6 +260,9 @@ struct ServerConfig: Codable, Sendable {
         ci = try c.decodeIfPresent(CISettings.self, forKey: .ci)
     }
 
+    /// server.json's name for `limits` before 0.14.
+    private enum LegacyKeys: String, CodingKey { case capacity }
+
     func lends(_ platform: Platform) -> Bool { lends?.contains(platform) ?? true }
 
     static func load() -> ServerConfig {
@@ -240,7 +270,8 @@ struct ServerConfig: Codable, Sendable {
         return (try? JSONDecoder().decode(ServerConfig.self, from: data)) ?? ServerConfig()
     }
 
-    func limit(_ platform: Platform) -> Int { capacity[platform.rawValue] ?? 0 }
+    /// A type's count cap (nil: none, the budget alone).
+    func cap(_ platform: Platform) -> Int? { limits[platform.rawValue] }
     func defaultConfig(_ platform: Platform) -> String { defaultConfig[platform.rawValue] ?? "vanilla" }
 }
 

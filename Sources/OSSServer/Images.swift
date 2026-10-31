@@ -8,11 +8,14 @@ import OSSClient
 /// the layers oss makes itself), shuts it down and names it
 /// `oss-<platform>-<layer>` (the previous one deleted).
 enum Images {
-    static func build(platform: Platform, layer: String, from base: String, script: String?, copies: [(String, String)]) async throws {
+    /// `work`: the clone's name (its BuildPlace's), else one of its own.
+    /// A build that fails deletes its clone.
+    static func build(platform: Platform, layer: String, from base: String, script: String?, copies: [(String, String)],
+                      work named: String? = nil) async throws {
         let config = ServerConfig.load()
         let source = "oss-\(platform.rawValue)-\(base)"
         let target = "oss-\(platform.rawValue)-\(layer)"
-        let work = "build-\(platform.rawValue)-\(layer)-\(Random.hex(3))"
+        let work = named ?? "build-\(platform.rawValue)-\(layer)-\(Random.hex(3))"
         let ext = platform == .windows ? "ps1" : "sh"
         let scriptPath = script ?? "\(Paths.provisioning)/\(platform.rawValue)/\(layer).\(ext)"
         guard FileManager.default.fileExists(atPath: scriptPath) else {
@@ -20,10 +23,11 @@ enum Images {
         }
         #if canImport(Virtualization)
         if platform == .macos, MacVMStore.hasBase(base) {
-            return try await buildMac(layer: layer, from: base, scriptPath: scriptPath, copies: copies, config: config)
+            return try await buildMac(layer: layer, from: base, scriptPath: scriptPath, copies: copies, config: config, work: work)
         }
         if platform != .macos, QEMUStore.hasBase(platform, base) {
-            return try await buildQEMU(platform: platform, layer: layer, from: base, scriptPath: scriptPath, copies: copies, config: config)
+            return try await buildQEMU(platform: platform, layer: layer, from: base, scriptPath: scriptPath, copies: copies, config: config,
+                                       work: work)
         }
         #endif
         guard try await UTM.vm(named: source) != nil else { throw ShellError(description: "no image \(source)") }
@@ -50,6 +54,8 @@ enum Images {
             try await seal(work, guest: guest, platform: platform)
         } catch {
             log("\(error)")
+            try? await UTM.stop(work)
+            try? await UTM.delete(work)
             throw error
         }
         if try await UTM.vm(named: target) != nil {
@@ -78,7 +84,7 @@ enum Images {
                                          input: password.map { Data(($0 + "\n").utf8) }, timeout: 4 * 3600)
         print(result.output, terminator: "")
         FileHandle.standardError.write(Data(result.error.utf8))
-        guard result.ok else { throw ShellError(description: "the layer's script failed (\(result.status)); \(work) is kept for a look") }
+        guard result.ok else { throw ShellError(description: "the layer's script failed (\(result.status)) in \(work)") }
     }
 
     #if canImport(Virtualization)
@@ -86,11 +92,16 @@ enum Images {
     /// started here, the layer run in it, shut down from inside, and put in
     /// the layer's place (the previous one deleted).
     static func buildMac(layer: String, from base: String, scriptPath: String, copies: [(String, String)],
-                         config: ServerConfig) async throws {
-        let work = "build-macos-\(layer)-\(Random.hex(3))"
+                         config: ServerConfig, work: String) async throws {
         let path = "\(MacVMStore.bases)/\(work).building"
         log("building macOS \(layer): \(base) cloned as \(work)")
-        let vm = try await MacVMs.startClone(of: base, as: work, at: path)
+        let vm: MacVM
+        do {
+            vm = try await MacVMs.startClone(of: base, as: work, at: path)
+        } catch {
+            MacVMStore.remove(path)
+            throw error
+        }
         do {
             let address = try await MacVMs.address(of: vm.spec.mac, seconds: 300)
             let guest = Guest(platform: .macos, address: address, user: config.guestUser, key: config.managementKey)
@@ -99,6 +110,8 @@ enum Images {
             try await MacVMs.seal(vm, guest: guest)
         } catch {
             await vm.stop()
+            // A partial build goes: nothing is left half made.
+            MacVMStore.remove(path)
             log("\(error)")
             throw error
         }
@@ -116,13 +129,18 @@ enum Images {
     /// started on its QEMU, the layer run, shut down from inside, put in the
     /// layer's place.
     static func buildQEMU(platform: Platform, layer: String, from base: String, scriptPath: String, copies: [(String, String)],
-                          config: ServerConfig) async throws {
-        let work = "build-\(platform.rawValue)-\(layer)-\(Random.hex(3))"
+                          config: ServerConfig, work: String) async throws {
         let path = "\(QEMUStore.bases(platform))/\(work).building"
         guard let ports = QEMUVMs.freePorts() else { throw ShellError(description: "no free loopback ports for its QEMU") }
         log("building \(platform.rawValue) \(layer): \(base) cloned as \(work)")
-        try QEMUVMs.clone(platform, base, to: path)
-        try await QEMUVMs.start(name: work, path: path, ports: ports)
+        do {
+            try QEMUVMs.clone(platform, base, to: path)
+            try await QEMUVMs.start(name: work, path: path, ports: ports)
+        } catch {
+            await QEMUVMs.stop(path, ports: ports)
+            MacVMStore.remove(path)
+            throw error
+        }
         do {
             let guest = QEMUVMs.guest(platform, ports: ports, config: config)
             guard await guest.waitUntilReachable(seconds: 600) else { throw ShellError(description: "\(work): no SSH") }
@@ -134,6 +152,7 @@ enum Images {
             guard await QEMUVMs.waitUntilStopped(path, seconds: 300) else { throw ShellError(description: "\(work) did not shut down") }
         } catch {
             await QEMUVMs.stop(path, ports: ports)
+            MacVMStore.remove(path)
             log("\(error)")
             throw error
         }
@@ -291,5 +310,62 @@ enum Images {
         guard sudoers.output.contains("sudo-ok") else { throw ShellError(description: "could not set up sudo in \(name): \(sudoers.error)") }
         try await seal(name, guest: guest, platform: .macos)
         log("\(name) is ready: macOS installed, runner set up, the server's key let in")
+    }
+}
+
+/// A VM's place in this Mac's server's limits for an image build
+/// (`LeaseRequest.build`, API 14): a build's VM counts against its type's
+/// cap and the memory budget as a lease's does, so a build while both
+/// macOS places are leased waits (`--wait`) or is refused at once, rather
+/// than failing partway. Taken from the server on this Mac (port
+/// server.json's), held while the build runs (renewed every 20 minutes),
+/// and released when it ends. Where no server answers here, or one before
+/// API 14, the build goes ahead without one, as before.
+struct BuildPlace: Sendable {
+    let client: OSSClient
+    let lease: Lease
+    let renewal: Task<Void, Never>
+
+    /// The build's clone takes the place's name, so whoever looks at the
+    /// Mac's processes can tell its VM is this lease's.
+    var name: String { lease.name }
+
+    static func take(platform: Platform, layer: String, from base: String, wait: Bool) async throws -> BuildPlace? {
+        let here = URL(string: "http://127.0.0.1:\(ServerConfig.load().port)")!
+        let client: OSSClient
+        do {
+            guard let token = Token.read() else { throw OSSError(status: 0, message: "no key or token") }
+            client = try await OSSClient.connect(servers: [here], token: token, transport: cliTransport())
+        } catch {
+            log("no OS Server answers on this Mac (\(error)): building \(layer) without a place in its limits")
+            return nil
+        }
+        guard let api = try? await client.capabilities().api, api >= 14 else {
+            log("this Mac's OS Server keeps no places for builds (before API 14): building \(layer) without one")
+            return nil
+        }
+        let request = LeaseRequest(platform: platform, config: base, minutes: 60, holder: holderName(), kind: .manual,
+                                   label: "image build: \(layer) from \(base)", build: layer)
+        let lease: Lease
+        do {
+            lease = try await client.leaseForTerminal(request, waitForCapacity: wait)
+        } catch let error as OSSError where error.code == "busy" || error.message.hasPrefix("busy") {
+            throw ShellError(description: "\(error.message): --wait to wait for a place")
+        }
+        let id = lease.id
+        let renewal = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1200))
+                if Task.isCancelled { break }
+                _ = try? await client.renew(id, minutes: 60)
+            }
+        }
+        log("building \(layer) in place \(id) (\(lease.size.map { "\($0)" } ?? "its base's size"))")
+        return BuildPlace(client: client, lease: lease, renewal: renewal)
+    }
+
+    func release() async {
+        renewal.cancel()
+        try? await client.release(lease.id)
     }
 }
