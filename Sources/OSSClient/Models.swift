@@ -362,6 +362,10 @@ public struct Lease: Codable, Sendable {
     public var execSocket: String?
     /// A container's forwarded ports, once it is ready (API 9).
     public var ports: [ForwardedPort]?
+    /// What it counts against the server's budget (API 14; nil from an
+    /// older server): its base's CPUs and memory, its container's, or the
+    /// server's estimate for a simulator or an emulator.
+    public var size: LeaseSize?
 
     public init(id: String, platform: Platform, config: String, name: String, holder: String, state: LeaseState,
                 created: Date, expires: Date, error: String? = nil, kind: LeaseKind? = nil, label: String? = nil, link: URL? = nil) {
@@ -412,10 +416,16 @@ public struct LeaseRequest: Codable, Sendable {
     /// server's Xcode hasn't got is refused (400), naming the close ones.
     public var device: String?
     public var runtime: String?
+    /// A lease waited for (`--wait`, API 14): the same ticket on every try
+    /// (any string, new for each lease waited for). The server keeps its
+    /// place in line from its first refusal while it asks again at least
+    /// every 45 seconds, and keeps room for the oldest in line. Without one,
+    /// a request is still refused where it would delay the oldest.
+    public var waitTicket: String?
 
     public init(platform: Platform, config: String? = nil, minutes: Int? = nil, holder: String? = nil, sshPublicKey: String? = nil,
                 container: ContainerSpec? = nil, kind: LeaseKind? = nil, label: String? = nil, link: URL? = nil,
-                device: String? = nil, runtime: String? = nil, labels: [String: String]? = nil) {
+                device: String? = nil, runtime: String? = nil, labels: [String: String]? = nil, waitTicket: String? = nil) {
         self.platform = platform
         self.config = config
         self.minutes = minutes
@@ -428,6 +438,7 @@ public struct LeaseRequest: Codable, Sendable {
         self.device = device
         self.runtime = runtime
         self.labels = labels
+        self.waitTicket = waitTicket
     }
 }
 
@@ -497,15 +508,110 @@ public struct DeviceCommandResult: Codable, Sendable {
 
 // MARK: The server
 
+/// What a lease takes of its server (API 14): the CPUs and memory it counts
+/// against the server's budget. A VM's are its base's (what it is given), a
+/// container's what it asked for (or the defaults), a simulator's and an
+/// emulator's the server's estimate (`server.json`'s `sizes`).
+public struct LeaseSize: Codable, Sendable, Hashable, CustomStringConvertible {
+    public var cpus: Int
+    public var memoryBytes: Int64
+
+    public init(cpus: Int, memoryBytes: Int64) {
+        self.cpus = cpus
+        self.memoryBytes = memoryBytes
+    }
+
+    public static let zero = LeaseSize(cpus: 0, memoryBytes: 0)
+    public static func + (a: LeaseSize, b: LeaseSize) -> LeaseSize { LeaseSize(cpus: a.cpus + b.cpus, memoryBytes: a.memoryBytes + b.memoryBytes) }
+    public static func - (a: LeaseSize, b: LeaseSize) -> LeaseSize { LeaseSize(cpus: a.cpus - b.cpus, memoryBytes: a.memoryBytes - b.memoryBytes) }
+
+    /// `6 cpus, 16 GB`.
+    public var description: String { "\(cpus) cpu\(cpus == 1 ? "" : "s"), \(LeaseSize.gigabytes(memoryBytes)) GB" }
+
+    /// Bytes as gigabytes (GiB, as server.json gives them): whole where
+    /// they are, else to a tenth.
+    public static func gigabytes(_ bytes: Int64) -> String {
+        let value = Double(bytes) / Double(1 << 30)
+        return value == value.rounded() ? String(Int(value)) : String(format: "%.1f", value)
+    }
+}
+
 public struct Capacity: Codable, Sendable {
     public var platform: Platform
+    /// How many of it may be held now: its cap, or (API 14) fewer where the
+    /// budget has room for fewer more of its default config's size. A
+    /// client before API 14 compares `leased` with it, as it always has.
     public var limit: Int
     public var leased: Int
+    /// Its count cap (API 14; nil: none, limited by the budget alone, or a
+    /// server before API 14, whose `Status.budget` is nil).
+    public var cap: Int?
+    /// What its leases take together, and a lease of its default config
+    /// (API 14).
+    public var used: LeaseSize?
+    public var size: LeaseSize?
 
-    public init(platform: Platform, limit: Int, leased: Int) {
+    public init(platform: Platform, limit: Int, leased: Int, cap: Int? = nil, used: LeaseSize? = nil, size: LeaseSize? = nil) {
         self.platform = platform
         self.limit = limit
         self.leased = leased
+        self.cap = cap
+        self.used = used
+        self.size = size
+    }
+}
+
+/// What a server lends at most of its Mac, all its leases together, and
+/// what they take now (API 14): a lease is granted only while its type's
+/// cap and this both have room for it.
+public struct LeaseBudget: Codable, Sendable {
+    public var limit: LeaseSize
+    public var used: LeaseSize
+    /// The leases waiting for room (`--wait`), oldest first: the first is
+    /// kept room for, so later ones that would delay it wait too.
+    public var waiting: [WaitingLease]
+
+    public init(limit: LeaseSize, used: LeaseSize, waiting: [WaitingLease] = []) {
+        self.limit = limit
+        self.used = used
+        self.waiting = waiting
+    }
+}
+
+extension Capacity {
+    /// Its count as a window shows it: `1 of 2` against its cap (or, from a
+    /// server before API 14, its limit), `3, room for 9` with no cap.
+    public func summary(budgeted: Bool) -> String {
+        guard budgeted, cap == nil else { return "\(leased) of \(cap ?? limit)" }
+        return "\(leased), room for \(max(0, limit - leased))"
+    }
+}
+
+extension LeaseBudget {
+    /// `12 of 30 cpus, 48 of 112 GB`.
+    public var summary: String {
+        "\(used.cpus) of \(limit.cpus) cpus, \(LeaseSize.gigabytes(used.memoryBytes)) of \(LeaseSize.gigabytes(limit.memoryBytes)) GB"
+    }
+}
+
+/// A lease asked for with `--wait` that has no room yet (API 14), in line
+/// since it first asked, while it keeps asking.
+public struct WaitingLease: Codable, Sendable {
+    public var platform: Platform
+    public var config: String
+    public var holder: String
+    public var size: LeaseSize
+    public var since: Date
+    /// What it waits for: the server's last refusal of it (`busy: macos 2 of 2`).
+    public var reason: String
+
+    public init(platform: Platform, config: String, holder: String, size: LeaseSize, since: Date, reason: String) {
+        self.platform = platform
+        self.config = config
+        self.holder = holder
+        self.size = size
+        self.since = since
+        self.reason = reason
     }
 }
 
@@ -516,13 +622,18 @@ public struct Status: Codable, Sendable {
     public var leases: [Lease]
     /// The store's use (API 7; nil from an older server).
     public var storage: StorageInfo?
+    /// The budget, what's used of it and who waits (API 14; nil from an
+    /// older server).
+    public var budget: LeaseBudget?
 
-    public init(server: String, bases: [Base], capacity: [Capacity], leases: [Lease], storage: StorageInfo? = nil) {
+    public init(server: String, bases: [Base], capacity: [Capacity], leases: [Lease], storage: StorageInfo? = nil,
+                budget: LeaseBudget? = nil) {
         self.server = server
         self.bases = bases
         self.capacity = capacity
         self.leases = leases
         self.storage = storage
+        self.budget = budget
     }
 }
 
@@ -806,7 +917,10 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
     /// run's results while it runs, `noFile` for a run's JUnit or result
     /// bundle that wasn't made; from API 11 `noDevice` (an iOS lease's
     /// device type or runtime the server's Xcode hasn't got, or a type
-    /// that runtime doesn't run: 400).
+    /// that runtime doesn't run: 400); from API 14 `busy` names the limit
+    /// that is full (`busy: macos 2 of 2`, `busy: memory 120 of 128 GB …`),
+    /// and `tooBig` is a lease bigger than the server's whole budget, which
+    /// waiting can't get (409).
     public var code: String?
     public var description: String { error }
     public init(error: String, code: String? = nil) {
@@ -847,6 +961,12 @@ public enum OSS {
     /// container (`OSS_GRANT`) that leases, uses and releases machines and
     /// stores objects in the job's name (`<job>-<run>@ci`) while the job's
     /// runner lasts, as its bearer or as `?grant=`.
+    /// 14 from 0.14.0: lease limits: a count cap per type where server.json
+    /// sets one and a budget of CPUs and memory over every lease
+    /// (`Status.budget`, `Capacity.cap`, `used` and `size`, `Lease.size`);
+    /// `busy` names the limit that is full, `tooBig` a lease bigger than the
+    /// whole budget; a lease waited for names its wait
+    /// (`LeaseRequest.waitTicket`) and keeps its place in line.
     /// 7 from 0.13.0: storage (`/v1/storage/…`: objects by their SHA-256,
     /// kept while a holder's lease on them lasts), grants (`/v1/grants`: a
     /// URL that does one thing without the token), an iOS lease's app
@@ -867,7 +987,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 13
+    public static let apiLevel = 14
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
 }

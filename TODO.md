@@ -48,14 +48,26 @@ those run on the host Mac today. In 0.14 each GUI platform gets a
   or through a files call. Not runners inside the primary: a job runs a pull
   request's code, and the primary, shared by every lease, runs only what OS
   Server asks of it.
-- **The secondary** is lent whole as `macos` leases are now, queued
-  (`--wait`); AGENTS.md tells agents it is a last resort, for what needs a
-  whole OS.
-- **Linux and Windows** follow the same pattern: Linux can give each lease a
-  display of its own, so its GUI leases run side by side; Windows has one
-  desktop, so its GUI work takes turns as the Mac's does.
+- **The secondaries** (one a platform) are lent whole as `macos` leases
+  are now, only when needed, queued (`--wait`); AGENTS.md tells agents they
+  are a last resort, for what needs a whole OS.
+- **The Ubuntu primary**: Linux GUI apps and their tests in `linux-app`
+  slots (each lease a display of its own, so they run side by side), and
+  `android` leases as emulators inside it rather than on the host. An
+  emulator in a VM needs nested virtualization: Apple's Virtualization on
+  an M3 or newer (`VZGenericPlatformConfiguration.isNestedVirtualizationSupported`),
+  not QEMU's HVF, which has none; so the Ubuntu primary runs on
+  Virtualization, and a Mac that says no keeps its emulators on the host.
+- **The Windows primary**: Windows GUI apps and their tests in
+  `windows-app` slots; one desktop, so GUI work takes turns as the Mac's
+  does.
+- **Under the lease limits** (0.14, Admission.swift): a primary counts
+  against its type's cap (macOS's two: the primary and one secondary) and
+  the budget, its size its base's; each of its slots counts against the
+  budget alone, at its estimate (a simulator's, an emulator's, an app's).
 - Order: the macOS primary with `ios` leases and xctest moved into it, then
-  `macos-app` slots, then the secondaries' queue, then Linux and Windows.
+  `macos-app` slots, then the secondaries' queue, then the Ubuntu primary
+  (Linux apps, then Android inside it) and the Windows primary.
 
 ## 0.14: CI runners in containers
 

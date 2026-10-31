@@ -326,7 +326,11 @@ extension ServerHost {
             log("ci: off: this server runs no containers")
             return (nil, "this server runs no containers (OS Server's app does)")
         }
-        let (made, why) = CIPlan.make(settings: config.ci, app: files.config, containerCapacity: config.limit(.container))
+        // Half the containers it lends at most: its cap, or as many of a
+        // job's as the budget holds.
+        let containerCapacity = config.cap(.container)
+            ?? config.leasePolicy().count(of: LeaseSize(cpus: CIDefaults.cpus, memoryBytes: Int64(CIDefaults.memoryGigabytes) << 30))
+        let (made, why) = CIPlan.make(settings: config.ci, app: files.config, containerCapacity: containerCapacity)
         guard let plan = made else {
             log("ci: off: \(why ?? "")")
             return (nil, why)

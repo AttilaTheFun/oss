@@ -84,7 +84,7 @@ enum MCPServer {
     private static var leaseID: [String: Any] { ["type": "string", "description": "the lease's id (from oss_lease or oss_status)"] }
 
     static var tools: [[String: Any]] { [
-        tool("oss_status", "What the oss server lends (each platform's configs and free places) and the machines you hold.", [:]),
+        tool("oss_status", "What the oss server lends (its budget of CPUs and memory, each platform's configs, cap and room, the leases waiting) and the machines you hold.", [:]),
         tool("oss_lease", """
             Lease a machine of your own: a macOS, Linux or Windows VM, an iOS simulator or an Android emulator, a clone \
             made for you and deleted when you release it. Waits until it is ready (a VM takes up to a minute or so) and \
@@ -177,11 +177,8 @@ enum MCPServer {
             switch name {
             case "oss_status":
                 let status = try await client.status()
-                var lines: [String] = []
-                for capacity in status.capacity {
-                    let configs = status.bases.filter { $0.platform == capacity.platform }.map(\.config)
-                    lines.append("\(capacity.platform.rawValue): \(capacity.limit - capacity.leased) of \(capacity.limit) free; configs: \(configs.isEmpty ? "none" : configs.joined(separator: ", "))")
-                }
+                // The budget, each type's room and who waits, as `oss status` says them.
+                var lines = capacityLines(status).map { $0.trimmingCharacters(in: .whitespaces) }
                 let held = status.leases.filter { Self.isMine($0.holder, context: context) }
                 lines.append(held.isEmpty ? "you hold no machines" : "you hold:")
                 for lease in held { lines.append("  \(leaseLine(lease))") }
