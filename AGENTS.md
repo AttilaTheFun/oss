@@ -11,8 +11,11 @@ containers for agents are Visor's (`visor machine …` leases through it).
   `oss machine run … -- <command>`, which releases however the command
   ends. A lease left alone is released when its time runs out (60 minutes
   unless you asked for more; `oss machine renew <id>` to keep it).
-- **Capacity is shared** by everyone using the server. If a lease says
-  busy, use `--wait` or come back; don't hold what you aren't using.
+- **Capacity is shared** by everyone using the server: a type's cap (macOS
+  two) and a budget of CPUs and memory that every lease counts against
+  (`oss status` shows both). If a lease says busy (naming what is full),
+  use `--wait`, which keeps your place in line, or come back; don't hold
+  what you aren't using, and ask for no bigger a container than you need.
 - **A lease is yours alone and is deleted afterwards**: install what you
   like, use sudo (it asks nothing), break it. Copy back what you need first.
 - **Never touch the bases or the server's tools directly**: no `utmctl`

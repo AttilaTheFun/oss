@@ -314,6 +314,37 @@ func leaseLine(_ lease: Lease) -> String {
         + "\(lease.kind?.rawValue ?? "-")  \(lease.holder)  until \(iso(lease.expires))" + (lease.label.map { "  \($0)" } ?? "")
 }
 
+/// `oss status`'s lines for the limits: the budget and what's used of it
+/// (API 14), each type's leases against its cap or the budget's room, and
+/// the line of leases waiting. A server before API 14 says only each
+/// type's count and limit.
+func capacityLines(_ status: Status, now: Date = Date()) -> [String] {
+    var lines: [String] = []
+    if let budget = status.budget {
+        lines.append("  budget: \(budget.summary) leased")
+    }
+    for platform in Platform.allCases {
+        let configs = status.bases.filter { $0.platform == platform }.map(\.config)
+        let capacity = status.capacity.first { $0.platform == platform }
+        let leased = capacity?.leased ?? 0, limit = capacity?.limit ?? 0
+        var line: String
+        if status.budget == nil {
+            line = "\(leased)/\(limit) leased"
+        } else if let cap = capacity?.cap {
+            line = "\(leased) of \(cap) leased" + (limit < cap ? ", room for \(max(0, limit - leased)) more in the budget" : "")
+        } else {
+            line = "\(leased) leased, room for \(max(0, limit - leased)) more (no cap)"
+        }
+        if let size = capacity?.size { line += "; \(size) each" }
+        lines.append("  \(platform.rawValue): \(line); configs: \(configs.isEmpty ? "none" : configs.joined(separator: ", "))")
+    }
+    for waiting in status.budget?.waiting ?? [] {
+        lines.append("  waiting: \(waiting.platform.rawValue)/\(waiting.config) (\(waiting.size)) for \(waiting.holder), "
+                     + "\(AdmissionRefusal.duration(now.timeIntervalSince(waiting.since))): \(waiting.reason)")
+    }
+    return lines
+}
+
 /// A CI job in a line: its state (and result), repository, workflow and
 /// job, how long it waited and ran, its lease, its page.
 func ciJobLine(_ job: CIJob) -> String {
@@ -946,11 +977,7 @@ public enum OSSCommand {
                     try printJSON(status)
                 } else {
                     print("server \(status.server) (\(client.server.absoluteString))")
-                    for platform in Platform.allCases {
-                        let configs = status.bases.filter { $0.platform == platform }.map(\.config)
-                        let capacity = status.capacity.first { $0.platform == platform }
-                        print("  \(platform.rawValue): \(capacity?.leased ?? 0)/\(capacity?.limit ?? 0) leased; configs: \(configs.isEmpty ? "none" : configs.joined(separator: ", "))")
-                    }
+                    capacityLines(status).forEach { print($0) }
                     // How many are CI's, sessions', agents' and by hand (a server before API 8 says no kinds).
                     if status.leases.contains(where: { $0.kind != nil }) {
                         let counts = LeaseKind.allCases.map { kind in "\(status.leases.filter { $0.kind == kind }.count) \(kind.rawValue)" }

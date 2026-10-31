@@ -110,30 +110,49 @@ public struct OSSPool: Sendable {
 
     /// A lease from the nearest server with room for it (a container with
     /// mounts: this computer's server only), waited on until it is ready;
-    /// with `waitForCapacity`, until one has room. Returns the lease and the
-    /// client to use it with.
+    /// with `waitForCapacity`, until one has room. Waiting, it keeps a place
+    /// in line (API 14) at the nearest server that lends it, asking there
+    /// with its ticket each round, and takes room at any server that has it
+    /// first. Returns the lease and the client to use it with.
     public func lease(_ request: LeaseRequest, waitForCapacity: Bool = false,
                       progress: @Sendable (String) -> Void = { _ in }) async throws -> (client: OSSClient, lease: Lease) {
         let mounts = request.platform == .container && !(request.container?.mounts.isEmpty ?? true)
+        var request = request
+        if waitForCapacity, request.waitTicket == nil { request.waitTicket = UUID().uuidString }
+        // Servers whose whole budget is smaller than the lease: never asked again.
+        var tooSmall: Set<String> = []
         while true {
             let reached = await reach()
-            let candidates = reached.filter { !mounts || $0.distance == .thisComputer }
+            let candidates = reached.filter { (!mounts || $0.distance == .thisComputer) && !tooSmall.contains($0.name) }
             guard candidates.contains(where: { $0.lends(request.platform, config: request.config) }) else {
                 let names = reached.map { "\($0.name) (\($0.distance))" }.joined(separator: ", ")
+                if !tooSmall.isEmpty {
+                    throw OSSError(status: 409, message: "the lease is bigger than every server's budget (\(tooSmall.sorted().joined(separator: ", ")))",
+                                   code: "tooBig")
+                }
                 throw mounts
                     ? OSSError(status: 0, message: "no server on this computer lends containers, and only one there may share its folders "
                                                  + "(reached: \(names.isEmpty ? "none" : names))",
                                code: reached.contains { $0.lends(.container, config: nil) } ? "notLocal" : "noContainers")
                     : OSSError(status: 0, message: "no server lends \(request.platform.rawValue)\(request.config.map { " \($0)" } ?? "") (reached: \(names.isEmpty ? "none" : names))")
             }
-            for server in candidates where server.hasRoom(request.platform, config: request.config) {
+            // Those with room first; waiting, then the nearest that lends it,
+            // whose line the ticket keeps a place in.
+            var asked = candidates.filter { $0.hasRoom(request.platform, config: request.config) }
+            if waitForCapacity, let nearest = candidates.first(where: { $0.lends(request.platform, config: request.config) }),
+               !asked.contains(where: { $0.name == nearest.name }) {
+                asked.append(nearest)
+            }
+            for server in asked {
                 do {
                     progress("\(server.name) (\(server.distance))")
                     return (server.client, try await server.client.lease(request, progress: progress))
                 } catch let error as OSSError where error.code == "busy" || error.message.hasPrefix("busy") || error.code == "notLocal"
-                                                || error.code == "noInventory" {
+                                                || error.code == "noInventory" || error.code == "tooBig" {
                     // Taken meanwhile, (a server before API 9) a container for
-                    // its own Mac only, or simulators it can't list now: the next one.
+                    // its own Mac only, simulators it can't list now, or more
+                    // than its whole budget: the next one.
+                    if error.code == "tooBig" { tooSmall.insert(server.name) }
                     continue
                 }
             }

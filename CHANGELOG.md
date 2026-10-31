@@ -2,6 +2,45 @@
 
 ## 0.14.0 (unreleased)
 
+- **Lease limits: caps and a budget** (API 14; the ground TODO.md's
+  primary VMs will stand on). A lease is granted only while its type's
+  count cap, where server.json's `limits` sets one, and a budget of CPUs
+  and memory over every lease held (`budget`: `cpus`, `memoryGB`) both have
+  room for it. By default only macOS is capped (two, Apple's limit), and
+  the budget is the Mac's memory less what macOS keeps (16 GB or a
+  quarter, whichever is more, never more than half) and its active cores
+  less two; a type with no cap takes whatever the budget has room for. A
+  lease's size (`Lease.size`) is a VM's base's CPUs and memory, a
+  container's request (else 4 and 8 GB), and for a simulator and an
+  emulator an estimate (1 CPU and 2 GB, 2 and 4 GB; server.json's
+  `sizes`). server.json's `capacity`, its name before, is read as
+  `limits`: the types it names keep their caps; the ones it doesn't (and a
+  server.json with none: windows, linux, ios, android and container were
+  capped at 2, 2, 4, 2 and 4) are now limited by the budget alone. Note
+  that VMs count their CPUs whole: a Mac with few cores may want a larger
+  `budget.cpus` to lend as many VMs at once as before.
+- **Refusals name the full limit** (API 14): 409 `busy: macos 2 of 2
+  leased`, `busy: memory 120 of 128 GB leased; this needs 16`, `busy: cpus
+  …`; a lease bigger than the whole budget is 409 `tooBig`, which `--wait`
+  doesn't wait for.
+- **`--wait` keeps a place in line** (API 14): `oss machine lease --wait`
+  (`OSSClient.lease(waitForCapacity:)`, `OSSPool`) asks again with a
+  ticket of its own (`LeaseRequest.waitTicket`), and the server keeps it in
+  line, oldest first, while it asks within 45 seconds. A lease is granted
+  as soon as its own limits allow, whatever waits for others, but the
+  oldest in line is kept room for: a later lease that would fit only by
+  taking its type's next place or the CPUs and memory it needs waits too,
+  so small leases never starve a big one. A client before API 14 waits as
+  it did, without a place. `OSSPool` keeps its place at the nearest server
+  that lends the platform, and still takes room at any that has it first.
+- **The limits in the status** (API 14): `Status.budget` (the limit, what's
+  used, and the line, each waiting lease's platform, config, holder, size,
+  time and last refusal), and each type's `Capacity.cap`, `used` and
+  `size`; `Capacity.limit` is how many may be held now (its cap, or fewer
+  where the budget has room for fewer more of its default config), which
+  older clients compare with `leased` as before. `oss status`, `oss mcp`'s
+  `oss_status`, OS Server's window and OS Monitor show the budget and each
+  cap; the server's log says the limits when it starts.
 - **CI's jobs in containers, for the repositories named** (API 13; the
   first step of TODO.md's "CI runners in containers"): with a GitHub
   App's id and key in `~/.config/oss/ci-github-app.json` and
@@ -21,7 +60,7 @@
   and stored with it. A runner no job came to in 10 minutes is given up and
   its registration deleted; a job still queued after its runner failed is
   tried again (three runners at most). At most `maxConcurrent` jobs at once
-  (one for every 8 cores and 32 GB, at most half the container capacity,
+  (one for every 8 cores and 32 GB, at most half the containers it lends,
   unless set), the rest waiting in the order GitHub queued them. Without
   the App's files, or without `ci`, nothing changes.
 - **A CI job's grant** (API 13): the job's container holds no token of
