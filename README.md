@@ -244,7 +244,20 @@ oss volume delete app-build
   Rosetta.
 - **The network** is NAT (vmnet's shared mode): the container reaches the
   internet and the Mac's LAN addresses, the server's API and its Bazel
-  cache included.
+  cache included. Every container is on the same one (since 0.14),
+  `192.168.127.0/24` unless server.json's `containerSubnet` names another:
+  the Mac is `.1` there, each container's gateway and DNS (vmnet's DNS
+  proxy), and each container has an address and a MAC address of its own
+  until its lease ends, the same when it starts again. The network is kept
+  by a process of its own (`oss-machine network`, the launchd job
+  `oss.network`), started before the first container and kept while OS
+  Server runs, restarts or is updated: a lease ending gives its address
+  back and takes no network down. (Until 0.14 each container made a
+  network of its own and took it down when it ended; macOS, taking one
+  network's bridge down, could take another live one's bridge address and
+  route with it, and leave its container with a gateway that answered
+  nothing.) With the owner not answering, a container doesn't start, and
+  says so; it never makes a network of its own.
 - **Held until released:** `--minutes=0` (a container only) is never
   reclaimed: for an agent's container, which lives as long as its session.
 - **It outlives the server.** Each container runs in a helper process of
@@ -942,6 +955,21 @@ App's files: "CI in OS Server's containers", above):
 {"ci": {"repositories": ["owner/name"], "labels": {"owner/name": "name-oss"}, "maxConcurrent": 2}}
 ```
 
+The containers' network's subnet (a private /16 to /28, written as its
+network's address; the Mac takes its first address, containers the rest):
+
+```json
+{"containerSubnet": "192.168.127.0/24"}
+```
+
+The default stays clear of Apple's container (192.168.64.0/24) and of the
+/24s vmnet takes, one after another from 192.168.64.0 up, for networks
+asked for with no subnet; inside 192.168/16, as vmnet's own are, and no
+router's usual LAN. Pick another if this Mac already has an interface on
+it (the network's owner refuses to start on a subnet in use, and says
+whose). A running network keeps the subnet it was made with: a new one
+takes effect when its owner next starts (the Mac's restart).
+
 `"lends": ["macos"]` lends only those platforms, and leaves every other
 platform's machines alone, however they're named (a server deletes the
 clones it doesn't hold of each platform it lends); `"useUTM": false`
@@ -1084,6 +1112,31 @@ snapshot.
   written) and gives the clone a network card of its own, so the NAT's
   DHCP server gives it an address of its own. A Mac runs at most two macOS
   VMs at once (Apple's limit), UTM's and OS Server's together.
+- **The containers' network has one owner** (`oss-machine network
+  <network.json>`, the launchd job `oss.network`, KeepAlive; its files in
+  OS Server's folder's `Network/`). It makes one vmnet network in shared
+  mode on server.json's `containerSubnet`, DHCP off, and keeps it for its
+  life. Its Unix socket (`Network/network.sock`) answers a JSON line with
+  one: `network` (the subnet, the gateway and the network's serialization,
+  `vmnet_network_copy_serialization`'s XPC object as JSON), `allocate`
+  (a container's address and MAC address, kept in `addresses.json`, so its
+  helper started again gets the same, and the serialization), `release`,
+  `keep` (every address but those named given back: OS Server's start,
+  after deleting the containers no lease holds) and `status`. A
+  container's helper asks for its address, makes its own reference to the
+  network from the serialization (`vmnet_network_create_with_serialization`,
+  as Apple's container's runtime does with its network plugin's) and gives
+  the container that card. Each network vmnet makes is a bridge of
+  macOS's (`bridge100`, `bridge101`…); until 0.14 each container's helper
+  made one and took it down when it ended, and macOS, taking one down,
+  could take another live network's bridge address and route with it:
+  the churn is gone with one network that outlives every lease. Addresses
+  go round the subnet rather than lowest first, so one given back goes to
+  another container only once the rest have been used (the Mac's ARP
+  cache may still hold the old card). `oss-machine network-check` makes
+  one, attaches to it from another process and makes containers' cards on
+  it, in a folder of its own: CI's macOS VM runs it, as it can't run a
+  container.
 - **macOS's local network privacy** refuses connections to UTM's network
   and the LAN from binaries that aren't Apple's unless the user allows
   them. So oss reaches guests and other computers only through Apple's own

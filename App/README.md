@@ -14,7 +14,8 @@ repository's `.github/icon.png` is the same document at 512 px.
   (`ServerRunner`): its log lines appended to `~/Library/Logs/OS Server.log`
   and the last kept for the window. Leases' machines run in processes of
   their own (macOS VMs and containers in `oss-machine` helpers, launchd
-  jobs), so quitting keeps them; installs and layer builds run here. If
+  jobs, the containers on one network kept by another, `oss-machine
+  network`), so quitting keeps them; installs and layer builds run here. If
   another server answers on
   the port (the launch agent's, before 0.7), the app leaves it be until
   asked to take over.
