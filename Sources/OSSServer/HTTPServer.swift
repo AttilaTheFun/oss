@@ -76,19 +76,27 @@ struct HTTPResponse: Sendable {
 final class HTTPServer: @unchecked Sendable {
     typealias Handler = @Sendable (HTTPRequest) async -> HTTPResponse
     typealias Streamer = @Sendable (HTTPRequest, CachePeer) async -> Void
+    /// An answer made at once, on the listener's queue, without waiting for
+    /// a task to run it: `/v1/hello`, which says the server is up, must not
+    /// wait behind work that holds Swift's threads (a client gives up on a
+    /// hello in seconds). Nil: the handler's, in a task.
+    typealias Immediate = @Sendable (HTTPRequest) -> HTTPResponse?
     private let listener: NWListener
     private let queue = DispatchQueue(label: "oss.http")
     private let handler: Handler
     private let streams: @Sendable (_ method: String, _ path: String) -> Bool
     private let streamer: Streamer
+    private let immediate: Immediate
 
     init(port: Int, streams: @escaping @Sendable (_ method: String, _ path: String) -> Bool = { _, _ in false },
-         streamer: @escaping Streamer = { _, _ in }, handler: @escaping Handler) throws {
+         streamer: @escaping Streamer = { _, _ in }, immediate: @escaping Immediate = { _ in nil },
+         handler: @escaping Handler) throws {
         let parameters = NWParameters.listening
         listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: UInt16(port))!)
         self.handler = handler
         self.streams = streams
         self.streamer = streamer
+        self.immediate = immediate
     }
 
     /// The port it listens on once it does: the one asked for, or (asked
@@ -102,9 +110,9 @@ final class HTTPServer: @unchecked Sendable {
     }
 
     func start() {
-        listener.newConnectionHandler = { [queue, handler, streams, streamer] connection in
+        listener.newConnectionHandler = { [queue, handler, streams, streamer, immediate] connection in
             connection.start(queue: queue)
-            HTTPServer.read(connection, buffer: Data(), handler: handler, streams: streams, streamer: streamer)
+            HTTPServer.read(connection, buffer: Data(), handler: handler, streams: streams, streamer: streamer, immediate: immediate)
         }
         listener.stateUpdateHandler = { state in
             if case .failed(let error) = state {
@@ -116,7 +124,8 @@ final class HTTPServer: @unchecked Sendable {
     }
 
     private static func read(_ connection: NWConnection, buffer: Data, handler: @escaping Handler,
-                             streams: @escaping @Sendable (String, String) -> Bool, streamer: @escaping Streamer) {
+                             streams: @escaping @Sendable (String, String) -> Bool, streamer: @escaping Streamer,
+                             immediate: @escaping Immediate) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 4 << 20) { data, _, complete, error in
             var buffer = buffer
             if let data { buffer.append(data) }
@@ -136,14 +145,25 @@ final class HTTPServer: @unchecked Sendable {
             } else if let request = parse(buffer) {
                 var request = request
                 request.remoteAddress = remoteAddress()
+                if let response = immediate(request) {
+                    send(response, headOnly: request.method == "HEAD", on: connection)
+                    return
+                }
+                let arrived = ContinuousClock.now
                 Task {
+                    // A request that waited for a thread says so: something
+                    // is holding Swift's threads (blocking work in a task).
+                    let waited = ContinuousClock.now - arrived
+                    if waited > .seconds(2) {
+                        FileHandle.standardError.write(Data("oss: \(request.method) \(request.path.split(separator: "?")[0]) waited \(waited) for a thread\n".utf8))
+                    }
                     let response = await handler(request)
                     send(response, headOnly: request.method == "HEAD", on: connection)
                 }
             } else if complete || error != nil || buffer.count > 1 << 30 {
                 connection.cancel()
             } else {
-                read(connection, buffer: buffer, handler: handler, streams: streams, streamer: streamer)
+                read(connection, buffer: buffer, handler: handler, streams: streams, streamer: streamer, immediate: immediate)
             }
         }
     }

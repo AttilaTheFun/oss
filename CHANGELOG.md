@@ -2,6 +2,14 @@
 
 ## 0.14.0 (unreleased)
 
+- **A busy server still says hello**: `/v1/hello` is answered by the
+  API's listener at once, without waiting for a task, and a client asks
+  this computer's server again with longer waits (4, 10, 15 s) before
+  "no oss server answered". Under load (machines starting, a run of
+  xctest) a hello could wait past the client's 4 s, which failed CI jobs at
+  their first call. A request that waited more than 2 s for a thread, and
+  the server's tasks waking late, are logged, so what holds Swift's threads
+  shows in OS Server's log.
 - **One network for every container**, kept by a process of its own
   (`oss-machine network`, the launchd job `oss.network`, KeepAlive), so a
   lease ending takes no network down. Until now each container's helper
