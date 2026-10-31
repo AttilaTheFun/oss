@@ -6,6 +6,9 @@
 #     simulators are the run's own, so real ones of an iPad and an iPhone
 #     are made and deleted (Tests/OSSServerTests/SimulatorTypeTests.swift);
 #   - the App package's build (OS Server.app's sources: swift build in App/);
+#   - the containers' network made, attached to and given back for real
+#     (`oss-machine network-check`: vmnet runs in the VM, though a
+#     container's VM, with no nested virtualization, wouldn't);
 #   - OS Monitor's Bazel build, for the Mac and for the iPhone's simulator.
 #
 #   tools/ci/mac_vm_tests.sh
@@ -24,6 +27,10 @@ mac_vm_steps << 'STEPS'
     app)
         cd oss/App && swift build
         ;;
+    network)
+        cd oss/App && codesign --force --sign - --entitlements entitlements.plist .build/debug/OSSMachine \
+            && .build/debug/OSSMachine network-check
+        ;;
     monitor)
         cd oss && bazel build //Monitor:os_monitor_macos && bazel build --ios_multi_cpus=sim_arm64 //Monitor:os_monitor_ios
         ;;
@@ -35,10 +42,11 @@ mac_vm_copy_tree
 echo "::endgroup::"
 
 status=0
-for step in package app monitor; do
+for step in package app network monitor; do
     case "$step" in
         package) title="swift build, swift test (OSS_TEST_SIMCTL=1)" ;;
         app) title="App: swift build" ;;
+        network) title="The containers' network for real: oss-machine network-check (vmnet)" ;;
         monitor) title="OS Monitor: bazel build, Mac and iPhone simulator" ;;
     esac
     echo "::group::$title"

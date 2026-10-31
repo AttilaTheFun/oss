@@ -14,15 +14,19 @@ let package = Package(
     ],
     targets: [
         // A container's helper and what OS Server shares with it: the spec it
-        // runs, the container's VM and its commands (Containerization).
+        // runs, the container's VM and its commands (Containerization), and
+        // the containers' network's owner (vmnet; its addresses and socket
+        // are OSSServer's).
         .target(
             name: "ContainerRuntime",
-            dependencies: [.product(name: "OSSClient", package: "oss"),
+            dependencies: [.product(name: "OSSClient", package: "oss"), .product(name: "OSSServer", package: "oss"),
                            .product(name: "Containerization", package: "containerization"),
                            .product(name: "ContainerizationOCI", package: "containerization"),
+                           .product(name: "ContainerizationExtras", package: "containerization"),
                            .product(name: "ContainerizationOS", package: "containerization")]
         ),
-        // `oss-machine`: one container or macOS VM, a launchd job of OS Server's (Contents/Helpers).
+        // `oss-machine`: one container or macOS VM, or the containers' network,
+        // a launchd job of OS Server's (Contents/Helpers).
         .executableTarget(name: "OSSMachine", dependencies: ["ContainerRuntime", .product(name: "OSSServer", package: "oss")]),
         .executableTarget(
             name: "OSSApp",

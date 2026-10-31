@@ -202,6 +202,9 @@ struct ServerConfig: Codable, Sendable {
     /// CI's jobs in containers (CISettings): the repositories it runs them
     /// for. Off without it, or without the GitHub App's files.
     var ci: CISettings?
+    /// The containers' network (ContainerNetwork): the one vmnet network every
+    /// container is on, made with this subnet when its owner starts.
+    var containerSubnet: String = ContainerNetwork.defaultSubnet
 
     init() {}
 
@@ -231,6 +234,7 @@ struct ServerConfig: Codable, Sendable {
         lends = try c.decodeIfPresent([Platform].self, forKey: .lends)
         useUTM = try c.decodeIfPresent(Bool.self, forKey: .useUTM) ?? d.useUTM
         ci = try c.decodeIfPresent(CISettings.self, forKey: .ci)
+        containerSubnet = try c.decodeIfPresent(String.self, forKey: .containerSubnet) ?? d.containerSubnet
     }
 
     func lends(_ platform: Platform) -> Bool { lends?.contains(platform) ?? true }
