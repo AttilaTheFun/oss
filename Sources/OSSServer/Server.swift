@@ -1004,10 +1004,20 @@ public final class ServerHost: Sendable {
                       ciOff: ciOff)
         let http = try HTTPServer(port: config.port, streams: Server.streams, streamer: { request, peer in
             await Server.stream(request, peer, api: api)
-        }) { request in
+        }, immediate: Server.immediate) { request in
             await Server.route(request, api: api)
         }
         http.start()
+        // Swift's threads held up: a task that sleeps a second and wakes much
+        // later says how long, so what holds them can be found in the log.
+        Task.detached(priority: .high) {
+            while true {
+                let started = ContinuousClock.now
+                try? await Task.sleep(for: .seconds(1))
+                let late = ContinuousClock.now - started - .seconds(1)
+                if late > .seconds(2) { log("the server's tasks waited \(late) for a thread") }
+            }
+        }
         // oss's tools for agents, on a port of their own (API 12).
         var mcp: HTTPServer?
         if config.mcpPort > 0 {
@@ -1137,6 +1147,15 @@ enum Server {
         return lease
     }
 
+    /// What the listener answers at once, without a task: `/v1/hello`
+    /// (no token, nothing held), so a client finding its server never waits
+    /// behind the server's work.
+    static func immediate(_ request: HTTPRequest) -> HTTPResponse? {
+        let path = request.path.split(separator: "?").first ?? ""
+        guard path == "/v1/hello" || path == "/v1/hello/" else { return nil }
+        return .json(["server": "oss", "host": localHostName])
+    }
+
     static func route(_ request: HTTPRequest, api: API) async -> HTTPResponse {
         let machines = api.machines, cache = api.cache
         let parts = (request.path.split(separator: "?").first ?? "").split(separator: "/").map(String.init)
@@ -1153,9 +1172,7 @@ enum Server {
                                       features: OSS.features + (cache == nil ? [] : ["cache"]) + (api.ci == nil ? [] : ["ci"]),
                                       platforms: Platform.allCases.filter { platforms.contains($0) && visible($0) }))
         }
-        if parts == ["v1", "hello"] {
-            return .json(["server": "oss", "host": localHostName])
-        }
+        if let hello = immediate(request) { return hello }
         // The API's token, OS Monitor's (reads only), or a grant (its one route).
         let access = Self.access(request, parts, api: api)
         if case .refused(let response) = access { return response }
