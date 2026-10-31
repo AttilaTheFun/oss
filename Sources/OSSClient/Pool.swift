@@ -130,8 +130,11 @@ public struct OSSPool: Sendable {
                 do {
                     progress("\(server.name) (\(server.distance))")
                     return (server.client, try await server.client.lease(request, progress: progress))
-                } catch let error as OSSError where error.code == "busy" || error.message.hasPrefix("busy") || error.code == "notLocal" {
-                    continue   // taken meanwhile, or (a server before API 9) a container for its own Mac only: the next one
+                } catch let error as OSSError where error.code == "busy" || error.message.hasPrefix("busy") || error.code == "notLocal"
+                                                || error.code == "noInventory" {
+                    // Taken meanwhile, (a server before API 9) a container for
+                    // its own Mac only, or simulators it can't list now: the next one.
+                    continue
                 }
             }
             guard waitForCapacity else {
