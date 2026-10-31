@@ -842,6 +842,11 @@ public enum OSS {
     /// a keyed request's leases and stored objects are
     /// `<CLIENT_ID>@<application>`'s, and their kind follows from it. The
     /// shared token stands for the `user` application through 0.14.
+    /// 13 from 0.14.0: CI's jobs (`GET /v1/ci/jobs`, the `ci` feature where
+    /// a server runs them), and a CI job's grant: one URL for the job's
+    /// container (`OSS_GRANT`) that leases, uses and releases machines and
+    /// stores objects in the job's name (`<job>-<run>@ci`) while the job's
+    /// runner lasts, as its bearer or as `?grant=`.
     /// 7 from 0.13.0: storage (`/v1/storage/…`: objects by their SHA-256,
     /// kept while a holder's lease on them lasts), grants (`/v1/grants`: a
     /// URL that does one thing without the token), an iOS lease's app
@@ -862,7 +867,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 12
+    public static let apiLevel = 13
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
 }

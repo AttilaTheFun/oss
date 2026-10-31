@@ -2,7 +2,8 @@
 # Builds OS Server: App/build/OS Server.app, the server (in the app's own
 # process) with its window and menu bar, the command line (`oss`), the
 # machines' helper (`oss-machine`: a container or a macOS VM each), AXe and
-# QEMU in Contents/Helpers, the provisioning scripts in Contents/Resources;
+# QEMU in Contents/Helpers, the provisioning scripts and its own sources (for
+# oss on Linux, in CI's jobs) in Contents/Resources;
 # all signed with your Apple Development identity (ad hoc without one;
 # OSS_SIGN_IDENTITY for another, a Developer ID's for notarizing), with
 # App/entitlements.plist (Apple events for UTM, Virtualization for its
@@ -30,6 +31,15 @@ cp .build/release/OSSMachine "$APP/Contents/Helpers/oss-machine"
 # The layers' provisioning scripts, and AXe (simulator input; MIT), pinned
 # and checked: OS Server needs neither this checkout nor Homebrew.
 cp -R ../provision "$APP/Contents/Resources/provision"
+# Its own sources (the package's, without the proof's pictures): what OS
+# Server builds oss for Linux from, once a version, for CI's jobs'
+# containers (Sources/OSSServer/CIContainers.swift).
+SOURCE="$APP/Contents/Resources/oss-source"
+mkdir -p "$SOURCE/Tests" "$SOURCE/tools/ci"
+cp ../Package.swift "$SOURCE/"
+cp -R ../Sources "$SOURCE/Sources"
+for tests in OSSClientTests OSSServerTests ProofBaselineTests; do cp -R "../Tests/$tests" "$SOURCE/Tests/"; done
+cp -R ../tools/ci/proof_baseline "$SOURCE/tools/ci/"
 AXE_VERSION=1.8.0
 AXE_SHA256=7b76340b72e90d0f211bc7c4636f15009076eff07acef2f2b632b175debd8834
 AXE_ARCHIVE="build/cache/AXe-macOS-v$AXE_VERSION-universal.tar.gz"

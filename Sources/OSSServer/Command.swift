@@ -124,6 +124,11 @@ let usage = """
       oss files add <path>                                  hashed and kept (never evicted); prints its URL
       oss files list                                        what this server serves
       oss files remove <sha256>
+    CI (GitHub Actions jobs the server runs in containers of its own, one a job, where its GitHub App is set up):
+      oss ci list [--json]                                  its jobs, newest first: state, repository, workflow and job,
+                                                            how long each waited and ran, its lease, its page
+      In a job's container, OSS_GRANT (its grant's URL) stands for a key: oss leases, uses and releases machines and
+      stores objects in the job's name (<job>-<run>@ci), all released when the job ends
     A container host for Visor (Visor's docs/container-host.md): its containers this server's container leases, held until
     released and found again by their labels, with this computer's client settings:
       oss container-host [--server=URL] [--key-file=F] health | create < request | ls | network <id> | rm <id> [--volumes]
@@ -187,8 +192,11 @@ func defaultKey() -> String? {
         .first { FileManager.default.fileExists(atPath: $0) }
 }
 
+/// Whom this computer's requests are for: a CI job's grant's holder (its
+/// leases are the job's whatever it names), else OSS_HOLDER, else user@host.
 func holderName() -> String {
-    ProcessInfo.processInfo.environment["OSS_HOLDER"]
+    let environment = ProcessInfo.processInfo.environment
+    return JobGrantEnvironment.holder(environment) ?? environment["OSS_HOLDER"]
         ?? "\(NSUserName())@\(localHostName.components(separatedBy: ".")[0])"
 }
 
@@ -304,6 +312,20 @@ func describeOrigin(_ request: inout LeaseRequest, _ args: Arguments, environmen
 func leaseLine(_ lease: Lease) -> String {
     "\(lease.id)  \(lease.platform.rawValue)/\(lease.config)\(lease.device.map { " (\($0))" } ?? "")  \(lease.state.rawValue)  "
         + "\(lease.kind?.rawValue ?? "-")  \(lease.holder)  until \(iso(lease.expires))" + (lease.label.map { "  \($0)" } ?? "")
+}
+
+/// A CI job in a line: its state (and result), repository, workflow and
+/// job, how long it waited and ran, its lease, its page.
+func ciJobLine(_ job: CIJob) -> String {
+    func duration(_ seconds: TimeInterval?) -> String {
+        guard let seconds else { return "-" }
+        let whole = Int(seconds)
+        return whole < 60 ? "\(whole)s" : whole < 3600 ? "\(whole / 60)m\(whole % 60)s" : "\(whole / 3600)h\(whole / 60 % 60)m"
+    }
+    let state = job.state.rawValue + (job.result.map { " (\($0))" } ?? "")
+    return "\(job.id)  \(state)  \(job.repository)  \(job.workflow ?? "-") / \(job.name)  waited \(duration(job.waited))  "
+        + "ran \(duration(job.ran))  lease \(job.lease ?? "-")  \((job.url ?? job.runURL)?.absoluteString ?? "")"
+        + (job.error.map { "\n    \($0)" } ?? "")
 }
 
 /// A container lease's spec from its options; GB as 2³⁰ bytes.
@@ -878,6 +900,19 @@ public enum OSSCommand {
                 }
                 let grant = try await client.grant(request, holder: holder)
                 if arguments.flags.contains("json") { try printJSON(grant) } else { print(grant.url.absoluteString) }
+
+            case "ci":
+                // oss ci list: the GitHub Actions jobs the server ran in its containers (API 13).
+                guard sub == nil || sub == "list" else { fail("oss ci list [--json]") }
+                let client = try await OSSClient.connect()
+                let jobs = try await client.ciJobs()
+                if arguments.flags.contains("json") {
+                    try printJSON(jobs)
+                } else if jobs.isEmpty {
+                    print("no CI jobs yet")
+                } else {
+                    for job in jobs { print(ciJobLine(job)) }
+                }
 
             case "volume":
                 let client = try await OSSClient.connect()

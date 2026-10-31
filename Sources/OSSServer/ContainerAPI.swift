@@ -308,6 +308,13 @@ final class ContainerCommand: Sendable {
     /// and ends the command by answering false (its client has gone).
     static func start(_ socket: String, _ arguments: [String],
                       stdout: (@Sendable (Data) async -> Bool)? = nil) async throws -> ContainerCommand {
+        try await start(socket, ExecRequest(arguments: arguments), stdout: stdout)
+    }
+
+    /// The same with the request's environment and working directory (a CI
+    /// job's runner's).
+    static func start(_ socket: String, _ request: ExecRequest,
+                      stdout: (@Sendable (Data) async -> Bool)? = nil) async throws -> ContainerCommand {
         let stream: UnixStream
         do {
             stream = try await UnixStream.open(socket, waiting: .seconds(60))
@@ -315,7 +322,7 @@ final class ContainerCommand: Sendable {
             throw APIError(error: "the container isn't running (its server starts it again): \(error)", code: "notReady")
         }
         do {
-            try await stream.write(ExecFrame.start(ExecRequest(arguments: arguments)).encoded)
+            try await stream.write(ExecFrame.start(request).encoded)
         } catch {
             stream.close()
             throw APIError(error: "the container's exec socket: \(error)", code: "notReady")
