@@ -170,14 +170,23 @@ public struct OSSClient: Sendable {
         OSSClient(server: try await firstAnswering(servers, transport: transport), token: token, transport: transport)
     }
 
+    /// How long a hello is waited for, try by try (about half a minute in all).
+    public static let helloWaits: [TimeInterval] = [4, 10, 15]
+
     /// The first of `servers` that answers as an oss server, in order
     /// (`GET /v1/hello`, which needs no token: a grant's client asks it too).
-    public static func firstAnswering(_ servers: [URL], transport: any OSSTransport = URLSessionTransport()) async throws -> URL {
-        for server in servers {
-            let probe = OSSHTTPRequest(method: "GET", url: server.appendingPathComponent("v1/hello"), timeout: 4)
-            if let answer = try? await transport.send(probe), answer.status == 200,
-               String(decoding: answer.body, as: UTF8.self).contains("\"oss\"") {
-                return server
+    /// Each server is asked quickly first, then again with longer waits: a
+    /// busy server (one starting machines) can be slow to answer, and a
+    /// client that gave up at once failed a CI job for it.
+    public static func firstAnswering(_ servers: [URL], transport: any OSSTransport = URLSessionTransport(),
+                                      waits: [TimeInterval] = helloWaits) async throws -> URL {
+        for wait in waits {
+            for server in servers {
+                let probe = OSSHTTPRequest(method: "GET", url: server.appendingPathComponent("v1/hello"), timeout: wait)
+                if let answer = try? await transport.send(probe), answer.status == 200,
+                   String(decoding: answer.body, as: UTF8.self).contains("\"oss\"") {
+                    return server
+                }
             }
         }
         throw OSSError(status: 0, message: "no oss server answered (tried \(servers.map(\.absoluteString).joined(separator: ", ")))")

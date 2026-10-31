@@ -87,11 +87,22 @@ public struct OSSPool: Sendable {
             for entry in entries {
                 group.addTask {
                     // Its addresses nearest first; the first that answers as oss.
+                    // A busy server can be slow to say hello: this computer's
+                    // is asked again with a longer wait before it's passed
+                    // over (another's, gone, would only slow the others).
                     for url in entry.servers.sorted(by: { OSSDistance.of($0) < OSSDistance.of($1) }) {
-                        let started = Date()
-                        let probe = OSSHTTPRequest(method: "GET", url: url.appendingPathComponent("v1/hello"), timeout: 4)
-                        guard let answer = try? await transport.send(probe), answer.status == 200,
-                              let hello = try? JSONDecoder().decode([String: String].self, from: answer.body), hello["server"] == "oss" else { continue }
+                        var hello: [String: String]?
+                        var started = Date()
+                        let tries = OSSDistance.of(url) == .thisComputer ? 2 : 1
+                        for wait in OSSClient.helloWaits.prefix(tries) where hello == nil {
+                            started = Date()
+                            let probe = OSSHTTPRequest(method: "GET", url: url.appendingPathComponent("v1/hello"), timeout: wait)
+                            if let answer = try? await transport.send(probe), answer.status == 200,
+                               let decoded = try? JSONDecoder().decode([String: String].self, from: answer.body), decoded["server"] == "oss" {
+                                hello = decoded
+                            }
+                        }
+                        guard let hello else { continue }
                         let latency = Date().timeIntervalSince(started)
                         let client = OSSClient(server: url, token: entry.token, transport: transport)
                         guard let status = try? await client.status() else { continue }
