@@ -208,8 +208,10 @@ indirect enum XPCValue: Codable, Equatable {
 public enum NetworkOwnerProcess {
     private enum Kept {
         nonisolated(unsafe) static var network: vmnet_network_ref?
-        nonisolated(unsafe) static var listener: LineSocket.Listener?
         nonisolated(unsafe) static var sources: [DispatchSourceSignal] = []
+        /// Its socket, once it listens: set by the start, read by TERM's handler.
+        static let lock = NSLock()
+        nonisolated(unsafe) static var listener: LineSocket.Listener?
     }
 
     public static func main(_ specPath: String) async -> Never {
@@ -218,20 +220,21 @@ public enum NetworkOwnerProcess {
             ContainerHelper.say("oss-machine network <network.json>: no spec to run")
             exit(2)
         }
-        do {
-            let listener = try await start(spec)
-            Kept.listener = listener
-            for signal in [SIGTERM, SIGINT] {
-                Foundation.signal(signal, SIG_IGN)
-                let source = DispatchSource.makeSignalSource(signal: signal, queue: .main)
-                source.setEventHandler {
-                    ContainerHelper.say("containers' network: stopping (its containers lose it)")
-                    Kept.listener?.stop()
-                    exit(0)
-                }
-                source.resume()
-                Kept.sources.append(source)
+        // TERM handled from the first: one that comes while the network is
+        // still being made takes its socket away too.
+        for signal in [SIGTERM, SIGINT] {
+            Foundation.signal(signal, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: signal, queue: .main)
+            source.setEventHandler {
+                ContainerHelper.say("containers' network: stopping (its containers lose it)")
+                Kept.lock.withLock { Kept.listener?.stop() }
+                exit(0)
             }
+            source.resume()
+            Kept.sources.append(source)
+        }
+        do {
+            try await start(spec)
             while true { try? await Task.sleep(for: .seconds(86400)) }
         } catch {
             ContainerHelper.say("containers' network: \(error)")
@@ -240,7 +243,7 @@ public enum NetworkOwnerProcess {
     }
 
     /// The network made, and its socket answering.
-    static func start(_ spec: ContainerNetworkSpec) async throws -> LineSocket.Listener {
+    static func start(_ spec: ContainerNetworkSpec) async throws {
         let subnet = try ContainerSubnet(spec.subnet)
         // One owner a Mac: a second would take the first's socket.
         if LineSocket.isAnswering(spec.socket) {
@@ -263,6 +266,7 @@ public enum NetworkOwnerProcess {
         let book = try AddressBook(path: spec.addresses, subnet: subnet)
         let service = NetworkOwnerService(subnet: subnet, serialization: encoded, book: book)
         let listener = try LineSocket.listen(at: spec.socket, handle: service.handle)
+        Kept.lock.withLock { Kept.listener = listener }
         // Its bridge, for the log: the interface with the Mac's address on it.
         deadline = Date().addingTimeInterval(5)
         var bridge = subnet.interfaceOnIt()
@@ -272,7 +276,6 @@ public enum NetworkOwnerProcess {
         }
         ContainerHelper.say("containers' network: \(subnet) (\(bridge ?? "its bridge not up yet")), \(book.all.count) containers' addresses kept, "
                             + "serialization \(value.shape), at \(spec.socket)")
-        return listener
     }
 }
 
@@ -324,6 +327,10 @@ public enum NetworkCheck {
             }
             owner.terminate()
             owner.waitUntilExit()
+            guard owner.terminationReason == .exit, owner.terminationStatus == 0 else {
+                throw ContainerNetworkError("the owner didn't stop on TERM as asked (\(owner.terminationReason == .exit ? "exit" : "signal") "
+                                            + "\(owner.terminationStatus))")
+            }
             guard !FileManager.default.fileExists(atPath: spec.socket) else { throw ContainerNetworkError("the owner left its socket behind") }
             print("network-check: passed")
             try? FileManager.default.removeItem(atPath: folder)
