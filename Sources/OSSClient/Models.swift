@@ -286,6 +286,9 @@ public enum LeaseKind: String, Codable, CaseIterable, Sendable {
     case agent
     /// Someone's at a terminal, or a program's that said nothing else.
     case manual
+    /// An image build's VM on the server's own Mac (API 14): a place
+    /// held while the build runs (`LeaseRequest.build`).
+    case build
 
     /// A kind this build doesn't know (a newer server's) reads as `manual`:
     /// an unknown value would otherwise fail the whole status it came in
@@ -370,6 +373,8 @@ public struct Lease: Codable, Sendable {
     /// The layer a build's place is for (API 14; `LeaseRequest.build`):
     /// such a lease has no machine of its own.
     public var build: String?
+    /// The process building, whose life the place lasts.
+    public var buildPID: Int32?
 
     public init(id: String, platform: Platform, config: String, name: String, holder: String, state: LeaseState,
                 created: Date, expires: Date, error: String? = nil, kind: LeaseKind? = nil, label: String? = nil, link: URL? = nil) {
@@ -434,10 +439,15 @@ public struct LeaseRequest: Codable, Sendable {
     /// is held while the build runs. Only a client on the server's Mac may
     /// ask for one.
     public var build: String?
+    /// The process building (`oss image build`'s, or OS Server's own while
+    /// it installs a component): the place lasts exactly as long as it
+    /// does, never expiring while it runs and released once it's gone.
+    public var buildPID: Int32?
 
     public init(platform: Platform, config: String? = nil, minutes: Int? = nil, holder: String? = nil, sshPublicKey: String? = nil,
                 container: ContainerSpec? = nil, kind: LeaseKind? = nil, label: String? = nil, link: URL? = nil,
-                device: String? = nil, runtime: String? = nil, labels: [String: String]? = nil, waitTicket: String? = nil, build: String? = nil) {
+                device: String? = nil, runtime: String? = nil, labels: [String: String]? = nil, waitTicket: String? = nil, build: String? = nil,
+                buildPID: Int32? = nil) {
         self.platform = platform
         self.config = config
         self.minutes = minutes
@@ -452,6 +462,7 @@ public struct LeaseRequest: Codable, Sendable {
         self.labels = labels
         self.waitTicket = waitTicket
         self.build = build
+        self.buildPID = buildPID
     }
 }
 
@@ -989,8 +1000,8 @@ public enum OSS {
     /// `tooBig` a lease bigger than the whole budget or with more CPUs than
     /// one machine may have; a lease waited for names its wait
     /// (`LeaseRequest.waitTicket`) and keeps its place in line; an image
-    /// build takes a place as a lease does (`LeaseRequest.build`,
-    /// `Lease.build`).
+    /// build takes a place as a lease does (`LeaseRequest.build` and
+    /// `buildPID`, `Lease.build`, `LeaseKind.build`).
     /// 7 from 0.13.0: storage (`/v1/storage/…`: objects by their SHA-256,
     /// kept while a holder's lease on them lasts), grants (`/v1/grants`: a
     /// URL that does one thing without the token), an iOS lease's app

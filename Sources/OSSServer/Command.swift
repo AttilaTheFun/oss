@@ -98,14 +98,14 @@ let usage = """
                                                             budget): refused if there is none, or with --wait queued for one
       oss image build ios <config> [--device="iPhone 17 Pro"] [--runtime=ID] [--script=PATH]
       oss image build android <config> [--api=35] [--tag=google_apis] [--script=PATH]
-      oss image install macos [config] [--ipsw=PATH] [--cpus=6] [--memory=16] [--disk=128]
+      oss image install macos [config] [--ipsw=PATH] [--cpus=6] [--memory=16] [--disk=128] [--wait]
                                                             OS Server's own macOS base (Virtualization's), installed
                                                             and runner made with no one at its screen (macOS 27)
-      oss image install linux [config] [--image=PATH] [--cpus=6] [--memory=8] [--disk=128]
+      oss image install linux [config] [--image=PATH] [--cpus=6] [--memory=8] [--disk=128] [--wait]
                                                             OS Server's own Ubuntu base (its QEMU's), from Ubuntu's
                                                             cloud image (downloaded and checked), GNOME and runner
                                                             set up by cloud-init
-      oss image install windows [config] --iso=PATH [--edition="Windows 11 Pro"] [--cpus=6] [--memory=8] [--disk=128]
+      oss image install windows [config] --iso=PATH [--edition="Windows 11 Pro"] [--cpus=6] [--memory=8] [--disk=128] [--wait]
                                                             OS Server's own Windows base (its QEMU's) from Windows 11
                                                             on Arm's ISO, installed by an answer file
       oss image import-utm <UTM VM name>… [--as=CONFIG]     UTM's macOS VMs as OS Server's own bases (APFS clones)
@@ -1119,34 +1119,44 @@ public enum OSSCommand {
             case "image":
                 ManagementKey.settle()
                 #if canImport(Virtualization)
+            // An install runs a VM too: it takes a place in the server's limits
+            // first, as a build does (--wait for one).
+            let installed = arguments.positional.count >= 4 ? arguments.positional[3] : "base"
+            let wait = arguments.flags.contains("wait")
             if sub == "install", target == "linux" {
-                // oss image install linux [config] [--image=PATH] [--cpus=N] [--memory=GB] [--disk=GB]
-                try await LinuxInstaller.install(config: arguments.positional.count >= 4 ? arguments.positional[3] : "base",
-                                                 image: arguments.options["image"],
-                                                 cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
-                                                 memoryGB: Int(arguments.options["memory"] ?? "") ?? 8,
-                                                 diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                // oss image install linux [config] [--image=PATH] [--cpus=N] [--memory=GB] [--disk=GB] [--wait]
+                try await BuildPlace.holding(platform: .linux, layer: installed, from: installed, wait: wait,
+                                             label: "image install: linux \(installed)") { _ in
+                    try await LinuxInstaller.install(config: installed, image: arguments.options["image"],
+                                                     cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
+                                                     memoryGB: Int(arguments.options["memory"] ?? "") ?? 8,
+                                                     diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                }
                 exit(0)
             }
             if sub == "install", target == "windows" {
-                // oss image install windows [config] --iso=PATH [--edition="Windows 11 Pro"] [--cpus=N] [--memory=GB] [--disk=GB]
+                // oss image install windows [config] --iso=PATH [--edition="Windows 11 Pro"] [--cpus=N] [--memory=GB] [--disk=GB] [--wait]
                 guard let iso = arguments.options["iso"] else { fail("oss image install windows [config] --iso=<Windows 11 on Arm's ISO>") }
-                try await WindowsInstaller.install(config: arguments.positional.count >= 4 ? arguments.positional[3] : "base", iso: iso,
-                                                   edition: arguments.options["edition"] ?? "Windows 11 Pro",
-                                                   cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
-                                                   memoryGB: Int(arguments.options["memory"] ?? "") ?? 8,
-                                                   diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                try await BuildPlace.holding(platform: .windows, layer: installed, from: installed, wait: wait,
+                                             label: "image install: windows \(installed)") { _ in
+                    try await WindowsInstaller.install(config: installed, iso: iso, edition: arguments.options["edition"] ?? "Windows 11 Pro",
+                                                       cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
+                                                       memoryGB: Int(arguments.options["memory"] ?? "") ?? 8,
+                                                       diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                }
                 exit(0)
             }
             if sub == "install" {
-                // oss image install macos [config] [--ipsw=PATH] [--cpus=N] [--memory=GB] [--disk=GB]
+                // oss image install macos [config] [--ipsw=PATH] [--cpus=N] [--memory=GB] [--disk=GB] [--wait]
                 guard target == "macos" else { fail("oss image install macos|linux [config] … (see oss --help)") }
                 guard #available(macOS 27, *) else { fail("installing macOS with no one at its screen needs macOS 27 here") }
-                try await MacInstaller.install(config: arguments.positional.count >= 4 ? arguments.positional[3] : "base",
-                                               ipsw: arguments.options["ipsw"],
-                                               cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
-                                               memoryGB: Int(arguments.options["memory"] ?? "") ?? 16,
-                                               diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                try await BuildPlace.holding(platform: .macos, layer: installed, from: installed, wait: wait,
+                                             label: "image install: macos \(installed)") { _ in
+                    try await MacInstaller.install(config: installed, ipsw: arguments.options["ipsw"],
+                                                   cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
+                                                   memoryGB: Int(arguments.options["memory"] ?? "") ?? 16,
+                                                   diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                }
                 exit(0)
             }
             #endif
@@ -1185,16 +1195,10 @@ public enum OSSCommand {
                     }
                     // A place in the server's limits first (its type's cap, the
                     // memory budget; --wait for one), held while it builds.
-                    let place = try await BuildPlace.take(platform: platform, layer: config, from: base,
-                                                          wait: arguments.flags.contains("wait"))
-                    do {
+                    try await BuildPlace.holding(platform: platform, layer: config, from: base, wait: arguments.flags.contains("wait")) { place in
                         try await Images.build(platform: platform, layer: config, from: base, script: arguments.options["script"],
                                                copies: copies, work: place?.name)
-                    } catch {
-                        await place?.release()
-                        throw error
                     }
-                    await place?.release()
                 }
 
             default:

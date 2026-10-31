@@ -464,6 +464,7 @@ public struct KindBadge: View {
         case .session: .teal
         case .agent: .indigo
         case .manual: .gray
+        case .build: .brown
         }
     }
 }
@@ -568,6 +569,7 @@ public enum Format {
         case .session: "Session"
         case .agent: "Agent"
         case .manual: "Manual"
+        case .build: "Build"
         }
     }
 }

@@ -270,14 +270,9 @@ actor MachineManager {
         // one the server's Xcode hasn't got is refused before anything's made.
         let simulator = request.platform == .ios ? try await Simulators.choose(device: request.device, runtime: request.runtime, base: base) : nil
         // Its type's cap and the budget, beside every lease held and the
-        // oldest waiting (Admission.swift). Nothing awaits from here until
-        // the lease is in `leases`, so two requests can't both take the
-        // last room.
-        let size = measure(request.platform, config: config, container: request.container)
-        if let refusal = admission.decide(LeaseDemand(platform: request.platform, size: size), ticket: request.waitTicket, config: config,
-                                          holder: request.holder ?? "unknown", held: heldDemands()) {
-            throw APIError(error: refusal.message, code: refusal.code)
-        }
+        // oldest waiting. Nothing awaits from here until the lease is in
+        // `leases`, so two requests can't both take the last room.
+        let size = try admit(request, config: config)
         let id = Random.hex(4)
         // A container may be held until it is released (an agent's, for days).
         let untilReleased = request.platform == .container && request.minutes == 0
@@ -299,6 +294,19 @@ actor MachineManager {
         return lease
     }
 
+    /// Whether a lease may be granted now: its type's cap and the budget,
+    /// beside every lease held and the oldest waiting (Admission.swift);
+    /// the size it is granted at, else why not (`busy`, `tooBig`). Every
+    /// lease goes through it, an image build's place too.
+    func admit(_ request: LeaseRequest, config: String) throws -> LeaseSize {
+        let size = measure(request.platform, config: config, container: request.build == nil ? request.container : nil)
+        if let refusal = admission.decide(LeaseDemand(platform: request.platform, size: size), ticket: request.waitTicket, config: config,
+                                          holder: request.holder ?? "unknown", held: heldDemands()) {
+            throw APIError(error: refusal.message, code: refusal.code)
+        }
+        return size
+    }
+
     /// A VM's place for an image build (`LeaseRequest.build`): admitted as a
     /// lease of its platform and its base's size (its type's cap, the
     /// budget, the line), with no machine. The build, in `oss image build`'s
@@ -310,11 +318,7 @@ actor MachineManager {
         guard !layer.isEmpty, layer.allSatisfy({ $0.isLetter || $0.isNumber || "-_.".contains($0) }) else {
             throw APIError(error: "a layer's name is letters, digits, - _ and .")
         }
-        let size = measure(request.platform, config: config, container: nil)
-        if let refusal = admission.decide(LeaseDemand(platform: request.platform, size: size), ticket: request.waitTicket, config: config,
-                                          holder: request.holder ?? "unknown", held: heldDemands()) {
-            throw APIError(error: refusal.message, code: refusal.code)
-        }
+        let size = try admit(request, config: config)
         let id = Random.hex(4)
         let minutes = min(max(request.minutes ?? self.config.defaultMinutes, 1), self.config.maxMinutes)
         var lease = Lease(id: id, platform: request.platform, config: config, name: "oss-build-\(request.platform.rawValue)-\(layer)-\(id)",
@@ -322,7 +326,9 @@ actor MachineManager {
                           expires: Date().addingTimeInterval(TimeInterval(minutes * 60)))
         lease.size = size
         lease.build = layer
+        lease.buildPID = request.buildPID
         lease.take(origin)
+        lease.kind = .build
         if lease.label == nil { lease.label = "image build: \(layer) from \(config)" }
         leases[id] = lease
         save()
@@ -817,6 +823,19 @@ actor MachineManager {
     /// Leases whose time ran out are released.
     func expire() async {
         let now = Date()
+        // An image build's place lasts as long as its build's process: never
+        // expired while it runs (its VM is running), released once it's gone.
+        for lease in leases.values where lease.build != nil && lease.state == .ready {
+            guard let pid = lease.buildPID else { continue }
+            if kill(pid, 0) == 0 || errno == EPERM {
+                if lease.expires < now.addingTimeInterval(600) {
+                    leases[lease.id]?.expires = now.addingTimeInterval(3600)
+                    save()
+                }
+            } else {
+                await release(lease.id, reason: "its build ended")
+            }
+        }
         for lease in leases.values where lease.expires < now && lease.state != .returning && lease.state != .failed {
             await release(lease.id, reason: "expired")
         }

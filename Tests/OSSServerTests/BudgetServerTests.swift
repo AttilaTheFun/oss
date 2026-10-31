@@ -72,8 +72,8 @@ private func buildServer(memoryGB: Double) -> MachineManager {
     return MachineManager(config: config, leasesPath: "\(root)/leases.json")
 }
 
-private func place(_ layer: String, ticket: String? = nil) -> LeaseRequest {
-    LeaseRequest(platform: .macos, config: "vanilla", holder: "alice", waitTicket: ticket, build: layer)
+private func place(_ layer: String, ticket: String? = nil, pid: Int32? = nil) -> LeaseRequest {
+    LeaseRequest(platform: .macos, config: "vanilla", holder: "image-build", kind: .build, waitTicket: ticket, build: layer, buildPID: pid)
 }
 
 @Test func anImageBuildTakesAPlaceLikeALease() async throws {
@@ -82,7 +82,7 @@ private func place(_ layer: String, ticket: String? = nil) -> LeaseRequest {
     let first = try await machines.lease(place("tools"), local: true)
     #expect(first.state == .ready && first.build == "tools" && first.name.hasPrefix("oss-build-macos-tools-"))
     #expect(first.size == LeaseSize(cpus: 6, memoryBytes: 16 << 30))
-    #expect(first.label == "image build: tools from vanilla")
+    #expect(first.label == "image build: tools from vanilla" && first.kind == .build && first.holder == "image-build")
     let second = try await machines.lease(place("xcode"), local: true)
     let refused = await #expect(throws: APIError.self) { try await machines.lease(place("other"), local: true) }
     #expect(refused?.error == "busy: macos 2 of 2 leased")
@@ -101,6 +101,36 @@ private func place(_ layer: String, ticket: String? = nil) -> LeaseRequest {
     _ = await #expect(throws: APIError.self) {
         try await machines.lease(LeaseRequest(platform: .ios, holder: "alice", build: "tools"), local: true)
     }
+}
+
+@Test func aLeaseAskedForDuringABuildIsNeverGrantedAVMTheMacWontStart() async throws {
+    let machines = buildServer(memoryGB: 1024)
+    // Two builds hold macOS's two places (Apple's limit of VMs a Mac runs
+    // at once): one whose process runs (this one), one whose has ended.
+    let running = try await machines.lease(place("xcode", pid: getpid()), local: true)
+    let ended = Process()
+    ended.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+    try ended.run()
+    ended.waitUntilExit()
+    let finished = try await machines.lease(place("tools", pid: ended.processIdentifier), local: true)
+    // A CI job's lease asked for meanwhile goes through the same admission
+    // as every lease: refused as busy, or waiting in line, never granted
+    // into a VM the hardware won't start.
+    let job = LeaseRequest(platform: .macos, config: "vanilla", holder: "build-1@ci", waitTicket: "job-1")
+    let refused = await #expect(throws: APIError.self) { _ = try await machines.admit(job, config: "vanilla") }
+    #expect(refused?.error == "busy: macos 2 of 2 leased")
+    #expect(await machines.budget().waiting.map(\.holder) == ["build-1@ci"])
+    // The status shows the builds as leases: kind build, holder image-build.
+    let capacity = try #require(await machines.capacity().first { $0.platform == .macos })
+    #expect(capacity.leased == 2 && capacity.limit == 2)
+    #expect(await machines.all().filter { $0.kind == .build && $0.holder == "image-build" }.count == 2)
+    // A build's place lasts as long as its process: the running one's stays,
+    // the ended one's is released, and the job waiting gets its place.
+    await machines.expire()
+    #expect(await machines.lease(running.id) != nil)
+    #expect(await machines.lease(finished.id) == nil)
+    #expect(try await machines.admit(job, config: "vanilla") == LeaseSize(cpus: 6, memoryBytes: 16 << 30))
+    await machines.release(running.id, reason: "built")
 }
 
 @Test func anImageBuildCountsAgainstTheMemoryBudget() async throws {

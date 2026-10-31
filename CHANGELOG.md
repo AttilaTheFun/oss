@@ -34,13 +34,18 @@
   with more memory than the whole budget, or more CPUs than `maxCPUs`, is
   409 `tooBig`, which `--wait` doesn't wait for.
 - **An image build takes a place like a lease** (API 14): `oss image
-  build <macos|linux|windows>` asks this Mac's server for a place first
-  (`LeaseRequest.build`, its layer: admitted as a lease of its platform and
-  its base's size, against the type's cap and the memory budget, queued
-  with `--wait`), a lease with no machine that its build's clone is named
-  after, held while it builds and released when it ends; before, a build
-  while both macOS places were leased failed partway. A build that fails
-  now deletes its clone (its `.building` folder, or UTM's), which was kept.
+  build` and `oss image install` for a VM, and OS Server's own component
+  installs, ask this Mac's server for a place before the VM starts
+  (`LeaseRequest.build`, its layer: admitted as a lease of its platform
+  and its base's size, against the type's cap and the memory budget,
+  queued with `--wait`). It is a lease with no machine, kind `build`
+  (`LeaseKind.build`), holder `image-build`, that its build's clone is
+  named after; it lasts as long as the build's process
+  (`LeaseRequest.buildPID`: never expired while it runs, released once
+  it's gone) and is given back when the VM has stopped. Before, a build
+  took a macOS VM outside the server's count, and leases granted meanwhile
+  failed to start ("maximum active VMs"). A build that fails now deletes
+  its clone (its `.building` folder, or UTM's), which was kept.
 - **`--wait` keeps a place in line** (API 14): `oss machine lease --wait`
   (`OSSClient.lease(waitForCapacity:)`, `OSSPool`) asks again with a
   ticket of its own (`LeaseRequest.waitTicket`), and the server keeps it in

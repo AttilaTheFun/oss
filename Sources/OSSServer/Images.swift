@@ -313,24 +313,27 @@ enum Images {
     }
 }
 
-/// A VM's place in this Mac's server's limits for an image build
-/// (`LeaseRequest.build`, API 14): a build's VM counts against its type's
-/// cap and the memory budget as a lease's does, so a build while both
-/// macOS places are leased waits (`--wait`) or is refused at once, rather
-/// than failing partway. Taken from the server on this Mac (port
-/// server.json's), held while the build runs (renewed every 20 minutes),
-/// and released when it ends. Where no server answers here, or one before
-/// API 14, the build goes ahead without one, as before.
+/// A VM's place in this Mac's server's limits for an image build or a
+/// base's install (`LeaseRequest.build`, API 14): its VM counts against
+/// its type's cap and the memory budget as a lease's does, admitted before
+/// the VM starts, so a build while both macOS places are leased waits
+/// (`--wait`) or is refused at once, and no lease is granted a VM the Mac
+/// won't start while it runs. A lease of kind `build`, holder
+/// `image-build`, shown like any; taken from the server on this Mac (port
+/// server.json's) with this process's pid, which it lasts as long as: the
+/// server never expires it while the process runs, and releases it once
+/// the process is gone, if nothing released it first. Where no server
+/// answers here, or one before API 14, the build goes ahead without one,
+/// as before.
 struct BuildPlace: Sendable {
     let client: OSSClient
     let lease: Lease
-    let renewal: Task<Void, Never>
 
     /// The build's clone takes the place's name, so whoever looks at the
     /// Mac's processes can tell its VM is this lease's.
     var name: String { lease.name }
 
-    static func take(platform: Platform, layer: String, from base: String, wait: Bool) async throws -> BuildPlace? {
+    static func take(platform: Platform, layer: String, from base: String, wait: Bool, label: String? = nil) async throws -> BuildPlace? {
         let here = URL(string: "http://127.0.0.1:\(ServerConfig.load().port)")!
         let client: OSSClient
         do {
@@ -344,28 +347,35 @@ struct BuildPlace: Sendable {
             log("this Mac's OS Server keeps no places for builds (before API 14): building \(layer) without one")
             return nil
         }
-        let request = LeaseRequest(platform: platform, config: base, minutes: 60, holder: holderName(), kind: .manual,
-                                   label: "image build: \(layer) from \(base)", build: layer)
+        let request = LeaseRequest(platform: platform, config: base, minutes: 60, holder: "image-build", kind: .build,
+                                   label: label ?? "image build: \(layer) from \(base)", build: layer, buildPID: getpid())
         let lease: Lease
         do {
-            lease = try await client.leaseForTerminal(request, waitForCapacity: wait)
+            lease = try await client.lease(request, waitForCapacity: wait) { log("image build: \($0)") }
         } catch let error as OSSError where error.code == "busy" || error.message.hasPrefix("busy") {
             throw ShellError(description: "\(error.message): --wait to wait for a place")
         }
-        let id = lease.id
-        let renewal = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1200))
-                if Task.isCancelled { break }
-                _ = try? await client.renew(id, minutes: 60)
-            }
-        }
-        log("building \(layer) in place \(id) (\(lease.size.map { "\($0)" } ?? "its base's size"))")
-        return BuildPlace(client: client, lease: lease, renewal: renewal)
+        log("building \(layer) in place \(lease.id) (\(lease.size.map { "\($0)" } ?? "its base's size"))")
+        return BuildPlace(client: client, lease: lease)
     }
 
+    /// Given back once the build's VM has stopped, however the build ended.
     func release() async {
-        renewal.cancel()
         try? await client.release(lease.id)
+    }
+
+    /// `work` run in a place of its own: taken first, released when `work`
+    /// ends, however it ends.
+    static func holding<T: Sendable>(platform: Platform, layer: String, from base: String, wait: Bool, label: String? = nil,
+                                     _ work: (BuildPlace?) async throws -> T) async throws -> T {
+        let place = try await take(platform: platform, layer: layer, from: base, wait: wait, label: label)
+        do {
+            let result = try await work(place)
+            await place?.release()
+            return result
+        } catch {
+            await place?.release()
+            throw error
+        }
     }
 }

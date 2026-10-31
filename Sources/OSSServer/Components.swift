@@ -129,6 +129,13 @@ public actor Components {
     private func failed(_ id: String, _ message: String) { failures[id] = message }
     private func finished(_ id: String) { running[id] = nil }
 
+    /// A platform's vanilla layer on its new base, in a place of its own.
+    private static func build(_ platform: Platform) async throws {
+        try await BuildPlace.holding(platform: platform, layer: "vanilla", from: "base", wait: true) { place in
+            try await Images.build(platform: platform, layer: "vanilla", from: "base", script: nil, copies: [], work: place?.name)
+        }
+    }
+
     private func perform(_ id: String, file: String?) async throws {
         log("installing \(id)")
         switch id {
@@ -142,18 +149,26 @@ public actor Components {
         case "macos":
             guard #available(macOS 27, *) else { throw ShellError(description: "needs macOS 27 here") }
             GuestPasswords.ensure(.macos)
-            try await MacInstaller.install(config: "base", ipsw: file, cpus: 6, memoryGB: 16, diskGB: 128)
-            try await Images.build(platform: .macos, layer: "vanilla", from: "base", script: nil, copies: [])
+            // Each VM in a place of the server's limits, waited for: never one
+            // more than the Mac will start.
+            try await BuildPlace.holding(platform: .macos, layer: "base", from: "base", wait: true, label: "component: macOS base") { _ in
+                try await MacInstaller.install(config: "base", ipsw: file, cpus: 6, memoryGB: 16, diskGB: 128)
+            }
+            try await Self.build(.macos)
         case "linux":
             GuestPasswords.ensure(.linux)
-            try await LinuxInstaller.install(config: "base", image: file, cpus: 6, memoryGB: 8, diskGB: 128)
-            try await Images.build(platform: .linux, layer: "vanilla", from: "base", script: nil, copies: [])
+            try await BuildPlace.holding(platform: .linux, layer: "base", from: "base", wait: true, label: "component: Ubuntu base") { _ in
+                try await LinuxInstaller.install(config: "base", image: file, cpus: 6, memoryGB: 8, diskGB: 128)
+            }
+            try await Self.build(.linux)
         case "windows":
             GuestPasswords.ensure(.windows)
             var iso = file
             if iso == nil { iso = try await WindowsISO.download().path }
-            try await WindowsInstaller.install(config: "base", iso: iso ?? "", cpus: 6, memoryGB: 8, diskGB: 128)
-            try await Images.build(platform: .windows, layer: "vanilla", from: "base", script: nil, copies: [])
+            try await BuildPlace.holding(platform: .windows, layer: "base", from: "base", wait: true, label: "component: Windows base") { _ in
+                try await WindowsInstaller.install(config: "base", iso: iso ?? "", cpus: 6, memoryGB: 8, diskGB: 128)
+            }
+            try await Self.build(.windows)
         case "android":
             try await Emulators.setup(api: 35, tag: "google_apis")
             try await Emulators.build(config: "phone", api: 35, tag: "google_apis", script: nil)
