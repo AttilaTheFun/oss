@@ -123,3 +123,35 @@ func status(_ platform: Platform, limit: Int, leased: Int) -> Status {
     #expect(none?.message.contains("no oss server answered") == true)
     await #expect(throws: OSSError.self) { try await OSSGrantClient.resolving("v1/machines/a1/exec", servers: servers, transport: fake) }
 }
+
+/// A server that fails its first hellos (busy), then answers: what each try waited is kept.
+struct SlowHello: OSSTransport {
+    let failures: Int
+    final class Tries: @unchecked Sendable {
+        let lock = NSLock()
+        var waits: [TimeInterval] = []
+        func add(_ wait: TimeInterval) -> Int { lock.lock(); defer { lock.unlock() }; waits.append(wait); return waits.count }
+    }
+    let tries = Tries()
+
+    func send(_ request: OSSHTTPRequest) async throws -> OSSHTTPResponse {
+        let count = tries.add(request.timeout)
+        guard count > failures else { throw OSSError(status: 0, message: "timed out") }
+        return OSSHTTPResponse(status: 200, headers: [:], body: Data(#"{"server":"oss","host":"here"}"#.utf8))
+    }
+}
+
+@Test func helloIsAskedAgainWithLongerWaits() async throws {
+    let slow = SlowHello(failures: 2)
+    let server = try await OSSClient.firstAnswering([URL(string: "http://127.0.0.1:7480")!], transport: slow)
+    #expect(server.host == "127.0.0.1")
+    #expect(slow.tries.waits == OSSClient.helloWaits)
+}
+
+@Test func helloGivesUpAfterEveryWait() async {
+    let slow = SlowHello(failures: 10)
+    await #expect(throws: OSSError.self) {
+        _ = try await OSSClient.firstAnswering([URL(string: "http://127.0.0.1:7480")!], transport: slow, waits: [0.1, 0.2])
+    }
+    #expect(slow.tries.waits == [0.1, 0.2])
+}

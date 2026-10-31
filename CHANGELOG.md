@@ -2,6 +2,14 @@
 
 ## 0.14.0 (unreleased)
 
+- **A busy server still says hello**: `/v1/hello` is answered by the
+  API's listener at once, without waiting for a task, and a client asks
+  this computer's server again with longer waits (4, 10, 15 s) before
+  "no oss server answered". Under load (machines starting, a run of
+  xctest) a hello could wait past the client's 4 s, which failed CI jobs at
+  their first call. A request that waited more than 2 s for a thread, and
+  the server's tasks waking late, are logged, so what holds Swift's threads
+  shows in OS Server's log.
 - **CI's jobs in containers, for the repositories named** (API 13; the
   first step of TODO.md's "CI runners in containers"): with a GitHub
   App's id and key in `~/.config/oss/ci-github-app.json` and
