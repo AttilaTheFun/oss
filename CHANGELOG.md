@@ -2,6 +2,45 @@
 
 ## 0.14.0 (unreleased)
 
+- **CI's jobs in containers, for the repositories named** (API 13; the
+  first step of TODO.md's "CI runners in containers"): with a GitHub
+  App's id and key in `~/.config/oss/ci-github-app.json` and
+  `ci-github-app.pem` (mode 600, refused otherwise) and server.json's
+  `"ci": {"repositories": [...], "labels": {...}}`, OS Server asks GitHub
+  every few seconds (as the App: an RS256 JWT, then each installation's
+  token, kept until near its end; conditionally, by ETag, so an unchanged
+  answer costs no rate limit; backing off on errors and rate limits) for
+  each repository's queued and running runs and their queued jobs. A job
+  that asks for `self-hosted` and the repository's label (`<name>-ci`
+  unless server.json gives another) gets a just-in-time runner of its own
+  (`generate-jitconfig`, named `oss-<lease>`, the job's labels) in a
+  container lease of kind `ci`, labelled with its repository, run and job,
+  of Visor's agent image with GitHub's runner (2.338.2, checked by its
+  SHA-256) and `oss` for Linux put in it, run `run.sh --jitconfig`. It
+  runs one job and exits; its container goes, and whatever the job leased
+  and stored with it. A runner no job came to in 10 minutes is given up and
+  its registration deleted; a job still queued after its runner failed is
+  tried again (three runners at most). At most `maxConcurrent` jobs at once
+  (one for every 8 cores and 32 GB, at most half the container capacity,
+  unless set), the rest waiting in the order GitHub queued them. Without
+  the App's files, or without `ci`, nothing changes.
+- **A CI job's grant** (API 13): the job's container holds no token of
+  the server's, only `OSS_GRANT`, a grant's URL in the job's name
+  (`<job>-<run>@ci`), which `oss` there uses as its key: leasing, using
+  and releasing machines (its own alone), storage, and the Bazel cache's
+  read token; not grants, keys, volumes or the server's status. It works
+  while the job's runner does, and what it leased and stored is released
+  with it.
+- **`oss ci list`** and **`GET /v1/ci/jobs`** (API 13): the jobs OS
+  Server took, newest first: repository, workflow, job, its page and its
+  run's, state (queued, starting, listening, running, completed with
+  GitHub's result, unclaimed, skipped or failed), how long it waited and
+  ran, its lease; 404 `noCI`, saying why, from a server that runs none.
+  `capabilities` says `ci` where it does.
+- **`oss` for Linux in a job's container** is built by OS Server itself,
+  once for each version of its sources (which OS Server.app carries in
+  `Resources/oss-source`), in a container of the jobs' image, and kept in
+  its folder's `CI/`.
 - **An iOS lease while simctl can't list the simulators** (it failed or
   timed out: Xcode mid-update, CoreSimulator waiting on its first launch)
   is refused with why (400 `noInventory`), and OS Server's log says so,

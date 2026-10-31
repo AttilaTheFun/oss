@@ -16,6 +16,45 @@ struct GrantClaims: Codable, Sendable, Equatable {
     var objectTTL: TimeInterval?
 }
 
+/// The CI jobs' grants that work now (API 13), by their runner's lease: a
+/// job's grant works while its runner's lease lasts, and not once CI has
+/// taken it back (its runner ended) or the server started again.
+final class JobGrants: @unchecked Sendable {
+    private let lock = NSLock()
+    private var live: Set<String> = []
+
+    func open(_ lease: String) { lock.withLock { _ = live.insert(lease) } }
+    func close(_ lease: String) { lock.withLock { _ = live.remove(lease) } }
+    func isOpen(_ lease: String) -> Bool { lock.withLock { live.contains(lease) } }
+}
+
+/// What a CI job's grant opens (API 13): what a job's scripts do with
+/// `oss` — machines leased, used and released, objects stored and read,
+/// the Bazel cache's read token — in its holder's name; the leases it names
+/// must be the holder's (Server.route). Never keys, grants of its own,
+/// volumes, usage or the server's status.
+enum JobGrantRoutes {
+    static func allows(_ method: String, _ parts: [String]) -> Bool {
+        guard parts.first == "v1", parts.count >= 2 else { return false }
+        switch (method, parts[1], parts.count) {
+        case ("GET", "machines", 2), ("POST", "machines", 2): return true
+        case ("GET", "machines", 3), ("DELETE", "machines", 3): return true
+        case ("POST", "machines", 4): return ["renew", "simctl", "adb", "input", "install", "exec", "xctest"].contains(parts[3])
+        case ("GET", "machines", 4): return ["screenshot", "files"].contains(parts[3])
+        case ("PUT", "machines", 4): return parts[3] == "files"
+        case ("PUT", "machines", 5): return parts[3] == "files"
+        case ("GET", "machines", 6): return parts[3] == "xctest" && ["junit", "result"].contains(parts[5])
+        case ("PUT", "storage", 3): return parts[2] == "objects"
+        case ("GET", "storage", 4), ("HEAD", "storage", 4): return parts[2] == "objects"
+        case ("GET", "storage", 3): return parts[2] == "leases"
+        case ("POST", "storage", 5): return parts[2] == "leases" && parts[4] == "renew"
+        case ("DELETE", "storage", 4): return parts[2] == "leases"
+        case ("GET", "cache", 2): return true
+        default: return false
+        }
+    }
+}
+
 #if canImport(CryptoKit)
 /// Grants (`POST /v1/grants`): a URL that does one thing without the API's
 /// token, for a client that has only it (an agent in a container, its
@@ -70,6 +109,36 @@ struct GrantKey: Sendable {
               let claims = try? JSONDecoder().decode(GrantClaims.self, from: payload),
               claims.verb == verb, claims.resource == resource, TimeInterval(claims.expires) > now.timeIntervalSince1970 else { return nil }
         return claims
+    }
+
+    /// A CI job's grant's verb (API 13): its resource is its runner's lease
+    /// (`machines/<id>`), its holder the job's.
+    static let jobVerb = "ci.job"
+    /// A job's grant expires after this whatever happens, though it stops
+    /// working sooner, when its runner's lease ends (JobGrants).
+    static let jobTTL: TimeInterval = 3 * 24 * 60 * 60
+
+    /// A CI job's grant: what its scripts lease, use and store in `holder`'s
+    /// name (JobGrantRoutes), while `runner` (its runner's lease) is open in
+    /// `live`. Its URL is on `base`, the server as the job's container
+    /// reaches it. Opened here; CI closes it when the runner ends.
+    func issueJob(holder: String, runner: String, base: String, live: JobGrants, now: Date = Date()) throws -> URL {
+        let claims = GrantClaims(verb: Self.jobVerb, resource: "machines/\(runner)", holder: holder,
+                                 expires: Int(now.addingTimeInterval(Self.jobTTL).timeIntervalSince1970))
+        guard let url = URL(string: "\(base)/v1/machines?grant=\(token(claims))") else { throw APIError(error: "no URL from \(base)") }
+        live.open(runner)
+        log("grant: \(Self.jobVerb) for \(holder), while lease \(runner) lasts")
+        return url
+    }
+
+    /// The claims, if `token` is a CI job's grant of this server's whose
+    /// runner's lease is still open; nil otherwise.
+    func verifyJob(_ token: String, live: JobGrants, now: Date = Date()) -> GrantClaims? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2, let payload = Data(base64URL: String(parts[0])),
+              let claims = try? JSONDecoder().decode(GrantClaims.self, from: payload), claims.verb == Self.jobVerb,
+              claims.resource.hasPrefix("machines/"), live.isOpen(String(claims.resource.dropFirst("machines/".count))) else { return nil }
+        return verify(token, verb: Self.jobVerb, resource: claims.resource, now: now)
     }
 
     /// The verb and resource a request would take a grant for: nil on a

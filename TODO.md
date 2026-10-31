@@ -112,6 +112,37 @@ it and deleted when it ends.
 - Order: before the primary VMs (it needs no new Mac): the poller and JIT
   runners for one repository beside its old runner (a label of its own),
   then every repository, the CI view, then retiring the old runners.
+- **Done (first step)**: the poller and JIT runners, for the repositories
+  server.json's `ci` names (each with a label of its own, `gh_mcp-oss`
+  beside `gh_mcp-ci` for the first trial); the App's JWT and installation
+  tokens (Security's RS256); queued and running runs and their jobs by
+  ETag; a runner a job in a `ci` container lease of the agent image, with
+  GitHub's runner (pinned, checked) and oss for Linux (built by OS Server
+  from the sources the app carries); the unclaimed runner given up and
+  deleted; `maxConcurrent` and GitHub's order; `oss ci list` and
+  `GET /v1/ci/jobs`; a job's grant (`OSS_GRANT`) that leases, uses and
+  releases machines and stores objects in the job's name while its runner
+  lasts, all released with it (API 13).
+- **Next**, in order:
+  - Try it on gh_mcp: its workflow on `[self-hosted, gh_mcp-oss]` in a
+    branch, the App made and installed, its two files in place; then
+    move gh_mcp to it and retire its old runner.
+  - Every repository: server.json's list from the App's installations
+    (each repository's label `<name>-ci`, the labels workflows use today),
+    which means turning each old runner off as its repository moves.
+  - What a job's grant can't do yet: the Bazel cache's write for a push to
+    the default branch (it reads only), grants of its own (for an agent
+    in a container beneath it), and a limit on what a job may lease.
+  - Runners that outlive OS Server's restart (the runner in the container's
+    own process, its output read back), and the job records kept on disk:
+    a restart today ends the running jobs and forgets the list.
+  - A job's container's CPU, memory and disk over time in `/v1/ci/jobs`,
+    its branch or pull request in the list, and the CI view in OS
+    Server's window (a later pull request).
+  - Bumping the pinned runner (GitHub refuses runners more than a few
+    versions old): a check in CI that says when a newer one is out.
+  - VMs as runner hosts (macOS, Windows, Ubuntu), later: `CIRunnerHost`
+    is the seam.
 
 ## Storage
 

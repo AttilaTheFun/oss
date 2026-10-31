@@ -62,6 +62,9 @@ enum Paths {
     static let storageLeases = "\(state)/storage-leases.json"
     /// The key grants are signed with (Grants), made the first time.
     static let grantKey = "\(config)/grant-key"
+    /// What CI's jobs are run with (CIRunnerKit): GitHub's runner, as
+    /// downloaded, and the Linux command line, as built.
+    static let ci = "\(share)/CI"
 
     /// OS Server's own SSH key, which its bases trust (made the first time
     /// it's needed). A server set up before 0.9 keeps using the user's
@@ -196,6 +199,9 @@ struct ServerConfig: Codable, Sendable {
     /// Server hasn't got of its own): by default, where UTM is installed (a
     /// server set up before 0.9). OS Server makes its own bases without it.
     var useUTM: Bool = FileManager.default.fileExists(atPath: "/Applications/UTM.app")
+    /// CI's jobs in containers (CISettings): the repositories it runs them
+    /// for. Off without it, or without the GitHub App's files.
+    var ci: CISettings?
 
     init() {}
 
@@ -224,6 +230,7 @@ struct ServerConfig: Codable, Sendable {
         headlessVMs = try c.decodeIfPresent(Bool.self, forKey: .headlessVMs) ?? d.headlessVMs
         lends = try c.decodeIfPresent([Platform].self, forKey: .lends)
         useUTM = try c.decodeIfPresent(Bool.self, forKey: .useUTM) ?? d.useUTM
+        ci = try c.decodeIfPresent(CISettings.self, forKey: .ci)
     }
 
     func lends(_ platform: Platform) -> Bool { lends?.contains(platform) ?? true }
@@ -262,6 +269,8 @@ struct ClientConfig: Codable, Sendable {
         if let env = environment["OSS_SERVERS"] {
             return ClientConfig(servers: env.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) })
         }
+        // A CI job's grant names its server.
+        if let server = JobGrantEnvironment.server(environment) { return ClientConfig(servers: [server]) }
         guard let data = FileManager.default.contents(atPath: Paths.clientConfig),
               let config = try? JSONDecoder().decode(ClientConfig.self, from: data) else { return ClientConfig() }
         return config
@@ -269,13 +278,15 @@ struct ClientConfig: Codable, Sendable {
 }
 
 enum Token {
-    /// What a client shows the API, as it finds it: an API key
-    /// (`OSS_API_KEY`, else `~/.config/oss/key`), else the shared token
-    /// (`OSS_TOKEN`, else `~/.config/oss/token`, else on the server's own
-    /// computer the server's), which stands for the `user` application
-    /// through 0.14.
+    /// What a client shows the API, as it finds it: a CI job's grant
+    /// (`OSS_GRANT`, API 13: what a job's container has, and nothing
+    /// else), else an API key (`OSS_API_KEY`, else `~/.config/oss/key`),
+    /// else the shared token (`OSS_TOKEN`, else `~/.config/oss/token`, else
+    /// on the server's own computer the server's), which stands for the
+    /// `user` application through 0.14.
     static func read() -> String? {
         let environment = ProcessInfo.processInfo.environment
+        if let grant = JobGrantEnvironment.token(environment) { return grant }
         if let key = environment["OSS_API_KEY"], !key.isEmpty { return key }
         if let key = file(Paths.clientKey) { return key }
         if let env = environment["OSS_TOKEN"], !env.isEmpty { return env }
@@ -304,6 +315,40 @@ enum Token {
         FileManager.default.createFile(atPath: Paths.token, contents: Data((token + "\n").utf8),
                                        attributes: [.posixPermissions: 0o600])
         return token
+    }
+}
+
+/// A CI job's grant (API 13) as its container's environment carries it:
+/// `OSS_GRANT`, a URL on the job's server
+/// (`http://<host>:7480/v1/machines?grant=…`). The client sends the grant
+/// as its bearer to that server (unless OSS_SERVERS names others), and acts
+/// for the grant's holder, the job (`<job>-<run>@ci`): the server holds it
+/// to that holder whatever the client says.
+enum JobGrantEnvironment {
+    static func url(_ environment: [String: String]) -> URLComponents? {
+        guard let text = environment["OSS_GRANT"]?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
+              let components = URLComponents(string: text), components.host?.isEmpty == false else { return nil }
+        return components
+    }
+
+    /// The grant itself: its URL's `grant`.
+    static func token(_ environment: [String: String]) -> String? {
+        guard let value = url(environment)?.queryItems?.first(where: { $0.name == "grant" })?.value, !value.isEmpty else { return nil }
+        return value
+    }
+
+    /// Its server: the URL's scheme, host and port.
+    static func server(_ environment: [String: String]) -> String? {
+        guard let url = url(environment), token(environment) != nil, let host = url.host else { return nil }
+        return "\(url.scheme ?? "http")://\(host.contains(":") ? "[\(host)]" : host)" + (url.port.map { ":\($0)" } ?? "")
+    }
+
+    /// Whom it acts for, as its claims say (read, not checked: the server
+    /// checks them).
+    static func holder(_ environment: [String: String]) -> String? {
+        guard let token = token(environment), let payload = token.split(separator: ".").first,
+              let data = Data(base64URL: String(payload)), let claims = try? JSONDecoder().decode(GrantClaims.self, from: data) else { return nil }
+        return claims.holder
     }
 }
 

@@ -997,7 +997,11 @@ public final class ServerHost: Sendable {
         #if os(macOS)
         Task { await Components.shared.attach(containers: containers) { platform in await machines.held(platform) } }
         #endif
-        let api = API(machines: machines, token: token, cache: cache, storage: storage, grants: GrantKey.ensure())
+        let grants = GrantKey.ensure(), jobGrants = JobGrants()
+        // CI's jobs in containers, where the GitHub App's files and server.json's `ci` say so.
+        let (ci, ciOff) = makeCI(config: config, machines: machines, storage: storage, grants: grants, jobGrants: jobGrants)
+        let api = API(machines: machines, token: token, cache: cache, storage: storage, grants: grants, jobGrants: jobGrants, ci: ci,
+                      ciOff: ciOff)
         let http = try HTTPServer(port: config.port, streams: Server.streams, streamer: { request, peer in
             await Server.stream(request, peer, api: api)
         }) { request in
@@ -1022,6 +1026,8 @@ public final class ServerHost: Sendable {
         // waiting on a permission prompt): the API serves meanwhile.
         Task {
             await machines.recover()
+            // CI once the leases are back: a runner's a restart left is released.
+            if let ci { Task { await ci.start() } }
             #if canImport(Virtualization)
             // UTM's macOS bases become OS Server's own (0.7's first start takes them all).
             if config.useUTM && config.lends(.macos) { await MacImport.fromUTMWhereMissing() }
@@ -1143,7 +1149,8 @@ enum Server {
         func reached(_ lease: Lease) -> Lease { Self.addressed(lease, host: host) }
         if parts == ["v1", "capabilities"] {
             let platforms = ((try? await machines.bases()) ?? []).map(\.platform)
-            return .json(Capabilities(version: OSS.version, api: OSS.apiLevel, features: OSS.features + (cache == nil ? [] : ["cache"]),
+            return .json(Capabilities(version: OSS.version, api: OSS.apiLevel,
+                                      features: OSS.features + (cache == nil ? [] : ["cache"]) + (api.ci == nil ? [] : ["ci"]),
                                       platforms: Platform.allCases.filter { platforms.contains($0) && visible($0) }))
         }
         if parts == ["v1", "hello"] {
@@ -1154,6 +1161,17 @@ enum Server {
         if case .refused(let response) = access { return response }
         var monitor = false
         if case .monitor = access { monitor = true }
+        // A CI job's grant reaches its own holder's leases alone (API 13):
+        // another's is 404, as storage's are.
+        var job: String?
+        if case .grant(let claims) = access, claims.verb == GrantKey.jobVerb {
+            job = claims.holder
+            if parts.count >= 3, parts[1] == "machines" {
+                guard let lease = await machines.lease(parts[2]), lease.holder == claims.holder else {
+                    return .json(APIError(error: "no lease \(parts[2]) of \(claims.holder)'s", code: "notFound"), status: 404)
+                }
+            }
+        }
         do {
             if let response = try await storageRoute(request, parts, access: access, api: api) { return response }
             if parts.count >= 2, parts[1] == "keys" { return try keysRoute(request, parts, access: access, api: api) }
@@ -1192,7 +1210,14 @@ enum Server {
                 asked.holder = Self.actingHolder(access, request, named: asked.holder)
                 return .json(reached(try await machines.lease(asked, local: LocalNetworks.isThisMac(request.remoteAddress))), status: 201)
             case ("GET", 2) where parts[1] == "machines":
-                return .json(await machines.all().filter { visible($0.platform) }.map(reached))
+                return .json(await machines.all().filter { visible($0.platform) && (job == nil || $0.holder == job) }.map(reached))
+            case ("GET", 3) where parts[1] == "ci" && parts[2] == "jobs":
+                // CI's jobs (API 13), with the token or a key.
+                guard access.mayAct else { return .error("CI's jobs are read with the API's token or a key", status: 403) }
+                guard let ci = api.ci else {
+                    return response(for: APIError(error: "this server runs no CI jobs: \(api.ciOff ?? "it has no CI")", code: "noCI"))
+                }
+                return .json(await ci.list())
             case ("GET", 3) where parts[1] == "machines":
                 guard let lease = await machines.lease(parts[2]), visible(lease.platform) else { return .error("no lease \(parts[2])", status: 404) }
                 return .json(reached(lease))

@@ -13,6 +13,11 @@ struct API: Sendable {
     let storage: StorageStore
     let grants: GrantKey
     var keys = APIKeys()
+    /// The CI jobs' grants that work now (API 13).
+    var jobGrants = JobGrants()
+    /// CI's jobs, where this server runs them; why not, where it doesn't.
+    var ci: CIService?
+    var ciOff: String?
 }
 
 /// Who a request comes from: the API's shared token (anything, for any
@@ -78,7 +83,7 @@ extension Server {
         switch error.code {
         case "busy", "notReady": status = 409
         case "notLocal", "forbidden": status = 403
-        case "notFound", "noObject", "noFile": status = 404
+        case "notFound", "noObject", "noFile", "noCI": status = 404
         case "quota": status = 413
         case "length": status = 411
         case "upgrade": status = 426
@@ -93,11 +98,14 @@ extension Server {
     static func access(_ request: HTTPRequest, _ parts: [String], api: API) -> Access {
         let authorization = request.header("authorization")
         if authorization == nil, let grant = request.query["grant"] {
-            guard let use = GrantKey.use(request.method, parts),
-                  let claims = api.grants.verify(grant, verb: use.verb, resource: use.resource) else {
-                return .refused(.error("this grant doesn't allow that", status: 403))
+            if let use = GrantKey.use(request.method, parts), let claims = api.grants.verify(grant, verb: use.verb, resource: use.resource) {
+                return .grant(claims)
             }
-            return .grant(claims)
+            // A CI job's, on any route it opens (API 13).
+            if JobGrantRoutes.allows(request.method, parts), let claims = api.grants.verifyJob(grant, live: api.jobGrants) {
+                return .grant(claims)
+            }
+            return .refused(.error("this grant doesn't allow that", status: 403))
         }
         // An application's key, in its own header or as the bearer.
         if let key = request.header(OSSHeaders.apiKey), !key.isEmpty {
@@ -107,6 +115,12 @@ extension Server {
         let given = authorization?.replacingOccurrences(of: "Bearer ", with: "") ?? ""
         if constantTimeEqual(given, api.token) { return .token }
         if let application = api.keys.application(for: given) { return .key(application) }
+        // A CI job's grant as its bearer (API 13): what `oss` in the job's
+        // container sends (OSS_GRANT), on the routes it opens.
+        if let claims = api.grants.verifyJob(given, live: api.jobGrants) {
+            guard JobGrantRoutes.allows(request.method, parts) else { return .refused(.error("a CI job's grant doesn't allow that", status: 403)) }
+            return .grant(claims)
+        }
         // The monitor token (OS Monitor's) reads and does nothing else.
         guard constantTimeEqual(given, MonitorAccess.token()) else { return .refused(.error("unauthorized", status: 401)) }
         guard MonitorAccess.allows(request.method, parts) else { return .refused(.error("OS Monitor's token only reads", status: 403)) }
@@ -134,6 +148,9 @@ extension Server {
             return base.map { $0 + suffix } ?? application
         case .token:
             return given.map { $0 + "@user" } ?? named
+        case .grant(let claims):
+            // A grant acts for its own holder alone (a CI job's: the job).
+            return claims.holder
         default:
             return named
         }
@@ -221,7 +238,7 @@ extension Server {
     private static func put(_ request: HTTPRequest, access: Access, body: some RequestBody, api: API) async throws -> HTTPResponse {
         let holder = try Self.holder(access, request)
         let name: String?, ttl: TimeInterval
-        if case .grant(let claims) = access {
+        if case .grant(let claims) = access, claims.verb != GrantKey.jobVerb {
             // What the grant gives: its URL's own query can't change it.
             name = claims.name
             ttl = claims.objectTTL ?? StorageStore.defaultTTL
@@ -271,7 +288,7 @@ extension Server {
         var allowed = false
         if let holder, await api.storage.holds(holder, hash) {
             allowed = true
-        } else if case .grant = access {
+        } else if case .grant(let claims) = access, claims.verb != GrantKey.jobVerb {
             // Issued for a served file only to an asker who could read it.
             allowed = api.storage.isServed(hash)
         } else {

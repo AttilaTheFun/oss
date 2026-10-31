@@ -416,6 +416,100 @@ SHA-256) take it:
     --inside --cache=<this Mac's tailnet name> -- bazel test //...
 ```
 
+### CI in OS Server's containers (0.14)
+
+OS Server can run a repository's GitHub Actions jobs itself, each in a
+container of its own, with no runner to register by hand: it finds the
+queued jobs that ask for a label it serves, makes a just-in-time runner
+for each (one job, then it exits) in a container lease of kind `ci`, and
+deletes the container when the job ends. For now it does so for the
+repositories server.json names, beside any runner they have already.
+
+1. **A GitHub App** of the repositories' owner (Settings › Developer
+   settings › GitHub Apps): repository permissions Actions read,
+   Administration read and write (a just-in-time runner is a repository's
+   runner) and Metadata read; no webhook (OS Server has no public address:
+   it polls). Install it on the repositories.
+2. **Its two files**, on the server's Mac, each mode 600 (OS Server refuses
+   one anyone else may read): `~/.config/oss/ci-github-app.json`,
+   `{"appId": 123456}` (and, if you like, `"repositories": ["owner/name",
+   …]`, the most it may serve, and `"maxConcurrent": N`), and the App's
+   private key beside it, `~/.config/oss/ci-github-app.pem`.
+3. **server.json**'s `ci`, the repositories it runs jobs for and the label
+   each one's jobs ask for (`<name>-ci` where none is given):
+
+   ```json
+   {"ci": {"repositories": ["owner/gh_mcp"], "labels": {"owner/gh_mcp": "gh_mcp-oss"}}}
+   ```
+
+   Also `maxConcurrent` (jobs at once: by default one for every 8 cores and
+   32 GB, at most half the containers it lends, at least one), `image` (the
+   jobs' image: Visor's agent image), `cpus` and `memoryGigabytes` (each
+   job's container: 4 and 8), `pollSeconds` (5), `unclaimedMinutes` (10)
+   and `serverURL` (the server as a job's container reaches it: by default
+   this Mac's address on the containers' network).
+4. OS Server started again. Its log says `ci: running GitHub Actions jobs
+   for …`, or why CI is off; `oss ci list` too.
+
+A workflow's job runs there by asking for `self-hosted` and the label, and
+nothing else:
+
+```yaml
+jobs:
+  test:
+    runs-on: [self-hosted, gh_mcp-oss]
+    steps:
+      - uses: actions/checkout@v5
+      - run: swift test
+      - run: oss machine run macos --config=xcode-27.0 -- ci/test-in-vm.sh   # a VM, leased in the job's name
+```
+
+- **How it finds them**: every few seconds, each repository's queued and
+  running workflow runs (`GET /repos/{repo}/actions/runs?status=…`) and
+  their jobs, each asked again with the last answer's ETag, so an
+  unchanged answer costs no rate limit; a failed look waits longer each
+  time (what GitHub's rate limit says, else up to five minutes).
+- **A runner a job**: `generate-jitconfig` (named `oss-<lease>`, the job's
+  labels, the default runner group) in a container leased for it (kind
+  `ci`, labelled `oss.ci.repository`, `oss.ci.run` and `oss.ci.job`, linked
+  to the job's page), with GitHub's runner for Linux on arm64 (pinned and
+  checked by its SHA-256, downloaded once) and `oss` for Linux in it, run
+  `run.sh --jitconfig` as the image's user. A job still queued when its
+  turn comes gets one; one cancelled, or taken by another runner, meanwhile
+  is skipped. A runner no job came to in `unclaimedMinutes` (GitHub gave it
+  to another) is given up, its container released and its registration
+  deleted; a job still queued after its runner failed gets another, three
+  at most. At most `maxConcurrent` at once, across repositories, the rest
+  waiting in the order GitHub queued them; one waits too while the server's
+  containers are all leased.
+- **What a job may do**: its container holds no token or key of the
+  server's, nor the App's. Its runner (and so each step) has `OSS_GRANT`, a
+  grant's URL in the job's name (`<job>-<run>@ci`), which `oss` there
+  uses in place of a key: it leases, uses, renews and releases machines
+  (its own alone: another's is 404), puts and gets objects in storage, and
+  reads the Bazel cache's token; it makes no grants and reads no keys,
+  volumes or status. It works while the job's runner does; the job's
+  leases and objects are released when it ends. A container leased from
+  the job can't share a folder of the server's Mac (`--mount`): put files
+  in with `oss machine upload` or on its standard input. `oss` is on the
+  runner's PATH (`~/.local/bin/oss`): a script finds it by `command -v oss`
+  where `/Applications/OS Server.app` isn't.
+- **`oss` for Linux** is built by OS Server itself from the sources OS
+  Server.app carries (`Resources/oss-source`; a checkout's with
+  `OSS_REPO`), once for each version of them, in a container of the jobs'
+  image, and kept in its folder's `CI/` with GitHub's runner: the first job
+  after an update waits a few minutes for it.
+- **Seen**: `oss ci list` (`--json`), or `GET /v1/ci/jobs`: each job's
+  repository, workflow, name, page and run, state, how long it waited and
+  ran, and its lease, newest first, for a week. Its leases show in `oss
+  status` and OS Server's window as any other `ci` lease.
+- **Not yet**: a restart of OS Server ends the jobs running (their runners
+  ran in its process's exec; GitHub fails them, and the runners' leases a
+  restart leaves are released); jobs on VM runners; OS Server's window.
+  Fork pull requests: a public repository's workflows keep them off
+  self-hosted runners (`if: github.event.pull_request.head.repo.full_name
+  == github.repository`), as with any.
+
 ### A Bazel cache
 
 With `"cache"` in its settings (below), the server keeps a [Bazel remote
@@ -590,7 +684,9 @@ Monitor's, from its connection code) is accepted for `GET /v1/status`,
 `/v1/usage`, `/v1/usage/history`, `/v1/volumes` and `/v1/cache` (without
 the cache's read token) and refused for everything else. A grant's URL
 (`?grant=…`, from `POST /v1/grants`) needs no token, on the one route it
-was made for. A storage request names its holder in an `OSS-Holder`
+was made for; a CI job's grant (API 13, its container's `OSS_GRANT`) as
+its bearer, or as `?grant=`, on the routes a job's scripts use, in the
+job's name, while its runner lasts. A storage request names its holder in an `OSS-Holder`
 header (a grant's is its own); a holder sees and changes only its own
 leases, and another's are 404. So does a request for a container's exec or
 files with the token (API 9), and for an iOS lease's tests and their
@@ -616,6 +712,7 @@ containers, which it couldn't read.
 | `POST /v1/machines/<id>/input` `{"action": "tap"\|"swipe"\|"type"\|"key", "x"?, "y"?, "toX"?, "toY"?, "milliseconds"?, "text"?, "key"?}` | a tap, swipe, text or key on its screen, in its screenshot's pixels |
 | `GET /v1/usage` | the server's CPU and memory, and each lease's (its processes on the Mac; 100% CPU is one core), against what it was given (and from API 8 its `kind`); from API 5 also OS Server's share (`ours`), everyone else's (`others`), the disk and OS Server's files on it (`disk`), and the other apps using the most (`topProcesses`) |
 | `GET /v1/usage/history` | the last day of the server's Mac, a sample a minute: CPU, memory and disk, OS Server's and everyone else's |
+| `GET /v1/ci/jobs` | CI's jobs (API 13), newest first: each one's `id`, `repository`, `workflow`, `name`, `runID`, `url`, `runURL`, `branch`, `commit`, `labels`, `state` (`queued`, `starting`, `listening`, `running`, `completed`, `unclaimed`, `skipped`, `failed`), `queued`, `started`, `ended`, `waited` and `ran` (seconds), `lease`, `runner`, `result` (GitHub's), `error`; 404 `noCI`, saying why, from a server that runs none. With the token or a key |
 | `GET /v1/volumes`, `DELETE /v1/volumes/<name>` | containers' volumes (size, disk taken, the lease using one and its `kind`); a kept one deleted (from the server's Mac) |
 | `GET /v1/cache` | the Bazel cache's port and read token, its size and how many lookups it answered (404 without one) |
 | `HEAD /v1/storage/objects/<sha256>` | 200 with its `Content-Length` if the store has it, else 404 |
@@ -783,6 +880,13 @@ Storage's caps (the store is kept without them, at these):
 
 ```json
 {"storage": {"maxGigabytes": 100, "maxGigabytesPerHolder": 20}}
+```
+
+CI's jobs in its containers (off without `"ci"`, or without the GitHub
+App's files: "CI in OS Server's containers", above):
+
+```json
+{"ci": {"repositories": ["owner/name"], "labels": {"owner/name": "name-oss"}, "maxConcurrent": 2}}
 ```
 
 `"lends": ["macos"]` lends only those platforms, and leaves every other

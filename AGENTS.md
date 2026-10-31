@@ -136,6 +136,30 @@ only its populate job writes it. Build with your repository's own flags
 (the cache matches exact command lines). Never print a cache token: `oss
 cache token` only ever piped into what keeps it.
 
+## CI jobs in OS Server's containers (0.14)
+
+A server with a GitHub App (`~/.config/oss/ci-github-app.json` and `.pem`
+on its Mac, mode 600) and server.json's `ci` runs the named repositories'
+jobs that ask for `[self-hosted, <its label>]` itself: a just-in-time
+runner a job, in a container lease of kind `ci` (Visor's agent image),
+deleted when the job ends (README.md, "CI in OS Server's containers").
+`oss ci list` shows them. For now one repository's trial label
+(`gh_mcp-oss`) beside its old runner (`gh_mcp-ci`); every repository and
+retiring the old runners are next (TODO.md).
+
+- **In such a job** there is no token or key: `OSS_GRANT` (a grant's URL,
+  the job's `<job>-<run>@ci`) is what `oss` uses, and only while the job
+  runs. Lease, use and release machines, put and get objects, read the
+  cache's token, as anywhere; whatever the job leased and stored is
+  released when it ends. No `--mount` (the job isn't on the server's Mac):
+  upload, or pipe files in. Scripts find `oss` by `command -v oss` where
+  `/Applications/OS Server.app` isn't (`~/.local/bin/oss` there).
+- **Never print `OSS_GRANT`**, the App's key or a token GitHub gave: the
+  server logs none of them.
+- Testing the poller and runners needs neither GitHub nor containers:
+  `Tests/OSSServerTests/CITests.swift` fakes both (`swift test --filter
+  CITests`, on Linux too).
+
 ## Reaching the server
 
 `oss` tries the servers in `~/.config/oss/client.json` in order (this
