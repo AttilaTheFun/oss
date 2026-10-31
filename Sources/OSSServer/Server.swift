@@ -71,15 +71,32 @@ actor MachineManager {
     let xctests: XCTestRuns
     /// The limits (Admission.swift) and the line of leases waiting for room.
     private var admission: AdmissionQueue
+    /// The Mac's processes (HostAccounting.swift), read every 15 seconds:
+    /// the breakdown the status shows, what isn't the leases' (which comes
+    /// out of the budget), and each lease's footprint.
+    private let processTable: ProcessTable
+    private var host: HostBreakdown?
+    private var cpuSample: HostAccounting.CPUSample?
+    private var leaseFootprints: [String: Int64] = [:]
 
     init(config: ServerConfig, bazelCache: (port: Int, readToken: String)? = nil, containers: ContainerBackend? = nil,
-         leasesPath: String = Paths.leases, xctests: XCTestRuns = XCTestRuns()) {
+         leasesPath: String = Paths.leases, xctests: XCTestRuns = XCTestRuns(), processTable: ProcessTable = MachineManager.macProcessTable) {
         self.config = config
         self.bazelCache = bazelCache
         self.containers = containers
         self.leasesPath = leasesPath
         self.xctests = xctests
         self.admission = AdmissionQueue(policy: config.leasePolicy())
+        self.processTable = processTable
+    }
+
+    /// This Mac's process table, where it can be read.
+    static var macProcessTable: ProcessTable {
+        #if os(macOS)
+        return LibprocTable()
+        #else
+        return NoProcessTable()
+        #endif
     }
 
     // MARK: Status
@@ -154,7 +171,8 @@ actor MachineManager {
     func capacity() -> [Capacity] {
         let held = heldDemands()
         return Platform.allCases.map { platform in
-            admission.policy.capacity(platform, held: held, typical: measure(platform, config: config.defaultConfig(platform), container: nil))
+            admission.policy.capacity(platform, held: held, typical: measure(platform, config: config.defaultConfig(platform), container: nil),
+                                      outside: outsideMemory)
         }
     }
 
@@ -163,8 +181,41 @@ actor MachineManager {
         admission.prune()
         let held = heldDemands()
         return LeaseBudget(memoryBytes: admission.policy.memoryBytes, leasedMemoryBytes: held.reduce(0) { $0 + $1.size.memoryBytes },
+                           outsideMemoryBytes: outsideMemory, hostLimitBytes: host == nil ? nil : admission.policy.hostLimitBytes,
                            leasedCPUs: held.reduce(0) { $0 + $1.size.cpus }, maxCPUs: admission.policy.maxCPUs,
                            waiting: admission.waiting())
+    }
+
+    /// The Mac by whom, as last sampled (nil where its processes can't be read).
+    func hostBreakdown() -> HostBreakdown? { host }
+
+    /// The Mac's processes read again: the breakdown, what isn't the
+    /// leases', and each lease's footprint.
+    func refreshHost() async {
+        let rows = await processTable.snapshot()
+        guard !rows.isEmpty else { return }
+        let held = leases.values.filter { $0.state != .failed }.sorted { $0.created < $1.created }
+        let disks = await DiskSizes.shared.leases(Dictionary(uniqueKeysWithValues: held.map { ($0.id, folder(of: $0)) }))
+        let space = await DiskSizes.shared.usage().map { DiskSpace(totalBytes: $0.totalBytes, freeBytes: $0.freeBytes) }
+        let hints = held.map { LeaseHint(lease: $0, allocatedBytes: countedSize($0).memoryBytes, diskBytes: disks[$0.id]) }
+        let result = HostAccounting.breakdown(rows, memoryUsed: processTable.memoryUsed(),
+                                              physicalMemory: Int64(clamping: ProcessInfo.processInfo.physicalMemory),
+                                              cpus: ProcessInfo.processInfo.activeProcessorCount, ourPID: getpid(), leases: hints,
+                                              previous: cpuSample, now: Date(), disk: space, allocatedBytes: processTable.allocatedBytes)
+        host = result.host
+        cpuSample = result.sample
+        leaseFootprints = result.leaseFootprints
+    }
+
+    /// What isn't the leases' (other VMs, other processes, OS Server
+    /// itself), as last sampled: it comes out of the budget.
+    private var outsideMemory: Int64 { host?.outsideMemoryBytes ?? 0 }
+
+    /// What the leases take now, each the more of its size and its
+    /// footprint (nil where the Mac's processes can't be read).
+    private var leasesInUse: Int64? {
+        guard host != nil else { return nil }
+        return leases.values.filter { $0.state != .failed }.reduce(0) { $0 + max(countedSize($1).memoryBytes, leaseFootprints[$1.id] ?? 0) }
     }
 
     /// The leases that hold room: every one but those failed.
@@ -301,7 +352,8 @@ actor MachineManager {
     func admit(_ request: LeaseRequest, config: String) throws -> LeaseSize {
         let size = measure(request.platform, config: config, container: request.build == nil ? request.container : nil)
         if let refusal = admission.decide(LeaseDemand(platform: request.platform, size: size), ticket: request.waitTicket, config: config,
-                                          holder: request.holder ?? "unknown", held: heldDemands()) {
+                                          holder: request.holder ?? "unknown", held: heldDemands(), outside: outsideMemory,
+                                          leasesInUse: leasesInUse) {
             throw APIError(error: refusal.message, code: refusal.code)
         }
         return size
@@ -1165,9 +1217,11 @@ public final class ServerHost: Sendable {
             }
         }
         Task {
+            await machines.refreshHost()
             while true {
                 try? await Task.sleep(for: .seconds(15))
                 await machines.expire()
+                await machines.refreshHost()
                 await machines.reviveMachines()
             }
         }
@@ -1316,7 +1370,8 @@ enum Server {
                                     capacity: await machines.capacity().filter { visible($0.platform) },
                                     leases: await machines.all().filter { visible($0.platform) }.map(reached),
                                     storage: await api.storage.info(),
-                                    budget: await machines.budget()))
+                                    budget: await machines.budget(),
+                                    host: await machines.hostBreakdown()))
             case ("GET", 2) where parts[1] == "usage":
                 var usage = await machines.usage()
                 usage.machines = usage.machines.filter { visible($0.platform) }

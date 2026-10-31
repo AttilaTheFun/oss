@@ -44,6 +44,10 @@ struct LeasePolicy: Sendable, Equatable {
     var memoryBytes: Int64
     var maxCPUs: Int
     var estimates: [Platform: LeaseSize]
+    /// The Mac's memory less its reserve (LeasePolicy.reserve): what the
+    /// leases' use and everything else's together stay under, whatever the
+    /// budget. Nil: not checked (a test's policy).
+    var hostLimitBytes: Int64? = nil
 
     /// The sizes taken where nothing measures a lease. A simulator is a few
     /// processes of the Mac's own (about 2 GB while it runs an app); an
@@ -67,8 +71,13 @@ struct LeasePolicy: Sendable, Equatable {
     /// out what doesn't fit, so this is what leases may take before they
     /// slow every one of them down, and the Mac with them.
     static func defaultMemory(_ physical: UInt64) -> Int64 {
+        max(0, Int64(clamping: physical) - reserve(physical))
+    }
+
+    /// What the Mac keeps for macOS and its own apps whatever the budget.
+    static func reserve(_ physical: UInt64) -> Int64 {
         let memory = Int64(clamping: physical)
-        return max(0, memory - min(max(16 << 30, memory / 4), memory / 2))
+        return min(max(16 << 30, memory / 4), memory / 2)
     }
 
     func estimate(_ platform: Platform) -> LeaseSize {
@@ -77,7 +86,11 @@ struct LeasePolicy: Sendable, Equatable {
 
     /// Why a lease can't be granted beside those held and what VMs and
     /// processes OS Server doesn't own take (`outside`), or nil if it can.
-    func refusal(_ demand: LeaseDemand, held: [LeaseDemand], outside: Int64 = 0) -> AdmissionRefusal? {
+    /// `leasesInUse`, where the server measures it: what its leases take
+    /// now, each the more of its size and its footprint, which with
+    /// `outside` and the lease must stay under `hostLimitBytes` (the Mac's
+    /// reserve kept, whatever the budget).
+    func refusal(_ demand: LeaseDemand, held: [LeaseDemand], outside: Int64 = 0, leasesInUse: Int64? = nil) -> AdmissionRefusal? {
         if demand.size.cpus > maxCPUs { return .tooManyCPUs(demand.size.cpus, max: maxCPUs) }
         if demand.size.memoryBytes > memoryBytes { return .tooBig(demand.size.memoryBytes, budget: memoryBytes) }
         if let cap = caps[demand.platform] {
@@ -87,6 +100,9 @@ struct LeasePolicy: Sendable, Equatable {
         let used = held.reduce(Int64(0)) { $0 + $1.size.memoryBytes }
         if used + outside + demand.size.memoryBytes > memoryBytes {
             return .memory(used: used, outside: outside, needs: demand.size.memoryBytes, budget: memoryBytes)
+        }
+        if let limit = hostLimitBytes, let leasesInUse, leasesInUse + outside + demand.size.memoryBytes > limit {
+            return .reserve(inUse: leasesInUse + outside, needs: demand.size.memoryBytes, limit: limit)
         }
         return nil
     }
@@ -128,6 +144,9 @@ indirect enum AdmissionRefusal: Sendable, Equatable {
     case memory(used: Int64, outside: Int64, needs: Int64, budget: Int64)
     case tooBig(Int64, budget: Int64)
     case tooManyCPUs(Int, max: Int)
+    /// What the leases and everything else use, what this needs, and the
+    /// Mac's memory less its reserve.
+    case reserve(inUse: Int64, needs: Int64, limit: Int64)
     /// It would fit, but would take room the oldest lease waiting needs:
     /// that lease's type and size, how long it has waited, and what would
     /// be full with room kept for it.
@@ -164,6 +183,9 @@ indirect enum AdmissionRefusal: Sendable, Equatable {
                 + "(\(LeaseSize.gigabytes(budget)) GB): no wait would get it"
         case .tooManyCPUs(let cpus, let max):
             return "this lease asks for \(cpus) cpus; one machine here has at most \(max) (server.json's maxCPUs)"
+        case .reserve(let inUse, let needs, let limit):
+            return "memory \(LeaseSize.gigabytes(inUse)) of the Mac's \(LeaseSize.gigabytes(limit)) GB in use (it keeps the rest for "
+                + "itself); this needs \(LeaseSize.gigabytes(needs))"
         case .behind(let oldest, let waited, let full):
             // What is full, the room kept for the oldest told apart from what's leased.
             let kept: String
@@ -220,12 +242,12 @@ struct AdmissionQueue: Sendable {
     /// Nil: grant it (its ticket leaves the line). Else why not; a `busy`
     /// request with a ticket is kept in line (or its place kept). `outside`:
     /// what VMs and processes OS Server doesn't own take, where it measures
-    /// that.
+    /// that, and `leasesInUse` what its leases do (LeasePolicy.refusal).
     mutating func decide(_ demand: LeaseDemand, ticket: String?, config: String, holder: String,
-                         held: [LeaseDemand], outside: Int64 = 0, now: Date = Date()) -> AdmissionRefusal? {
+                         held: [LeaseDemand], outside: Int64 = 0, leasesInUse: Int64? = nil, now: Date = Date()) -> AdmissionRefusal? {
         prune(now: now)
         let ticket = ticket.flatMap { $0.isEmpty ? nil : $0 }
-        if let refusal = policy.refusal(demand, held: held, outside: outside) {
+        if let refusal = policy.refusal(demand, held: held, outside: outside, leasesInUse: leasesInUse) {
             if refusal.code == "tooBig" {
                 if let ticket { waiters.removeAll { $0.ticket == ticket } }
             } else {
@@ -235,7 +257,8 @@ struct AdmissionQueue: Sendable {
         }
         // The oldest in line before this one: kept room for.
         if let oldest = waiters.first, oldest.ticket != ticket,
-           let refusal = policy.refusal(demand, held: held + [oldest.demand], outside: outside) {
+           let refusal = policy.refusal(demand, held: held + [oldest.demand], outside: outside,
+                                        leasesInUse: leasesInUse.map { $0 + oldest.demand.size.memoryBytes }) {
             let behind = AdmissionRefusal.behind(oldest.demand, waited: now.timeIntervalSince(oldest.arrived), refusal)
             wait(ticket, demand, config: config, holder: holder, now: now, reason: behind.message)
             return behind
@@ -284,6 +307,7 @@ extension ServerConfig {
         for (name, size) in sizes {
             if let platform = Platform(rawValue: name) { estimates[platform] = LeaseSize(cpus: 0, memoryBytes: size.bytes) }
         }
-        return LeasePolicy(caps: caps, memoryBytes: memory, maxCPUs: max(1, maxCPUs ?? cores), estimates: estimates)
+        return LeasePolicy(caps: caps, memoryBytes: memory, maxCPUs: max(1, maxCPUs ?? cores), estimates: estimates,
+                           hostLimitBytes: max(0, Int64(clamping: memoryBytes) - LeasePolicy.reserve(memoryBytes)))
     }
 }
