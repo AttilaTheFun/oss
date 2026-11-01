@@ -19,6 +19,14 @@ struct ShellError: Error, CustomStringConvertible {
 enum Shell {
     /// Runs a program to completion, its output read as it is written (so a
     /// full pipe never stalls it). `timeout` ends it with SIGTERM.
+    ///
+    /// Each pipe is read on a thread of its own, its chunks appended in the
+    /// order they came; the result waits for the exit and then for both
+    /// readers to reach the pipes' ends (at most a couple of seconds: a
+    /// child left running in the background may hold them open). Not a
+    /// readability handler: one still running when the program exited could
+    /// append its chunk after the rest, and an answer longer than a pipe's
+    /// buffer (curl's, 32 KiB and up) came back out of order.
     static func run(_ executable: String, _ arguments: [String], input: Data? = nil,
                     environment: [String: String]? = nil, timeout: TimeInterval? = nil) async throws -> ProcessResult {
         let process = Process()
@@ -30,22 +38,28 @@ enum Shell {
         process.standardError = errPipe
         process.standardInput = input == nil ? FileHandle.nullDevice : inPipe
         let output = DataBox(), error = DataBox()
-        outPipe.fileHandleForReading.readabilityHandler = { handle in output.append(handle.availableData) }
-        errPipe.fileHandleForReading.readabilityHandler = { handle in error.append(handle.availableData) }
+        let exited = DispatchGroup(), drained = DispatchGroup()
         return try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { process in
-                outPipe.fileHandleForReading.readabilityHandler = nil
-                errPipe.fileHandleForReading.readabilityHandler = nil
-                output.append(outPipe.fileHandleForReading.readDataToEndOfFile())
-                error.append(errPipe.fileHandleForReading.readDataToEndOfFile())
-                continuation.resume(returning: ProcessResult(status: process.terminationStatus,
-                                                             output: output.string, error: error.string, data: output.bytes))
-            }
+            exited.enter()
+            process.terminationHandler = { _ in exited.leave() }
             do {
                 try process.run()
             } catch {
                 continuation.resume(throwing: ShellError(description: "\(executable): \(error)"))
                 return
+            }
+            for (pipe, box) in [(outPipe, output), (errPipe, error)] {
+                drained.enter()
+                Thread.detachNewThread {
+                    let handle = pipe.fileHandleForReading
+                    while case let chunk = handle.availableData, !chunk.isEmpty { box.append(chunk) }
+                    drained.leave()
+                }
+            }
+            exited.notify(queue: .global()) {
+                _ = drained.wait(timeout: .now() + 2)
+                continuation.resume(returning: ProcessResult(status: process.terminationStatus,
+                                                             output: output.string, error: error.string, data: output.bytes))
             }
             if let input {
                 // A command that exits before reading it all: its exit status says so.
