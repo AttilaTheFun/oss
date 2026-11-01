@@ -1,6 +1,6 @@
 #!/bin/bash
 # OS Server's build and tests, in a macOS VM leased from OS Server itself
-# (xcode-27.0: Xcode 27.0 and its iOS simulator):
+# (xcode_27_2: Xcode 27.2 and its iOS simulator):
 #   - swift build and swift test of the package, one test at a time (the
 #     forwarder's tests time real sockets), with OSS_TEST_SIMCTL=1: the VM's
 #     simulators are the run's own, so real ones of an iPad and an iPhone
@@ -36,7 +36,7 @@ mac_vm_steps << 'STEPS'
         ;;
 STEPS
 
-echo "::group::A macOS VM (xcode-27.0)"
+echo "::group::A macOS VM (xcode_27_2)"
 mac_vm_lease
 mac_vm_copy_tree
 echo "::endgroup::"

@@ -152,6 +152,27 @@ func refusal(_ body: () throws -> Any) -> APIError? {
     #expect(missing.error == "no iOS runtime \"iOS 99.0\"; there are: iOS 18.6, iOS 27.0")
 }
 
+@Test func aVersionsOwnRuntimeOverOneOfADeviceTypes() throws {
+    // Xcode 27.2: beside iOS 27.2's runtime, one of that version for one
+    // device type, listed first.
+    let iPhone = #"{"name": "iPhone 17 Pro", "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", "productFamily": "iPhone"}"#
+    let iPad = #"{"name": "iPad Pro 13-inch (M5)", "identifier": "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB", "productFamily": "iPad"}"#
+    let duo = #"{"name": "iPhone Duo", "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo", "productFamily": "iPhone"}"#
+    let json = """
+        [{"name": "iOS 27.2", "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4", "version": "27.2", "platform": "iOS",
+          "isAvailable": true, "supportedDeviceTypes": [\(duo)]},
+         {"name": "iOS 27.2", "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-2", "version": "27.2", "platform": "iOS",
+          "isAvailable": true, "supportedDeviceTypes": [\(iPhone), \(iPad)]}]
+        """
+    let runtimes = try JSONDecoder().decode([Simulators.Runtime].self, from: Data(json.utf8))
+    for asked in ["iOS 27.2", "27.2", "ios27.2"] {
+        #expect(try Simulators.resolveRuntime(asked, among: runtimes).identifier == "com.apple.CoreSimulator.SimRuntime.iOS-27-2", "\(asked)")
+    }
+    // Asked for by its identifier, the device type's own.
+    #expect(try Simulators.resolveRuntime("iOS-27-2-iPhone19-4", among: runtimes).identifier
+        == "com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4")
+}
+
 @Test func whatALeaseIsMadeOf() throws {
     let lists = try SimctlLists()
     // A device type: on the base's runtime.
@@ -213,7 +234,12 @@ func refusal(_ body: () throws -> Any) -> APIError? {
 @Test(.enabled(if: ProcessInfo.processInfo.environment["OSS_TEST_SIMCTL"] == "1"))
 func realSimulatorsOfADeviceType() async throws {
     let types = try await Simulators.deviceTypes()
-    let runtime = try #require(try await Simulators.runtimes().last { $0.platform == "iOS" && $0.isAvailable != false })
+    // The newest that runs both: not a runtime of one device type's
+    // (Xcode 27.2's iOS-27-2-iPhone19-4 runs the iPhone Duo alone).
+    let runtime = try #require(try await Simulators.runtimes().last { runtime in
+        runtime.platform == "iOS" && runtime.isAvailable != false
+            && ["iPad", "iPhone"].allSatisfy { family in runtime.supportedDeviceTypes?.contains { $0.productFamily == family } ?? true }
+    })
     for (asked, family) in [("iPad Pro 13-inch (M5)", "iPad"), ("iphone 17 pro", "iPhone")] {
         let type = try Simulators.resolveDevice(asked, among: types, runtime: runtime)
         #expect(type.productFamily == family)

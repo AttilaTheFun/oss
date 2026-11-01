@@ -140,16 +140,22 @@ enum Simulators {
 
     /// An iOS runtime by its name (`iOS 27.0`), identifier
     /// (`com.apple.CoreSimulator.SimRuntime.iOS-27-0`, or `iOS-27-0`) or
-    /// version (`27.0`), in any case.
+    /// version (`27.0`), in any case. Where several answer (Xcode 27.2 has
+    /// a runtime of a version for one device type beside the version's
+    /// own, `iOS-27-2-iPhone19-4`), the one that runs the most types.
     static func resolveRuntime(_ query: String, among runtimes: [Runtime]) throws -> Runtime {
         let wanted = fold(query)
         let bare = wanted.replacingOccurrences(of: " ", with: "")
         let prefix = "com.apple.coresimulator.simruntime."
-        if let found = runtimes.first(where: { runtime in
+        let found = runtimes.filter { runtime in
             fold(runtime.name) == wanted || fold(runtime.name).replacingOccurrences(of: " ", with: "") == bare
                 || fold(runtime.identifier) == wanted || fold(runtime.identifier) == prefix + wanted || runtime.version == query
-        }) {
-            return found
+        }
+        // One that doesn't list what it runs is taken to run anything; the
+        // first of those that run as many.
+        func breadth(_ runtime: Runtime) -> Int { runtime.supportedDeviceTypes?.count ?? .max }
+        if let widest = found.reduce(nil, { (best: Runtime?, next) in best.map { breadth(next) > breadth($0) ? next : $0 } ?? next }) {
+            return widest
         }
         throw APIError(error: "no iOS runtime \"\(query)\"; there are: \(runtimes.map(\.name).joined(separator: ", "))", code: "noDevice")
     }

@@ -57,7 +57,7 @@ mac_vm_steps << 'STEPS'
         ;;
 STEPS
 
-echo "::group::A macOS VM (xcode-27.0)"
+echo "::group::A macOS VM (xcode_27_2)"
 mac_vm_lease
 mac_vm_copy_tree
 echo "::endgroup::"

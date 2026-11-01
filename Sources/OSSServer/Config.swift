@@ -281,7 +281,7 @@ struct ServerConfig: Codable, Sendable {
 
 /// The VM bases' `runner` passwords, where the server's owner keeps them
 /// (`guest-passwords.json` in its folder, mode 600): `{"macos": "…"}`, or
-/// `"macos/xcode-27.0"` for one config. A VM lease carries its own, for
+/// `"macos/xcode_27_2"` for one config. A VM lease carries its own, for
 /// its holder to log in at its screen or unlock it.
 enum GuestPasswords {
     static let path = "\(Paths.config)/guest-passwords.json"
