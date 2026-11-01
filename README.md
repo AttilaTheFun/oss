@@ -211,6 +211,36 @@ disk), OS Server itself, the other VMs by the app they are for (their
 footprint, CPU and, where their open files say, disks), everything else
 with the apps of it using the most, and the disk free.
 
+### A restart that waits for what runs (0.14)
+
+An update needn't end CI's jobs. `oss restart` (or `POST
+/v1/server/restart`, with the server's token) asks for a restart that
+waits for what runs:
+
+- From then on the server grants no new lease (`restarting`, 503) but a
+  session's container, or one for work already running: its holder holds
+  a lease, or its CI job's runner runs (a job's VM, which it would
+  otherwise wait for while the restart waits for it). One asked for with
+  `--wait` keeps its place in line, and is told why. It starts no CI runner either: the jobs wait their
+  turn at GitHub for the next server.
+- The CI jobs, image builds and leases being made or deleted go on until
+  they end. The machines everything else holds (agents' VMs, sessions'
+  containers) run in helpers of their own and outlive the restart, as
+  always.
+- Once none of those is held, the line of leases waiting is written down
+  and the server restarts itself. The app opens itself again from where it
+  is, an update put there meanwhile included, and `oss serve` exits for
+  its launchd to start again. The line is put back first, each place kept
+  3 minutes for its client to ask again; `--wait` asks again through the
+  restart.
+- An installer asks with `--hold`. Once nothing runs that the restart
+  waits for, the server is `ready` and waits, at most 15 minutes, while the
+  installer replaces OS Server.app. `oss restart now` then makes the
+  restart, which opens the new app.
+
+`oss restart status` (`GET /v1/server/restart`, and `restart` in `oss
+status`) says what it waits for. `oss restart cancel` calls it off.
+
 ### Containers
 
 OS Server's app also lends Linux containers (API 6, macOS 26 or later):
@@ -792,6 +822,9 @@ containers, which it couldn't read.
 | `POST /v1/machines/<id>/input` `{"action": "tap"\|"swipe"\|"type"\|"key", "x"?, "y"?, "toX"?, "toY"?, "milliseconds"?, "text"?, "key"?}` | a tap, swipe, text or key on its screen, in its screenshot's pixels |
 | `GET /v1/usage` | the server's CPU and memory, and each lease's (its processes on the Mac; 100% CPU is one core), against what it was given (and from API 8 its `kind`); from API 5 also OS Server's share (`ours`), everyone else's (`others`), the disk and OS Server's files on it (`disk`), and the other apps using the most (`topProcesses`) |
 | `GET /v1/usage/history` | the last day of the server's Mac, a sample a minute: CPU, memory and disk, OS Server's and everyone else's |
+| `GET /v1/server/restart` | a pending restart (API 16): `pending`, `requested`, `reason`, `by`, `hold`, `ready`, `running` (the leases it waits for), `waiting` (the line, kept across it), `serverStarted` |
+| `POST /v1/server/restart` | asks for one (`RestartRequest`: `reason`, `hold`, `now`), or makes a held one that is ready (`now`); with the server's token |
+| `DELETE /v1/server/restart` | calls it off |
 | `GET /v1/ci` | CI as a whole (API 15): `maxConcurrent` (runners at most at once), `running` (in use), `repositories` (each `name` and `label`), `jobs` (as `GET /v1/ci/jobs`); 404 `noCI` as below. With the token, a key or the monitor token |
 | `GET /v1/ci/jobs` | CI's jobs (API 13), newest first: each one's `id`, `repository`, `workflow`, `name`, `runID`, `url`, `runURL`, `branch`, `commit`, `labels`, `state` (`queued`, `starting`, `listening`, `running`, `completed`, `unclaimed`, `skipped`, `failed`), `queued`, `started`, `ended`, `waited` and `ran` (seconds), `lease`, `runner`, `result` (GitHub's), `error`, `waiting` (API 15: why a queued job waits, every runner in use or the limit that has no room); 404 `noCI`, saying why, from a server that runs none. With the token, a key or the monitor token |
 | `GET /v1/volumes`, `DELETE /v1/volumes/<name>` | containers' volumes (size, disk taken, the lease using one and its `kind`); a kept one deleted (from the server's Mac) |

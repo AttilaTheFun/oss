@@ -56,10 +56,25 @@ final class ServerRunner {
             // Containers where this Mac can run them (Containerization's network needs macOS 26).
             var containers: ContainerBackend?
             if #available(macOS 26, *) { containers = ContainerEngine() }
-            host = try ServerHost.start(containers: containers)
+            host = try ServerHost.start(containers: containers, restart: { Self.relaunch() })
             state = .running(since: Date())
         } catch {
             state = .failed("The server couldn't start: \(error.localizedDescription)")
+        }
+    }
+
+    /// A restart the server decided on (a pending one, what runs ended):
+    /// the app opens itself again, from where it is (an update put there
+    /// meanwhile, the new one), and quits.
+    nonisolated static func relaunch() {
+        let bundle = Bundle.main.bundlePath
+        let opener = Process()
+        opener.executableURL = URL(fileURLWithPath: "/bin/sh")
+        opener.arguments = ["-c", "sleep 2; /usr/bin/open -n \"$0\"", bundle]
+        try? opener.run()
+        Task { @MainActor in
+            AppModel.shared.quitting = true
+            NSApp.terminate(nil)
         }
     }
 

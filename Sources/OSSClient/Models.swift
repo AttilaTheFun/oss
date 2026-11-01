@@ -745,9 +745,12 @@ public struct Status: Codable, Sendable {
     /// (API 14; nil from an older server, or one that can't read its
     /// processes).
     public var host: HostBreakdown?
+    /// A restart asked for and not yet made (API 16; nil when none is, or
+    /// from an older server).
+    public var restart: ServerRestart?
 
     public init(server: String, bases: [Base], capacity: [Capacity], leases: [Lease], storage: StorageInfo? = nil,
-                budget: LeaseBudget? = nil, host: HostBreakdown? = nil) {
+                budget: LeaseBudget? = nil, host: HostBreakdown? = nil, restart: ServerRestart? = nil) {
         self.server = server
         self.bases = bases
         self.capacity = capacity
@@ -755,6 +758,71 @@ public struct Status: Codable, Sendable {
         self.storage = storage
         self.budget = budget
         self.host = host
+        self.restart = restart
+    }
+}
+
+/// A restart asked for (`POST /v1/server/restart`, API 16): from then on
+/// the server grants no new lease (but a session's container) and starts no
+/// CI runner; what runs goes on, and once no lease it waits for is held (a
+/// CI job's, an image build's, one being made or deleted) it restarts
+/// itself. The line of leases waiting is kept across it.
+public struct RestartRequest: Codable, Sendable {
+    /// Why, said to those refused meanwhile.
+    public var reason: String?
+    /// An installer's: once nothing holds the restart up, the server is
+    /// `ready` and waits (at most 15 minutes) for `now`, so the installer
+    /// can replace OS Server first; the installer then starts it again.
+    public var hold: Bool?
+    /// A held restart that is ready: made now.
+    public var now: Bool?
+
+    public init(reason: String? = nil, hold: Bool? = nil, now: Bool? = nil) {
+        self.reason = reason
+        self.hold = hold
+        self.now = now
+    }
+}
+
+/// Where a restart is (`GET`, `POST` and `DELETE /v1/server/restart`,
+/// `Status.restart`; API 16).
+public struct ServerRestart: Codable, Sendable {
+    /// Whether one is asked for and not yet made.
+    public var pending: Bool
+    public var requested: Date?
+    public var reason: String?
+    /// Who asked.
+    public var by: String?
+    /// An installer's (RestartRequest.hold).
+    public var hold: Bool
+    /// When nothing held it up any more: a held restart waits for `now`.
+    public var ready: Date?
+    /// The leases it waits for, oldest first.
+    public var running: [Lease]
+    /// The line of leases waiting, oldest first: kept across the restart.
+    public var waiting: [WaitingLease]
+    /// When this server process started: a client waiting for the restart
+    /// sees it change.
+    public var serverStarted: Date
+
+    public init(pending: Bool, requested: Date? = nil, reason: String? = nil, by: String? = nil, hold: Bool = false, ready: Date? = nil,
+                running: [Lease] = [], waiting: [WaitingLease] = [], serverStarted: Date) {
+        self.pending = pending
+        self.requested = requested
+        self.reason = reason
+        self.by = by
+        self.hold = hold
+        self.ready = ready
+        self.running = running
+        self.waiting = waiting
+        self.serverStarted = serverStarted
+    }
+
+    /// `restart pending: 2 running, 1 waiting`.
+    public var summary: String {
+        guard pending else { return "no restart pending" }
+        if hold, ready != nil { return "restart ready: waiting for its installer (\(waiting.count) waiting)" }
+        return "restart pending: \(running.count) running, \(waiting.count) waiting"
     }
 }
 
@@ -1041,7 +1109,10 @@ public struct APIError: Codable, Error, Sendable, CustomStringConvertible {
     /// that runtime doesn't run: 400); from API 14 `busy` names the limit
     /// that is full (`busy: macos 2 of 2`, `busy: memory 120 of 128 GB …`),
     /// and `tooBig` is a lease bigger than the server's whole budget, or
-    /// with more CPUs than its `maxCPUs`, which waiting can't get (409).
+    /// with more CPUs than its `maxCPUs`, which waiting can't get (409);
+    /// from API 16 `restarting`, no new lease while a restart is pending
+    /// (503: one asked for with `--wait` keeps its place in line, which is
+    /// kept across the restart).
     public var code: String?
     public var description: String { error }
     public init(error: String, code: String? = nil) {
@@ -1095,6 +1166,12 @@ public enum OSS {
     /// 15 from 0.14.0: CI as a whole (`GET /v1/ci`: how many runners at
     /// most and in use, the repositories and their labels, the jobs), each
     /// waiting job's reason (`CIJob.waiting`); OS Monitor's token reads it.
+    /// 16 from 0.14.0: a pending restart (`/v1/server/restart`,
+    /// `Status.restart`): asked for, the server grants no new lease but a
+    /// session's (503 `restarting`) and starts no CI runner until the CI
+    /// jobs, image builds and leases being made or deleted have ended; then
+    /// it restarts (or, held, waits for its installer's `now`), the line of
+    /// leases waiting kept across it.
     /// 7 from 0.13.0: storage (`/v1/storage/…`: objects by their SHA-256,
     /// kept while a holder's lease on them lasts), grants (`/v1/grants`: a
     /// URL that does one thing without the token), an iOS lease's app
@@ -1115,7 +1192,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 15
+    public static let apiLevel = 16
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
 }

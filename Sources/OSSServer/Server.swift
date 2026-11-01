@@ -78,6 +78,14 @@ actor MachineManager {
     private var host: HostBreakdown?
     private var cpuSample: HostAccounting.CPUSample?
     private var leaseFootprints: [String: Int64] = [:]
+    /// A restart asked for and not yet made (Restart.swift), what makes it
+    /// (the app opens itself again; `oss serve` exits), and who's told when
+    /// one is asked for or called off (CI, which starts no runner meanwhile).
+    private var pendingRestart: RestartState?
+    private var restartAction: (@Sendable () -> Void)?
+    private var restartListener: (@Sendable (Bool) async -> Void)?
+    /// When this process's server started.
+    let started = Date()
 
     init(config: ServerConfig, bazelCache: (port: Int, readToken: String)? = nil, containers: ContainerBackend? = nil,
          leasesPath: String = Paths.leases, xctests: XCTestRuns = XCTestRuns(), processTable: ProcessTable = MachineManager.macProcessTable) {
@@ -351,6 +359,17 @@ actor MachineManager {
     /// lease goes through it, an image build's place too.
     func admit(_ request: LeaseRequest, config: String) throws -> LeaseSize {
         let size = measure(request.platform, config: config, container: request.build == nil ? request.container : nil)
+        // A restart pending: no new lease but a session's; one waited for keeps its place.
+        if let pendingRestart {
+            let kind = request.kind ?? LeaseOrigin.kind(holder: request.holder ?? "unknown", platform: request.platform)
+            if !RestartPlan.granted(kind: kind, holder: request.holder ?? "unknown", held: Array(leases.values)) {
+                let why = "restarting: OS Server restarts once what runs has ended"
+                    + (pendingRestart.reason.map { " (\($0))" } ?? "") + "; no new lease until then"
+                admission.hold(LeaseDemand(platform: request.platform, size: size), ticket: request.waitTicket, config: config,
+                               holder: request.holder ?? "unknown", reason: why)
+                throw APIError(error: why, code: "restarting")
+            }
+        }
         if let refusal = admission.decide(LeaseDemand(platform: request.platform, size: size), ticket: request.waitTicket, config: config,
                                           holder: request.holder ?? "unknown", held: heldDemands(), outside: outsideMemory,
                                           leasesInUse: leasesInUse) {
@@ -863,6 +882,87 @@ actor MachineManager {
         }
         leases[id] = nil
         save()
+        await checkRestart()
+    }
+
+    // MARK: A pending restart (Restart.swift)
+
+    /// What makes a restart, and who's told when one is asked for or called off.
+    func onRestart(_ action: @escaping @Sendable () -> Void, changed: (@Sendable (Bool) async -> Void)? = nil) {
+        restartAction = action
+        restartListener = changed
+    }
+
+    /// The line kept across the last restart, put back first.
+    func restoreLine(_ line: [AdmissionQueue.Waiter]) {
+        guard !line.isEmpty else { return }
+        admission.restore(line, grace: RestartLine.grace)
+        log("restart: \(line.count) waiting since before it, put back first")
+    }
+
+    /// The pending restart, for the status; nil when none is.
+    func restartPending() -> ServerRestart? { pendingRestart == nil ? nil : restartStatus() }
+
+    /// Where a restart is.
+    func restartStatus() -> ServerRestart {
+        guard let pendingRestart else { return ServerRestart(pending: false, serverStarted: started) }
+        return ServerRestart(pending: true, requested: pendingRestart.requested, reason: pendingRestart.reason, by: pendingRestart.by,
+                             hold: pendingRestart.hold, ready: pendingRestart.ready,
+                             running: leases.values.filter(RestartPlan.holdsUp).sorted { $0.created < $1.created },
+                             waiting: admission.waiting(), serverStarted: started)
+    }
+
+    /// A restart asked for (or, pending, its `now`): no new lease from now
+    /// on, and the restart as soon as nothing holds it up.
+    func requestRestart(_ request: RestartRequest, by: String) async -> ServerRestart {
+        if pendingRestart == nil {
+            pendingRestart = RestartState(requested: Date(), reason: request.reason, by: by, hold: request.hold ?? false)
+            log("restart: asked for by \(by)\(request.reason.map { " (\($0))" } ?? "")\(request.hold == true ? ", held for its installer" : ""); "
+                + "no new lease until what runs has ended")
+            await restartListener?(true)
+        } else {
+            if let reason = request.reason { pendingRestart?.reason = reason }
+            if request.hold == true { pendingRestart?.hold = true }
+        }
+        if request.now == true { pendingRestart?.now = true }
+        await checkRestart()
+        return restartStatus()
+    }
+
+    /// The pending restart called off: leases are granted again.
+    func cancelRestart() async -> ServerRestart {
+        if pendingRestart != nil {
+            pendingRestart = nil
+            log("restart: called off")
+            await restartListener?(false)
+        }
+        return restartStatus()
+    }
+
+    /// The restart made if nothing holds it up any more (or, held, marked
+    /// ready). Asked after each release and every 15 seconds.
+    func checkRestart() async {
+        guard let state = pendingRestart else { return }
+        let holdingUp = leases.values.filter(RestartPlan.holdsUp)
+        switch RestartPlan.step(state, holdingUp: holdingUp.count) {
+        case .wait:
+            break
+        case .ready:
+            if state.ready == nil {
+                pendingRestart?.ready = Date()
+                log("restart: ready, nothing runs that it waits for; waiting for its installer")
+            }
+        case .restart:
+            let line = admission.waitersForRestart()
+            RestartLine.save(line)
+            log("restart: nothing runs that it waits for; restarting now (\(line.count) waiting, kept)")
+            pendingRestart = nil
+            if let restartAction {
+                restartAction()
+            } else {
+                log("restart: nothing here restarts this server; asked again it waits again")
+            }
+        }
     }
 
     /// Every lease ended now (OS Server removing itself).
@@ -1150,7 +1250,10 @@ public final class ServerHost: Sendable {
     /// Starts it: listening once this returns; recovery (leases a restart
     /// left), base listings and expiry go on in the background. With
     /// `containers` it lends containers too.
-    public static func start(containers: ContainerBackend? = nil) throws -> ServerHost {
+    /// `restart` makes a restart the server decides on (API 16: a pending
+    /// one, once what runs has ended): the app opens itself again; with none
+    /// (a test's), it isn't made.
+    public static func start(containers: ContainerBackend? = nil, restart: (@Sendable () -> Void)? = nil) throws -> ServerHost {
         // A write to a pipe or socket whose other end has gone (a forwarded
         // connection's relay that exited) fails with EPIPE, the connection
         // closed: SIGPIPE's default ended the server, every lease's ports with
@@ -1172,6 +1275,13 @@ public final class ServerHost: Sendable {
         let (ci, ciOff) = makeCI(config: config, machines: machines, storage: storage, grants: grants, jobGrants: jobGrants)
         let api = API(machines: machines, token: token, cache: cache, storage: storage, grants: grants, jobGrants: jobGrants, ci: ci,
                       ciOff: ciOff)
+        // A pending restart's (Restart.swift): the line from before the last
+        // put back first, CI told to start no runner meanwhile.
+        let line = RestartLine.take()
+        Task {
+            await machines.restoreLine(line)
+            if let restart { await machines.onRestart(restart) { on in await ci?.pause(on) } }
+        }
         let http = try HTTPServer(port: config.port, streams: Server.streams, streamer: { request, peer in
             await Server.stream(request, peer, api: api)
         }, immediate: Server.immediate) { request in
@@ -1222,6 +1332,7 @@ public final class ServerHost: Sendable {
             while true {
                 try? await Task.sleep(for: .seconds(15))
                 await machines.expire()
+                await machines.checkRestart()
                 await machines.refreshHost()
                 await machines.reviveMachines()
             }
@@ -1271,7 +1382,8 @@ public final class ServerHost: Sendable {
 /// `oss serve`: the API on the configured port, every interface.
 enum Server {
     static func serve() async throws -> Never {
-        _ = try ServerHost.start()
+        // A restart is an exit: what runs it (launchd) starts it again.
+        _ = try ServerHost.start(restart: { exit(0) })
         while true { try await Task.sleep(for: .seconds(3600)) }
     }
 
@@ -1379,7 +1491,8 @@ enum Server {
                                     leases: await machines.all().filter { visible($0.platform) }.map(reached),
                                     storage: await api.storage.info(),
                                     budget: await machines.budget(),
-                                    host: await machines.hostBreakdown()))
+                                    host: await machines.hostBreakdown(),
+                                    restart: await machines.restartPending()))
             case ("GET", 2) where parts[1] == "usage":
                 var usage = await machines.usage()
                 usage.machines = usage.machines.filter { visible($0.platform) }
@@ -1409,6 +1522,14 @@ enum Server {
                 return .json(reached(try await machines.lease(asked, local: LocalNetworks.isThisMac(request.remoteAddress))), status: 201)
             case ("GET", 2) where parts[1] == "machines":
                 return .json(await machines.all().filter { visible($0.platform) && (job == nil || $0.holder == job) }.map(reached))
+            case ("GET", 3) where parts[1] == "server" && parts[2] == "restart":
+                return .json(await machines.restartStatus())
+            case ("POST", 3) where parts[1] == "server" && parts[2] == "restart", ("DELETE", 3) where parts[1] == "server" && parts[2] == "restart":
+                // A restart (API 16): the server's own token alone.
+                guard case .token = access else { return .error("a restart is asked for with the server's token", status: 403) }
+                if method == "DELETE" { return .json(await machines.cancelRestart()) }
+                let asked = request.body.isEmpty ? RestartRequest() : try JSONDecoder.oss.decode(RestartRequest.self, from: request.body)
+                return .json(await machines.requestRestart(asked, by: request.header(OSSHeaders.clientID).map { "\($0)@user" } ?? "user"))
             case ("GET", 3) where parts[1] == "ci" && parts[2] == "jobs", ("GET", 2) where parts[1] == "ci":
                 // CI's jobs (API 13) and CI as a whole (API 15), with the
                 // token, a key or OS Monitor's token.
