@@ -1300,6 +1300,13 @@ enum Server {
     /// The server's host as the asker reached it (its `Host`, without the
     /// port): where the asker reaches a lease's forwarded ports too.
     static func reachedHost(_ request: HTTPRequest) -> String {
+        // The server calling itself over loopback (its MCP port's tool
+        // calls) says whom it is answering for: their host, not loopback's.
+        if let address = request.remoteAddress, ["127.0.0.1", "::1", "::ffff:127.0.0.1"].contains(address),
+           let forwarded = request.header(OSSHeaders.reachedHost), !forwarded.isEmpty,
+           forwarded.allSatisfy({ $0.isLetter || $0.isNumber || ".-:[]".contains($0) }) {
+            return forwarded
+        }
         guard let host = request.header("host"), !host.isEmpty,
               host.allSatisfy({ $0.isLetter || $0.isNumber || ".-:[]".contains($0) }) else { return localHostName }
         if host.hasPrefix("["), let end = host.firstIndex(of: "]") { return String(host[...end]) }
