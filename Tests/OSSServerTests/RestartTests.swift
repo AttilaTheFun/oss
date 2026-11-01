@@ -91,19 +91,22 @@ private func lease(_ id: String, _ platform: Platform, kind: LeaseKind, state: L
     // Nothing runs that it waits for: held, it's ready for its installer.
     #expect(restart.pending && restart.hold && restart.ready != nil && restart.reason == "an update")
     // No new lease meanwhile, but a session's; one waited for keeps its place.
-    let manual = LeaseRequest(platform: .linux, minutes: 5, holder: "dev@workstation", waitTicket: "w1")
-    await #expect(throws: APIError.self) { _ = try await api.machines.admit(manual, config: "vanilla") }
-    let refused = (try? await api.machines.admit(manual, config: "vanilla")) == nil
+    // (Small leases: a CI Mac's budget is small, and the waiter is kept room for.)
+    let manual = LeaseRequest(platform: .ios, minutes: 5, holder: "dev@workstation", waitTicket: "w1")
+    await #expect(throws: APIError.self) { _ = try await api.machines.admit(manual, config: "iphone") }
+    let refused = (try? await api.machines.admit(manual, config: "iphone")) == nil
     #expect(refused)
     #expect(await api.machines.restartStatus().waiting.map(\.holder) == ["dev@workstation"])
-    var session = LeaseRequest(platform: .container, minutes: 0, holder: "visor:s1")
+    var session = LeaseRequest(platform: .container, minutes: 0, holder: "visor:s1",
+                               container: ContainerSpec(image: "i", cpus: 1, memoryBytes: 1 << 30))
     session.kind = .session
     _ = try await api.machines.admit(session, config: "linux")
     // The status says so; called off, leases are granted again.
     #expect(await api.machines.restartPending()?.pending == true)
     let off = await Server.route(request("DELETE", "/v1/server/restart", holder: nil), api: api)
     #expect(try JSONDecoder.oss.decode(ServerRestart.self, from: off.body).pending == false)
-    _ = try await api.machines.admit(LeaseRequest(platform: .linux, minutes: 5, holder: "dev@workstation"), config: "vanilla")
+    // The waiter itself, asking again: its place first.
+    _ = try await api.machines.admit(manual, config: "iphone")
     // Only the server's token asks for one.
     let other = makeAPI(makeStore())
     #expect(await Server.route(request("POST", "/v1/server/restart", holder: nil, token: "monitor"), api: other).status != 200)
