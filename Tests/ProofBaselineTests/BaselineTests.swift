@@ -3,8 +3,9 @@ import Testing
 
 // What a proof's screens are compared with (tools/ci/proof_baseline), for
 // each kind of run: a pull request's base branch, a push's commit before,
-// a release's release before, main by hand; and the release before among
-// a repository's tags.
+// a release's release before, a CI run by hand's release before the
+// commit, main by hand outside CI; and the release before among a
+// repository's tags.
 
 private let commit = "3b86b9c0aa1c2b3d4e5f60718293a4b5c6d7e8f9"
 
@@ -35,4 +36,15 @@ private let commit = "3b86b9c0aa1c2b3d4e5f60718293a4b5c6d7e8f9"
 
 @Test func byHandItIsMain() {
     #expect(Baseline.choose(event: "", baseRef: "", refName: "", commit: commit)?.revision == "refs/remotes/origin/main")
+}
+
+@Test func runInCIByHandItIsTheReleaseBefore() {
+    // The tags before the commit, as proof.sh lists them.
+    let tags = ["v0.9.2", "v0.12.1", "inbox", "v0.13.0", "v0.10.1"]
+    #expect(Baseline.choose(event: "workflow_dispatch", baseRef: "", refName: "main", commit: commit, tags: tags)
+        == Baseline(ref: "v0.13.0", revision: "refs/tags/v0.13.0",
+                    fetch: ["--no-tags", "--depth=1", "origin", "+refs/tags/v0.13.0:refs/tags/v0.13.0"]))
+    #expect(Baseline.choose(event: "workflow_dispatch", baseRef: "", refName: "main", commit: commit, tags: ["inbox"])
+        == Baseline(ref: "the commit before", revision: commit + "^", fetch: ["--no-tags", "--depth=2", "origin", commit]),
+        "no release before it: the commit before")
 }

@@ -7,7 +7,10 @@
 /// - a push: the commit before it on its branch;
 /// - a release: the release before it (the highest version tag below its
 ///   own);
-/// - run by hand (no event): main.
+/// - run by hand in CI (workflow_dispatch: proposing a release, or proving
+///   an earlier commit to bisect): the release before the commit (the
+///   highest version tag among those before it), else the commit before;
+/// - run by hand outside CI (no event): main.
 ///
 /// `ref` is what the proof calls it ("main", "v0.12.1"); `revision` what
 /// git resolves to its commit, once `fetch` (git fetch's arguments) has
@@ -26,7 +29,7 @@ public struct Baseline: Equatable, Sendable {
     /// For a workflow's `event` (GITHUB_EVENT_NAME): a pull request's
     /// `baseRef` (GITHUB_BASE_REF), the ref pushed or released (`refName`,
     /// GITHUB_REF_NAME), the commit checked out, and, for a release, the
-    /// repository's tags. Nil where there is none: a release with no
+    /// repository's tags (for a run by hand, those before the commit). Nil where there is none: a release with no
     /// release before it, a pull request that names no base.
     public static func choose(event: String, baseRef: String, refName: String, commit: String, tags: [String] = []) -> Baseline? {
         switch event {
@@ -34,15 +37,27 @@ public struct Baseline: Equatable, Sendable {
             guard !baseRef.isEmpty else { return nil }
             return branch(baseRef)
         case "push":
-            return Baseline(ref: refName.isEmpty ? "the commit before" : refName, revision: "\(commit)^",
-                            fetch: ["--no-tags", "--depth=2", "origin", commit])
+            return push(commit, named: refName.isEmpty ? "the commit before" : refName)
         case "release":
             guard let before = previousTag(refName, among: tags) else { return nil }
-            return Baseline(ref: before, revision: "refs/tags/\(before)",
-                            fetch: ["--no-tags", "--depth=1", "origin", "+refs/tags/\(before):refs/tags/\(before)"])
+            return tag(before)
+        case "workflow_dispatch":
+            guard let release = latestTag(among: tags) else { return push(commit, named: "the commit before") }
+            return tag(release)
         default:
             return branch("main")
         }
+    }
+
+    /// The commit before `commit`.
+    static func push(_ commit: String, named name: String) -> Baseline {
+        Baseline(ref: name, revision: "\(commit)^", fetch: ["--no-tags", "--depth=2", "origin", commit])
+    }
+
+    /// A version tag as it is on origin.
+    static func tag(_ name: String) -> Baseline {
+        Baseline(ref: name, revision: "refs/tags/\(name)",
+                 fetch: ["--no-tags", "--depth=1", "origin", "+refs/tags/\(name):refs/tags/\(name)"])
     }
 
     /// A branch as it is on origin.
@@ -58,6 +73,11 @@ public struct Baseline: Equatable, Sendable {
         return tags.compactMap { other in version(other).map { (other, $0) } }
             .filter { $0.1.lexicographicallyPrecedes(current) }
             .max { $0.1.lexicographicallyPrecedes($1.1) }?.0
+    }
+
+    /// The highest version tag among `tags`; others than versions let be.
+    public static func latestTag(among tags: [String]) -> String? {
+        tags.compactMap { tag in version(tag).map { (tag, $0) } }.max { $0.1.lexicographicallyPrecedes($1.1) }?.0
     }
 
     /// v1.2.3 as [1, 2, 3]; nil for a tag that is no version.

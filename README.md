@@ -1240,7 +1240,7 @@ and only the publishing jobs may ask for an OIDC token (`id-token: write`).
 | --- | --- | --- |
 | `build-and-test` | pull requests, main | `tools/ci/mac_vm_tests.sh`, in a macOS VM (`xcode-27.0`): `swift build --build-tests`, then `swift test` one test at a time (the forwarder's tests time real sockets) with `OSS_TEST_SIMCTL=1` (real simulators of an iPad and an iPhone, made and deleted in the VM); the App package's `swift build`; OS Monitor's `bazel build` for the Mac and the iPhone's simulator |
 | `linux` | pull requests, main | `tools/ci/linux_build.sh`: `swift build --product oss` in a container of Visor's agent image (with Rosetta), the tree on its standard input, through `oss machine run container --inside` (its exec through the server's API: the runner's user can't reach a container's socket) |
-| `proof` | each push to main (full), or by hand; never a pull request: a release is reviewed by its commit's | `tools/ci/proof.sh` (below), uploaded as the `proof` artifact, kept 90 days |
+| `proof` | by hand only (full): to propose a release (no release without its commit's proof), or on a branch pushed at an earlier commit to bisect; compared with the release before the commit | `tools/ci/proof.sh` (below), uploaded as the `proof` artifact, kept 90 days |
 | `beta` | pull requests, main, after `build-and-test` | `tools/ci/mac_vm_package.sh`: OS Server.app (`App/build.sh --zip`, QEMU from Homebrew installed first) and OS Monitor for the Mac built in a macOS VM of their own, OS Monitor's icon checked for its dark appearance; then `tools/ci/publish_from_ci.sh`, which sends each, unsigned, to Applications Server with the job's OIDC token: the server signs them with Developer ID and notarizes them (com.LoganShire.OSS, com.LoganShire.OSMonitor.Mac). OS Server's version is `OSS.version`, its build number the run's |
 | `release` | a release published | the same once its tag is on main and is `v` + `OSS.version`: production |
 
@@ -1279,9 +1279,11 @@ proof.json           {"commit", "ref", "kind", "run", "base": {"ref", "commit"},
 
 The base is what the screens are compared with (`tools/ci/proof_baseline`,
 whose choice the package's `ProofBaselineTests` test): a pull request's
-base branch as it is (`GITHUB_BASE_REF`), a push's commit before it; by
-hand, main (a checkout that isn't shallow is fetched into without
-`--depth`). Never this tree's kept pictures: a pull request that changes
+base branch as it is (`GITHUB_BASE_REF`), a push's commit before it; CI's
+run by hand (`workflow_dispatch`, the proof's only run), the release
+before the commit (the highest `v*` tag in its history before it), else
+the commit before; by hand outside CI, main (a checkout that isn't
+shallow is fetched into without `--depth`). Never this tree's kept pictures: a pull request that changes
 a screen replaces its picture, and would show it unchanged. The job's
 summary says the base too.
 

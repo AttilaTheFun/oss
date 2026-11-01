@@ -8,11 +8,12 @@ name: CI
 #   (tools/ci/linux_build.sh), so the Linux client keeps building;
 # - proof: OS Server.app and OS Monitor built in a macOS VM and pictured
 #   with their canned servers, each picture compared with the one kept at
-#   the proof's base (Tests/Proof at a pull request's base branch, or at
-#   the commit before a push, fetched into the shallow checkout by the
-#   script): each commit pushed to main gets its full proof, a pull request
-#   none (tools/ci/proof.sh), uploaded as the `proof` artifact a release
-#   is reviewed by;
+#   the proof's base (Tests/Proof at the release before the commit, else
+#   the commit before, fetched by the script): only by hand
+#   (workflow_dispatch), to propose a release or, after the fact on an
+#   earlier commit, to bisect a regression; never for a pull request or a
+#   push (tools/ci/proof.sh), uploaded as the `proof` artifact a release
+#   is reviewed by. No release without one;
 # - beta: OS Server.app and OS Monitor for the Mac built in a macOS VM of
 #   their own (tools/ci/mac_vm_package.sh), unsigned, and published to
 #   Applications Server, which signs and notarizes them: a beta for each
@@ -72,8 +73,8 @@ jobs:
       - run: exec tools/ci/linux_build.sh
 
   proof:
-    # After each merge to main (or by hand), never a pull request's.
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Only by hand: never a pull request's or a push's.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, oss-ci]
     timeout-minutes: 90
     steps:
