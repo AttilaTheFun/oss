@@ -27,6 +27,8 @@ public final class ServerMonitor: Identifiable {
     public private(set) var usage: Usage?
     public private(set) var cache: CacheInfo?
     public private(set) var volumes: [VolumeInfo] = []
+    /// CI's runners and jobs, where the server runs them (API 15).
+    public private(set) var ci: CIStatus?
     public private(set) var history: [Sample] = []
     /// The server's last day, a sample a minute (API 6).
     public private(set) var day: [UsageSample] = []
@@ -84,6 +86,7 @@ public final class ServerMonitor: Identifiable {
             self.status = status
             self.usage = usage
             cache = capabilities.features.contains("cache") ? try? await client.cache() : nil
+            ci = capabilities.api >= 15 && capabilities.features.contains("ci") ? try? await client.ciStatus() : nil
             if capabilities.api >= 6 {
                 volumes = (try? await client.volumes()) ?? []
                 if dayAsked.map({ Date().timeIntervalSince($0) > 60 }) ?? true, let day = try? await client.usageHistory() {
@@ -126,8 +129,9 @@ public final class ServerMonitor: Identifiable {
 
     /// Canned, for the proof's screens and previews.
     public func pretend(capabilities: Capabilities, status: Status, usage: Usage, cache: CacheInfo?, history: [Sample],
-                        day: [UsageSample] = [], volumes: [VolumeInfo] = []) {
+                        day: [UsageSample] = [], volumes: [VolumeInfo] = [], ci: CIStatus? = nil) {
         isFixture = true
+        self.ci = ci
         self.capabilities = capabilities
         self.status = status
         self.usage = usage

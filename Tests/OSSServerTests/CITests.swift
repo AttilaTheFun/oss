@@ -462,6 +462,34 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     #expect(state == .starting || state == .listening)
 }
 
+@Test func aWaitingJobSaysWhy() async throws {
+    let github = queueGitHub()
+    let host = FakeRunnerHost()
+    let service = CIService(plan: plan(max: 1), github: makeREST(github), host: host)
+    await service.offer(try decodedJobs([job(1, created: "2026-10-31T10:01:00Z"), job(2, created: "2026-10-31T10:02:00Z")]),
+                        repository: "owner/gh_mcp")
+    #expect(await eventually { host.runningLeases.count == 1 })
+    // Its place taken: every runner in use, as the summary counts them.
+    let summary = await service.status()
+    #expect(summary.maxConcurrent == 1 && summary.running == 1)
+    #expect(summary.repositories.map(\.label) == ["gh_mcp-oss"])
+    let second = try #require(summary.jobs.first { $0.id == 2 })
+    #expect(second.state == .queued && second.waiting == "every runner in use (1 at most)")
+    #expect(summary.jobs.first { $0.id == 1 }?.waiting == nil)
+    // No room for its container: the limit's words, until it starts.
+    host.busy = 1
+    host.finish("lease1", lines: ["Listening for Jobs", "Running job: job 1", "Job job 1 completed with result: Succeeded"])
+    #expect(await eventually { await service.list().first { $0.id == 2 }?.waiting == "busy: 4 of 4 container machines are leased" })
+}
+
+@Test func osMonitorReadsCIAndNothingMore() {
+    func allows(_ path: String) -> Bool { MonitorAccess.allows("GET", path.split(separator: "/").map(String.init)) }
+    #expect(allows("/v1/ci"))
+    #expect(allows("/v1/ci/jobs"))
+    #expect(!MonitorAccess.allows("POST", ["v1", "ci"]))
+    #expect(!allows("/v1/keys"))
+}
+
 @Test func aJobNoLongerQueuedWhenItsTurnComesIsSkipped() async throws {
     let github = FakeGitHub()
     github.answer = { request in

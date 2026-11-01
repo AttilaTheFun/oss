@@ -576,10 +576,13 @@ jobs:
   `OSS_REPO`), once for each version of them, in a container of the jobs'
   image, and kept in its folder's `CI/` with GitHub's runner: the first job
   after an update waits a few minutes for it.
-- **Seen**: `oss ci list` (`--json`), or `GET /v1/ci/jobs`: each job's
-  repository, workflow, name, page and run, state, how long it waited and
-  ran, and its lease, newest first, for a week. Its leases show in `oss
-  status` and OS Server's window as any other `ci` lease.
+- **Seen**: in OS Monitor's CI card (how many runners are in use of how
+  many, each job waiting or running and why it waits, the last few that
+  ended, each a link to its run), `oss ci list` (`--json`), `GET /v1/ci`
+  or `GET /v1/ci/jobs`: each job's repository, workflow, name, page and
+  run, state, why it waits, how long it waited and ran, and its lease,
+  newest first, for a week. Its leases show in `oss status` and OS
+  Monitor as any other `ci` lease.
 - **Not yet**: a restart of OS Server ends the jobs running (their runners
   ran in its process's exec; GitHub fails them, and the runners' leases a
   restart leaves are released); jobs on VM runners; OS Server's window.
@@ -789,7 +792,8 @@ containers, which it couldn't read.
 | `POST /v1/machines/<id>/input` `{"action": "tap"\|"swipe"\|"type"\|"key", "x"?, "y"?, "toX"?, "toY"?, "milliseconds"?, "text"?, "key"?}` | a tap, swipe, text or key on its screen, in its screenshot's pixels |
 | `GET /v1/usage` | the server's CPU and memory, and each lease's (its processes on the Mac; 100% CPU is one core), against what it was given (and from API 8 its `kind`); from API 5 also OS Server's share (`ours`), everyone else's (`others`), the disk and OS Server's files on it (`disk`), and the other apps using the most (`topProcesses`) |
 | `GET /v1/usage/history` | the last day of the server's Mac, a sample a minute: CPU, memory and disk, OS Server's and everyone else's |
-| `GET /v1/ci/jobs` | CI's jobs (API 13), newest first: each one's `id`, `repository`, `workflow`, `name`, `runID`, `url`, `runURL`, `branch`, `commit`, `labels`, `state` (`queued`, `starting`, `listening`, `running`, `completed`, `unclaimed`, `skipped`, `failed`), `queued`, `started`, `ended`, `waited` and `ran` (seconds), `lease`, `runner`, `result` (GitHub's), `error`; 404 `noCI`, saying why, from a server that runs none. With the token or a key |
+| `GET /v1/ci` | CI as a whole (API 15): `maxConcurrent` (runners at most at once), `running` (in use), `repositories` (each `name` and `label`), `jobs` (as `GET /v1/ci/jobs`); 404 `noCI` as below. With the token, a key or the monitor token |
+| `GET /v1/ci/jobs` | CI's jobs (API 13), newest first: each one's `id`, `repository`, `workflow`, `name`, `runID`, `url`, `runURL`, `branch`, `commit`, `labels`, `state` (`queued`, `starting`, `listening`, `running`, `completed`, `unclaimed`, `skipped`, `failed`), `queued`, `started`, `ended`, `waited` and `ran` (seconds), `lease`, `runner`, `result` (GitHub's), `error`, `waiting` (API 15: why a queued job waits, every runner in use or the limit that has no room); 404 `noCI`, saying why, from a server that runs none. With the token, a key or the monitor token |
 | `GET /v1/volumes`, `DELETE /v1/volumes/<name>` | containers' volumes (size, disk taken, the lease using one and its `kind`); a kept one deleted (from the server's Mac) |
 | `GET /v1/cache` | the Bazel cache's port and read token, its size and how many lookups it answered (404 without one) |
 | `HEAD /v1/storage/objects/<sha256>` | 200 with its `Content-Length` if the store has it, else 404 |
@@ -1290,8 +1294,8 @@ shallow is fetched into without `--depth`). Never this tree's kept pictures: a p
 a screen replaces its picture, and would show it unchanged. The job's
 summary says the base too.
 
-Quick (18 pictures) is everything but the guests' Screen windows, which
-need a Linux and a Windows VM; full (22) has them. The job fails when the
+Quick (20 pictures) is everything but the guests' Screen windows, which
+need a Linux and a Windows VM; full (24) has them. The job fails when the
 apps don't build or a picture doesn't come back; a changed picture is for
 review. The kept pictures are a run's screens, looked at first: a change
 that means to change a screen replaces its picture in the same pull

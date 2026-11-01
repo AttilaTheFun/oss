@@ -114,16 +114,44 @@ public enum MonitorFixture {
         let volumes = [VolumeInfo(name: "visor-session-c-build", sizeBytes: 128 * gb, allocatedBytes: 21 * gb, lease: "0d9c27f4",
                                   kind: .session),
                        VolumeInfo(name: "visor-session-a-build", sizeBytes: 128 * gb, allocatedBytes: 34 * gb)]
+        // CI: three of four runners in use, one job waiting for room, two ended.
+        func job(_ id: Int, _ repository: String, _ name: String, _ state: CIJobState, run: Int, queuedAgo: Double,
+                 startedAgo: Double? = nil, endedAgo: Double? = nil, result: String? = nil, waiting: String? = nil,
+                 error: String? = nil) -> CIJob {
+            var job = CIJob(id: id, repository: repository, workflow: "CI", name: name, runID: run,
+                            runURL: URL(string: "https://github.com/\(repository)/actions/runs/\(run)"), branch: "main",
+                            labels: ["self-hosted", "\(repository.split(separator: "/").last ?? "")-jit"], state: state,
+                            queued: now.addingTimeInterval(-queuedAgo * 60))
+            job.started = startedAgo.map { now.addingTimeInterval(-$0 * 60) }
+            job.ended = endedAgo.map { now.addingTimeInterval(-$0 * 60) }
+            job.result = result
+            job.waiting = waiting
+            job.error = error
+            return job
+        }
+        let ci = CIStatus(maxConcurrent: 4, running: 3, repositories: [
+            CIStatus.Repository(name: "example/app", label: "app-jit"), CIStatus.Repository(name: "example/site", label: "site-jit"),
+        ], jobs: [
+            job(9006, "example/site", "deploy", .queued, run: 18342039901, queuedAgo: 2,
+                waiting: "busy: memory 84 GB of the Mac's 96 GB in use (it keeps the rest for macOS), and it needs 16 GB"),
+            job(9005, "example/app", "linux", .starting, run: 18342038870, queuedAgo: 3),
+            job(9004, "example/app", "mac-tests", .running, run: 18342038870, queuedAgo: 9, startedAgo: 8),
+            job(9003, "example/app", "test", .running, run: 18342034123, queuedAgo: 13, startedAgo: 12),
+            job(9002, "example/site", "build", .completed, run: 18342030555, queuedAgo: 31, startedAgo: 30, endedAgo: 22,
+                result: "Succeeded"),
+            job(9001, "example/app", "test", .completed, run: 18342027712, queuedAgo: 48, startedAgo: 47, endedAgo: 35,
+                result: "Failed"),
+        ])
         monitor.pretend(
             // A version of the fixture's own, not the build's: the proof's
             // screens are the same from one release to the next.
-            capabilities: Capabilities(version: "1.0.0", api: OSS.apiLevel, features: ["machines", "screenshots", "input", "usage", "cache"],
+            capabilities: Capabilities(version: "1.0.0", api: OSS.apiLevel, features: ["machines", "screenshots", "input", "usage", "cache", "ci"],
                                        platforms: Platform.allCases),
             status: Status(server: name, bases: bases, capacity: capacity, leases: leases),
             usage: usage,
             cache: CacheInfo(port: 7490, readToken: "", bytes: 61 * gb, maxBytes: 200 * gb, freeBytes: 2_710 * gb,
                              hits: 48_213, misses: 3_907, writes: 11_542, evicted: 0),
-            history: history, day: day, volumes: volumes)
+            history: history, day: day, volumes: volumes, ci: ci)
         return monitor
     }
 }

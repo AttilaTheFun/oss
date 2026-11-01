@@ -56,8 +56,9 @@ def ios(out, items):
     try:
         sh(["oss", "machine", "simctl", lease_id, "install", app])
         for appearance in APPEARANCES:
-            # Swipes down the dashboard: none, or to its end; its disk card is scrolled to by the app.
+            # Swipes down the dashboard: none, or to its end; its CI and disk cards are scrolled to by the app.
             for name, args, scroll in [("servers", [], 0), ("server", ["-fixture.open", "YES"], 0),
+                                       ("server-ci", ["-fixture.open", "YES", "-fixture.scroll", "ci"], 0),
                                        ("server-disk", ["-fixture.open", "YES", "-fixture.scroll", "disk"], 0),
                                        ("server-end", ["-fixture.open", "YES"], 6)]:
                 sh(["oss", "machine", "simctl", lease_id, "terminate", BUNDLE], check=False)
