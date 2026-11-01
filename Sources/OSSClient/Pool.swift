@@ -160,7 +160,7 @@ public struct OSSPool: Sendable {
                     return (server.client, try await server.client.lease(request, progress: progress))
                 } catch let error as OSSError where error.code == "busy" || error.message.hasPrefix("busy") || error.code == "notLocal"
                                                 || error.code == "noInventory" || error.code == "tooBig"
-                                                || (waitForCapacity && error.code == "volumeInUse") {
+                                                || (waitForCapacity && error.code == "volumeInUse") || error.code == "restarting" {
                     // Taken meanwhile, (a server before API 9) a container for
                     // its own Mac only, simulators it can't list now, more
                     // than its whole budget, or (waiting) a volume it keeps

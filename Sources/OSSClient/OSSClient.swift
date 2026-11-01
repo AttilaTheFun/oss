@@ -259,6 +259,19 @@ public struct OSSClient: Sendable {
 
     public func capabilities() async throws -> Capabilities { try await json("GET", "/v1/capabilities") }
     public func status() async throws -> Status { try await json("GET", "/v1/status") }
+
+    /// Where a restart is (API 16): `pending` false when none is asked for.
+    public func serverRestart() async throws -> ServerRestart { try await json("GET", "/v1/server/restart") }
+
+    /// A restart asked for (API 16; with the token): the server drains, then
+    /// restarts itself. Asked again, the one pending; with `now`, a held one
+    /// that is ready, made now.
+    public func requestRestart(_ request: RestartRequest = RestartRequest()) async throws -> ServerRestart {
+        try await json("POST", "/v1/server/restart", body: request)
+    }
+
+    /// The pending restart called off: leases are granted again.
+    public func cancelRestart() async throws -> ServerRestart { try await json("DELETE", "/v1/server/restart") }
     /// The server's Bazel cache, where it keeps one (the `cache` feature).
     public func cache() async throws -> CacheInfo { try await json("GET", "/v1/cache") }
 
@@ -294,12 +307,20 @@ public struct OSSClient: Sendable {
         var request = request
         if waitForCapacity, request.waitTicket == nil { request.waitTicket = UUID().uuidString }
         var lease: Lease
+        var unanswered: Duration = .zero
         while true {
             do {
                 lease = try await requestLease(request)
                 break
-            } catch let error as OSSError where waitForCapacity && (error.message.hasPrefix("busy") || error.code == "volumeInUse") {
+            } catch let error as OSSError where waitForCapacity && (error.message.hasPrefix("busy") || error.code == "volumeInUse"
+                                                                    || error.code == "restarting") {
                 progress("\(error.message); waiting")
+                try await Task.sleep(for: retry)
+            } catch let error as OSSError where waitForCapacity && error.status == 0 && unanswered < Self.restartPatience {
+                // No answer: a server restarting (API 16) is back in seconds,
+                // and keeps this one's place in line meanwhile.
+                unanswered += retry
+                progress("\(error.message); asking again")
                 try await Task.sleep(for: retry)
             }
         }
@@ -312,6 +333,10 @@ public struct OSSClient: Sendable {
         guard lease.state == .ready else { throw OSSError(status: 0, message: "lease \(lease.id) is \(lease.state.rawValue)") }
         return lease
     }
+
+    /// How long a lease waited for asks again of a server that doesn't
+    /// answer (one restarting) before it gives up.
+    static let restartPatience: Duration = .seconds(180)
 
     public func renew(_ id: String, minutes: Int? = nil) async throws -> Lease {
         try await json("POST", "/v1/machines/\(id)/renew", body: RenewRequest(minutes: minutes))

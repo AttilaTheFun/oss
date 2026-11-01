@@ -2,6 +2,14 @@
 
 ## 0.14.0 (unreleased)
 
+- **A restart that waits for what runs** (API 16): `oss restart` (`POST
+  /v1/server/restart`) grants no new lease but a session's (`restarting`;
+  one waited for keeps its place) and starts no CI runner, lets the CI
+  jobs, image builds and leases being made or deleted end, then restarts
+  the server, the line of leases waiting kept across it. `--hold` is an
+  installer's: ready, the server waits for `oss restart now` while OS
+  Server.app is replaced, and the restart opens the new one. A client
+  waiting for a lease asks again through the restart.
 - **The line can't deadlock**: the oldest lease waiting is kept room for
   while the line moves, but once nothing has been granted or released for
   5 minutes a lease that fits goes ahead. The room kept could be what the

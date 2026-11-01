@@ -175,8 +175,19 @@ actor CIService {
     // MARK: Runners
 
     /// As many waiting jobs started as there's room for.
+    /// A restart pending (Restart.swift): no runner started until it's made
+    /// or called off; the jobs wait their turn at GitHub, and the next
+    /// server takes them.
+    private(set) var paused = false
+
+    func pause(_ on: Bool) {
+        paused = on
+        log("ci: \(on ? "no new runner until OS Server's restart" : "runners start again")")
+        if !on { pump() }
+    }
+
     private func pump() {
-        while active.count < plan.maxConcurrent, !queue.isEmpty {
+        while !paused, active.count < plan.maxConcurrent, !queue.isEmpty {
             let id = queue.removeFirst()
             active.insert(id)
             Task { await self.launch(id) }
