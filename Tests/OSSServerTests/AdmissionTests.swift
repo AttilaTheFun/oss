@@ -130,6 +130,35 @@ private let phone = demand(.ios, 0, 2)
     #expect(queue.waiters.isEmpty)
 }
 
+@Test func aStalledLineLetsARequestThatFitsGoAhead() {
+    let start = Date(timeIntervalSince1970: 1_000_000)
+    var queue = AdmissionQueue(policy: policy(caps: [:], memoryGB: 40), stall: 300)
+    // 32 of 40 GB held by leases that wait themselves (runners waiting for
+    // their VMs): a 16 GB container waits, asking again every 15 s as
+    // `--wait` does, and is kept room for.
+    let runners = Array(repeating: demand(.container, 4, 8), count: 4)
+    let big = demand(.container, 6, 16), small = demand(.container, 4, 8)
+    func bigAsks(at seconds: TimeInterval) {
+        #expect(queue.decide(big, ticket: "big", config: "linux", holder: "a", held: runners,
+                             now: start.addingTimeInterval(seconds))?.code == "busy")
+    }
+    bigAsks(at: 0)
+    bigAsks(at: 15)
+    #expect(queue.decide(small, ticket: nil, config: "linux", holder: "b", held: runners, now: start.addingTimeInterval(20)) != nil)
+    #expect(!queue.isStalled(now: start.addingTimeInterval(20)))
+    // Five minutes and nothing granted or released: the small one fits, and goes.
+    for seconds in stride(from: 30.0, through: 300, by: 15) { bigAsks(at: seconds) }
+    let stalled = start.addingTimeInterval(301)
+    #expect(queue.isStalled(now: stalled))
+    #expect(queue.decide(small, ticket: nil, config: "linux", holder: "b", held: runners, now: stalled) == nil)
+    // That was progress: the oldest is kept room for again.
+    #expect(!queue.isStalled(now: stalled.addingTimeInterval(1)))
+    #expect(queue.decide(small, ticket: nil, config: "linux", holder: "c", held: runners, now: stalled.addingTimeInterval(1)) != nil)
+    // A release is progress too.
+    queue.progressed(now: stalled.addingTimeInterval(200))
+    #expect(!queue.isStalled(now: stalled.addingTimeInterval(400)))
+}
+
 @Test func theLineIsFairAcrossTypes() {
     let now = Date(timeIntervalSince1970: 1_000_000)
     var queue = AdmissionQueue(policy: policy(caps: [.macos: 2], memoryGB: 64))

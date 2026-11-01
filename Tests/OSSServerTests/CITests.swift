@@ -521,6 +521,20 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     #expect(given.error?.contains("no job came") == true)
 }
 
+@Test func aRunnerWhoseJobWasCancelledIsGivenUpAtOnce() async throws {
+    let github = queueGitHub()
+    let host = FakeRunnerHost()
+    let service = CIService(plan: plan(unclaimed: .seconds(600)), github: makeREST(github), host: host, jobCheck: .milliseconds(20))
+    await service.offer(try decodedJobs([job(1)]), repository: "owner/gh_mcp")
+    #expect(await eventually { host.runningLeases == ["lease1"] })
+    // Its run is cancelled while its runner waits: given up long before the
+    // unclaimed timeout, its container released.
+    github.jobStatus = "completed"
+    #expect(await eventually { await service.list().first?.state == .unclaimed })
+    #expect(await eventually { host.released.contains("lease1") })
+    #expect(await service.list().first?.error?.contains("ended before it came") == true)
+}
+
 @Test func aRunnerThatExitsBeforeItsJobFailsAndIsDeleted() async throws {
     let github = queueGitHub()
     let host = FakeRunnerHost()

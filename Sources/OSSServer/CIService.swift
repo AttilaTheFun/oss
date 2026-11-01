@@ -73,7 +73,13 @@ actor CIService {
     /// The most runners a job gets.
     static let attempts = 3
 
-    init(plan: CIPlan, github: GitHubREST, host: any CIRunnerHost, busyRetry: Duration = .seconds(15)) {
+    /// How often a runner still waiting for its job asks whether the job
+    /// is over (cancelled, or run by another): then it's given up at once,
+    /// not at `unclaimed`.
+    let jobCheck: Duration
+
+    init(plan: CIPlan, github: GitHubREST, host: any CIRunnerHost, busyRetry: Duration = .seconds(15), jobCheck: Duration = .seconds(30)) {
+        self.jobCheck = jobCheck
         self.plan = plan
         self.github = github
         self.host = host
@@ -221,8 +227,18 @@ actor CIService {
             let environment = try await host.environment(lease: lease, holder: holder)
             log("ci: \(job.repository) job \(id): runner oss-\(lease) starting")
             let unclaimed = plan.unclaimed
+            let check = jobCheck
             let watchdog = Task {
-                try? await Task.sleep(for: unclaimed)
+                let clock = ContinuousClock(), deadline = clock.now + unclaimed
+                while clock.now < deadline {
+                    try? await Task.sleep(for: min(check, deadline - clock.now))
+                    guard !Task.isCancelled else { return }
+                    // Its job over before any came to it: a cancelled run's.
+                    if await self.isWaiting(id), (try? await self.github.job(job.repository, id: id))?.status == "completed" {
+                        await self.giveUp(id, because: "its job ended before it came to this runner (cancelled, or run by another)")
+                        return
+                    }
+                }
                 guard !Task.isCancelled else { return }
                 await self.giveUp(id)
             }
@@ -277,12 +293,17 @@ actor CIService {
 
     /// No job came to its runner in time: given up, its container released
     /// (which ends the runner).
-    private func giveUp(_ id: Int) async {
+    private func giveUp(_ id: Int, because reason: String? = nil) async {
         guard let job = jobs[id], [.starting, .listening].contains(job.state), let lease = job.lease else { return }
         jobs[id]?.state = .unclaimed
         jobs[id]?.ended = Date()
-        jobs[id]?.error = "no job came to its runner in \(plan.unclaimed) (GitHub gave it to another)"
+        jobs[id]?.error = reason ?? "no job came to its runner in \(plan.unclaimed) (GitHub gave it to another)"
         await host.release(lease: lease, holder: CINames.holder(job))
+    }
+
+    /// Whether its runner is still waiting for a job.
+    private func isWaiting(_ id: Int) -> Bool {
+        jobs[id].map { [.starting, .listening].contains($0.state) } ?? false
     }
 
     /// A line of its runner's: listening, a job taken, how it went.
