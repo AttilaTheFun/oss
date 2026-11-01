@@ -9,7 +9,7 @@ Builds the app (App/build.sh --zip, build/OS-Server.zip), leases a macOS VM from
 (or uses a held lease: `oss machine lease macos --exports > file`), installs
 the app there and opens it with its canned server (`-fixture YES`: the same
 leases, usage and log every time), light and dark: its window, its menu
-bar's panel (`-panel YES`), its first launch's Set Up window (`-setup YES`)
+bar item's menu, opened (`-panel YES`), its first launch's Set Up window (`-setup YES`)
 and the menu bar with its icon; with --guest, a Linux or Windows VM's
 Screen window (`-guestScreen YES`): a real guest's screen, through the VNC
 relay of a lease held for it on an OS Server on this Mac (`oss machine lease

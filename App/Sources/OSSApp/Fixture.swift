@@ -24,8 +24,8 @@ enum Fixture {
         }
     }
 
-    /// The menu bar's panel in a window of its own instead of the main
-    /// window (`-panel YES`), for its screen.
+    /// The menu bar item's menu, opened (`-panel YES`), instead of the main
+    /// window, for its screen.
     static var showsPanel: Bool { isOn && UserDefaults.standard.bool(forKey: "panel") }
 
     /// Onboarding's window (`-setup YES`), for its screen.
@@ -169,6 +169,23 @@ enum Fixture {
     /// Where the app's windows are, in the screenshot's pixels (top-left
     /// origin), for the proof to crop each screen to: ~/oss-fixture-windows.json.
     @MainActor
+    /// Opens the menu bar item's menu, as a click on it would, once the
+    /// item has come up: the menu tracks until it's closed.
+    static func openMenu() {
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard let item = NSApp.windows.first(where: { String(describing: type(of: $0)).contains("StatusBar") }),
+                  let button = item.contentView.flatMap(statusButton) else { return }
+            button.performClick(nil)
+        }
+    }
+
+    private static func statusButton(_ view: NSView) -> NSButton? {
+        if let button = view as? NSButton { return button }
+        for child in view.subviews { if let button = statusButton(child) { return button } }
+        return nil
+    }
+
     static func writeWindowFrames() {
         guard let screen = NSScreen.main else { return }
         let scale = screen.backingScaleFactor
@@ -178,8 +195,26 @@ enum Fixture {
                     "x": Int(frame.minX * scale), "y": Int((screen.frame.height - frame.maxY) * scale),
                     "width": Int(frame.width * scale), "height": Int(frame.height * scale)]
         }
+        var frames2 = frames
+        // The menu, open: its window is the window server's, not AppKit's
+        // (CGWindowList, this process's at the pop-up menu's level).
+        let own = ProcessInfo.processInfo.processIdentifier
+        let listed = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        func bounds(_ window: [String: Any]) -> CGRect? {
+            (window[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
+        }
+        let statusLevel = Int(CGWindowLevelForKey(.statusWindow))
+        if let menu = listed.first(where: { window in
+            (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == own
+                && ((window[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0) > statusLevel
+                && (bounds(window)?.width ?? 0) > 120
+        }), let frame = bounds(menu) {
+            // CGWindowList's points, from the top left, as the rest are.
+            frames2.append(["title": "OS Server menu", "x": Int(frame.minX * scale), "y": Int(frame.minY * scale),
+                            "width": Int(frame.width * scale), "height": Int(frame.height * scale)])
+        }
         let menuBar = Int(NSStatusBar.system.thickness * scale)
-        var out = ["scale": scale, "menuBarHeight": menuBar, "windows": frames] as [String: Any]
+        var out = ["scale": scale, "menuBarHeight": menuBar, "windows": frames2] as [String: Any]
         // The menu bar item: its button's window.
         if let item = NSApp.windows.first(where: { String(describing: type(of: $0)).contains("StatusBar") }) {
             let frame = item.frame

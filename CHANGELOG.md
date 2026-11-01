@@ -13,6 +13,10 @@
   waiting for its job asks every 30 s whether the job is over (its run
   cancelled), and is given up then, not 10 minutes later, its container's
   memory freed.
+- **OS Server's menu is a menu, as Visor's**: what the server is doing,
+  Open OS Monitor, Copy OS Monitor Connection Code, Machines… (the window,
+  until OS Monitor shows the machines' screens), Settings… and Quit. The
+  window no longer opens at launch.
 - **A long answer comes back in order.** The command line's HTTP (curl,
   run by `Shell.run`) read curl's output with a pipe's readability
   handler, and one still running as curl exited could append its chunk

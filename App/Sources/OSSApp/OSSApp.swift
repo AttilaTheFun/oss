@@ -43,7 +43,10 @@ struct OSSApp: App {
         }
         // Taller with the canned server, so its screen holds everything.
         .defaultSize(width: 860, height: Fixture.isOn ? 1110 : 760)
-        .defaultLaunchBehavior(Fixture.showsPanel || Fixture.showsSetUp || Fixture.guestScreen != nil ? .suppressed : .presented)
+        // Opened from the menu (Machines…), never at launch: the app is its
+        // menu, and OS Monitor shows what the server does. The proof's screen
+        // of it is the one exception.
+        .defaultLaunchBehavior(Fixture.isOn && !Fixture.showsPanel && !Fixture.showsSetUp && Fixture.guestScreen == nil ? .presented : .suppressed)
 
         // A macOS VM's screen, live (by the machine's name).
         WindowGroup("Screen", id: "screen", for: String.self) { $name in
@@ -73,25 +76,17 @@ struct OSSApp: App {
         }
         .defaultSize(width: 1280, height: 748)
 
-        // The menu bar's panel in a window of its own, for the proof's
-        // screen of it (`-fixture -panel`): the same view, no clicking.
-        Window("OS Server menu", id: "panel") {
-            MenuBarView()
-                .environment(AppModel.shared.monitor)
-                .environment(AppModel.shared.server)
-                .background(.regularMaterial)
-        }
-        .windowResizability(.contentSize)
-        .defaultLaunchBehavior(Fixture.showsPanel ? .presented : .suppressed)
-
+        // A menu, as Visor's: what the server is doing, OS Monitor (open it,
+        // copy the code that connects it), Settings. The proof opens it
+        // itself (`-fixture -panel`).
         MenuBarExtra {
-            MenuBarView()
+            ServerMenu()
                 .environment(AppModel.shared.monitor)
                 .environment(AppModel.shared.server)
         } label: {
             MenuBarLabel().environment(AppModel.shared.monitor)
         }
-        .menuBarExtraStyle(.window)
+        .menuBarExtraStyle(.menu)
 
         // The first launch's: what should this Mac lend?
         Window("Set Up OS Server", id: "setup") {
@@ -127,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let appearance = Fixture.appearance { NSApp.appearance = NSAppearance(named: appearance) }
             Fixture.apply(to: model.monitor, server: model.server)
             model.watcher = MonitorFixture.monitor(name: "Mac Studio")
+            if Fixture.showsPanel { Fixture.openMenu() }
             // Written again as the windows settle (the proof reads the last).
             Task {
                 for _ in 0..<4 {

@@ -1259,7 +1259,7 @@ and only the publishing jobs may ask for an OIDC token (`id-token: write`).
 3. Builds OS Server.app and OS Monitor (Mac, and the iPhone's simulator)
    in the VM, and takes them back.
 4. Runs `tools/proof.py --held <the VM> --no-build`, against the VM: OS
-   Server's window, menu bar panel, Set Up window and menu bar item, light
+   Server's window, menu bar menu, Set Up window and menu bar item, light
    and dark; for full, the Linux and Windows guests' Screen windows too.
    It runs as it is: `--held` because its own lease wouldn't wait for a
    free VM, `--no-build` because the app is the VM's build, the agent for
