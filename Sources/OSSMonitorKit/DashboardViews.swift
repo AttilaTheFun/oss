@@ -52,7 +52,7 @@ struct ResourcesCard: View {
     /// together (the budget's count, else each lease's limit), less what
     /// they use.
     private var reservedIdle: Int64 {
-        let machines = usage.machines ?? []
+        let machines = usage.machines
         let reserved = budget?.leasedMemoryBytes ?? machines.reduce(0) { $0 + ($1.memoryLimitBytes ?? 0) }
         let used = machines.reduce(Int64(0)) { $0 + ($1.memoryBytes ?? 0) }
         return max(0, reserved - used)
@@ -733,7 +733,7 @@ public struct UsageOverview: View {
     public var body: some View {
         if let usage = monitor.usage {
             VStack(alignment: .leading, spacing: 16) {
-                ResourcesCard(usage: usage, history: monitor.history)
+                ResourcesCard(usage: usage, budget: monitor.status?.budget, history: monitor.history)
                 HStack(alignment: .top, spacing: 16) {
                     if let disk = usage.disk { DiskCard(disk: disk, day: monitor.day, volumes: monitor.volumes) }
                     if let top = usage.topProcesses, !top.isEmpty { OthersCard(processes: top) }
