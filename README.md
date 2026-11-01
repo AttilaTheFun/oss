@@ -77,7 +77,7 @@ OS Server's client for iPhone, iPad and Mac (`Monitor/`, its README).
 
 ```sh
 oss machine lease linux                        # an Ubuntu VM for an hour; prints how to reach it
-oss machine lease macos --config=xcode-27.0 --minutes=120   # a base of the server's own (oss status lists them)
+oss machine lease macos --config=xcode_27_2 --minutes=120   # a base of the server's own (oss status lists them)
 oss machine lease ios                          # an iPhone simulator
 oss machine lease ios --device="iPad Pro 13-inch (M5)"      # an iPad (any type the server's Xcode has; below)
 oss machine lease android --wait               # an emulator, waiting for a free one
@@ -459,7 +459,7 @@ oss machine xctest <id> --tests=bazel-bin/app/HelloWorldUITests.zip --host=bazel
 ### Self-hosted CI
 
 ```yaml
-- run: oss machine run macos --config=xcode-27.0 --minutes=90 -- ci/test-in-vm.sh
+- run: oss machine run macos --config=xcode_27_2 --minutes=90 -- ci/test-in-vm.sh
 ```
 
 or `oss machine lease linux --exports >> "$GITHUB_ENV"`, then `$OSS_SSH '…'`
@@ -535,7 +535,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: swift test
-      - run: oss machine run macos --config=xcode-27.0 -- ci/test-in-vm.sh   # a VM, leased in the job's name
+      - run: oss machine run macos --config=xcode_27_2 -- ci/test-in-vm.sh   # a VM, leased in the job's name
 ```
 
 - **How it finds them**: every few seconds, each repository's queued and
@@ -1005,7 +1005,7 @@ has no screen for Screen Sharing to show.
 The VM bases' `runner` passwords, if you want leases to carry them (for
 logging in at a VM's screen, or unlocking it):
 `guest-passwords.json` in OS Server's folder, mode 600, `{"macos": "…", "linux":
-"…", "windows": "…"}` (or `"macos/xcode-27.0"` for one config).
+"…", "windows": "…"}` (or `"macos/xcode_27_2"` for one config).
 
 Keep the installers (`*.ipsw`, `*.iso`) in this folder if you like: they
 are ignored by git. Keep the folder out of backups.
@@ -1084,7 +1084,7 @@ eval "$(/opt/homebrew/bin/brew shellenv)" && brew install git
 `oss image build macos tools --from=vanilla --script=tools.sh`, and leases
 ask for `--config=tools`. A layer with this Mac's Xcode (Apple's licence
 lets it run in a VM on the same Mac) copies it in:
-`oss image build macos xcode-27.0 --from=tools --copy=/Applications/Xcode.app:/Applications/Xcode.app --script=xcode.sh`,
+`oss image build macos xcode_27_2 --from=tools --copy=/Applications/Xcode.app:/Applications/Xcode.app --script=xcode.sh`,
 where `xcode.sh` accepts the licence and installs the platforms
 (`sudo xcodebuild -license accept; sudo xcodebuild -runFirstLaunch; xcodebuild -downloadPlatform iOS`).
 
@@ -1238,7 +1238,7 @@ and only the publishing jobs may ask for an OIDC token (`id-token: write`).
 
 | Job | Runs for | What it does |
 | --- | --- | --- |
-| `build-and-test` | pull requests, main | `tools/ci/mac_vm_tests.sh`, in a macOS VM (`xcode-27.0`): `swift build --build-tests`, then `swift test` one test at a time (the forwarder's tests time real sockets) with `OSS_TEST_SIMCTL=1` (real simulators of an iPad and an iPhone, made and deleted in the VM); the App package's `swift build`; OS Monitor's `bazel build` for the Mac and the iPhone's simulator |
+| `build-and-test` | pull requests, main | `tools/ci/mac_vm_tests.sh`, in a macOS VM (`xcode_27_2`): `swift build --build-tests`, then `swift test` one test at a time (the forwarder's tests time real sockets) with `OSS_TEST_SIMCTL=1` (real simulators of an iPad and an iPhone, made and deleted in the VM); the App package's `swift build`; OS Monitor's `bazel build` for the Mac and the iPhone's simulator |
 | `linux` | pull requests, main | `tools/ci/linux_build.sh`: `swift build --product oss` in a container of Visor's agent image (with Rosetta), the tree on its standard input, through `oss machine run container --inside` (its exec through the server's API: the runner's user can't reach a container's socket) |
 | `proof` | by hand only (full): to propose a release (no release without its commit's proof), or on a branch pushed at an earlier commit to bisect; compared with the release before the commit | `tools/ci/proof.sh` (below), uploaded as the `proof` artifact, kept 90 days |
 | `beta` | pull requests, main, after `build-and-test` | `tools/ci/mac_vm_package.sh`: OS Server.app (`App/build.sh --zip`, QEMU from Homebrew installed first) and OS Monitor for the Mac built in a macOS VM of their own, OS Monitor's icon checked for its dark appearance; then `tools/ci/publish_from_ci.sh`, which sends each, unsigned, to Applications Server with the job's OIDC token: the server signs them with Developer ID and notarizes them (com.LoganShire.OSS, com.LoganShire.OSMonitor.Mac). OS Server's version is `OSS.version`, its build number the run's |
@@ -1250,7 +1250,7 @@ and only the publishing jobs may ask for an OIDC token (`id-token: write`).
    and `tools/ci/proof_baseline` on the runner, and
    `tools/window_rect.swift` for the VM, and fetches the proof's base
    (below) into the job's shallow checkout.
-2. Leases a macOS VM (`xcode-27.0`) with a key of the run's own, which an
+2. Leases a macOS VM (`xcode_27_2`) with a key of the run's own, which an
    ssh-agent of the run's holds (so `tools/proof.py`'s own `oss machine
    ssh` reaches it); for full, a Linux and a Windows VM meanwhile.
 3. Builds OS Server.app and OS Monitor (Mac, and the iPhone's simulator)

@@ -1,6 +1,6 @@
 #!/bin/bash
 # OS Server's proof, from CI: its apps built in a macOS VM leased from OS
-# Server itself (xcode-27.0), pictured with their canned servers, and each
+# Server itself (xcode_27_2), pictured with their canned servers, and each
 # picture compared with the one kept for it at the proof's base
 # (tools/ci/proof_baseline: a pull request's base branch, a run by hand's
 # release before; Tests/Proof there). Never this tree's kept pictures: a pull
@@ -173,7 +173,7 @@ mac_vm_steps << 'STEPS'
         ;;
 STEPS
 
-echo "::group::A macOS VM (xcode-27.0)"
+echo "::group::A macOS VM (xcode_27_2)"
 mac_vm_lease
 # The run's key in an agent of its own, for what tools/proof.py runs.
 eval "$(ssh-agent -s)" > /dev/null

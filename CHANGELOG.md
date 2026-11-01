@@ -8,6 +8,9 @@
   refused with `volumeInUse`. CI jobs that share one kept volume (a
   repository's Bazel tree) can queue on OS Server instead of a GitHub
   concurrency group, which keeps one pending job and cancels the rest.
+- **CI's macOS VMs are `xcode_27_2`** (Xcode 27.2, iOS 27.2's
+  simulator), not `xcode-27.0`, which goes once no repository's CI asks
+  for it.
 - **The proof runs by hand only**, to propose a release or, on a branch
   pushed at an earlier commit, to bisect a regression: a push to main gets
   its build, tests and beta alone. A run by hand compares with the release
