@@ -451,6 +451,24 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     #expect(await service.list().map(\.id) == [3, 2, 1])
 }
 
+@Test func aJobStillQueuedAfterItsRecordEndedIsOfferedAgain() async throws {
+    let github = queueGitHub()
+    let host = FakeRunnerHost()
+    let service = CIService(plan: plan(max: 2), github: makeREST(github), host: host)
+    await service.offer(try decodedJobs([job(1)]), repository: "owner/gh_mcp")
+    #expect(await eventually { host.runningLeases == ["lease1"] })
+    // Its runner takes another of the label's jobs and ends: job 1's record
+    // ends, but GitHub still has it queued.
+    host.finish("lease1", lines: ["Listening for Jobs", "Running job: job 2", "Job job 2 completed with result: Succeeded"])
+    #expect(await eventually { await service.list().first { $0.id == 1 }?.state.ended == true })
+    // Seen queued again soon after: left be (GitHub's answer may lag).
+    await service.offer(try decodedJobs([job(1)]), repository: "owner/gh_mcp", now: Date().addingTimeInterval(10))
+    #expect(host.started == [1])
+    // Still queued two minutes on: offered again, a runner made for it.
+    await service.offer(try decodedJobs([job(1)]), repository: "owner/gh_mcp", now: Date().addingTimeInterval(CIService.requeueAfter + 1))
+    #expect(await eventually { host.started == [1, 1] })
+}
+
 @Test func aJobWaitsWhenThereIsNoRoomAndTakesItsPlaceAgain() async throws {
     let github = queueGitHub()
     let host = FakeRunnerHost()

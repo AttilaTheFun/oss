@@ -2,6 +2,12 @@
 
 ## 0.14.0 (unreleased)
 
+- **A job still queued is offered again**: a runner takes whichever of
+  its label's jobs GitHub gives it, so the job it was made for could keep
+  waiting at GitHub while its record here said it had ended, and it was
+  never offered again (main's beta waited 75 minutes on an idle server).
+  A job GitHub still has queued two minutes after its record ended gets a
+  new record and a runner.
 - **A restart that waits for what runs** (API 16): `oss restart` (`POST
   /v1/server/restart`) grants no new lease but a session's (`restarting`;
   one waited for keeps its place) and starts no CI runner, lets the CI
