@@ -282,12 +282,14 @@ public struct OSSClient: Sendable {
     }
 
     /// A lease asked for and waited on until it is ready, or (with
-    /// `waitForCapacity`) first until the platform has room. `progress` hears
-    /// what it's waiting for. Waiting, it asks with a ticket of its own
-    /// (API 14: a server before ignores it), so the server keeps its place in
-    /// line; a lease bigger than the server's whole budget (`tooBig`) isn't
-    /// waited for.
-    public func lease(_ request: LeaseRequest, waitForCapacity: Bool = false,
+    /// `waitForCapacity`) first until the platform has room and the volumes
+    /// it keeps are free (`volumeInUse`: another lease, such as an earlier
+    /// CI job's container, has one). `progress` hears what it's waiting
+    /// for. Waiting, it asks with a ticket of its own (API 14: a server
+    /// before ignores it), so the server keeps its place in line; a lease
+    /// bigger than the server's whole budget (`tooBig`) isn't waited for.
+    /// `retry` is how long it waits between asking.
+    public func lease(_ request: LeaseRequest, waitForCapacity: Bool = false, retry: Duration = .seconds(15),
                       progress: @Sendable (String) -> Void = { _ in }) async throws -> Lease {
         var request = request
         if waitForCapacity, request.waitTicket == nil { request.waitTicket = UUID().uuidString }
@@ -296,9 +298,9 @@ public struct OSSClient: Sendable {
             do {
                 lease = try await requestLease(request)
                 break
-            } catch let error as OSSError where waitForCapacity && error.message.hasPrefix("busy") {
+            } catch let error as OSSError where waitForCapacity && (error.message.hasPrefix("busy") || error.code == "volumeInUse") {
                 progress("\(error.message); waiting")
-                try await Task.sleep(for: .seconds(15))
+                try await Task.sleep(for: retry)
             }
         }
         progress("lease \(lease.id): making \(lease.name)")

@@ -2,6 +2,12 @@
 
 ## 0.14.0 (unreleased)
 
+- **`--wait` waits for a kept volume too** (and `oss machine run`, which
+  always waits): a lease whose `:keep` volume another lease still has is
+  asked for again until it's free, as one with no room is, rather than
+  refused with `volumeInUse`. CI jobs that share one kept volume (a
+  repository's Bazel tree) can queue on OS Server instead of a GitHub
+  concurrency group, which keeps one pending job and cancels the rest.
 - **The proof runs by hand only**, to propose a release or, on a branch
   pushed at an earlier commit, to bisect a regression: a push to main gets
   its build, tests and beta alone. A run by hand compares with the release
