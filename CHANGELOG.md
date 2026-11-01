@@ -9,6 +9,10 @@
   the app was replaced runs from the old bundle; it was counted both as a
   lease and as another app's VMs, and the budget showed no room for a
   macOS VM.
+- **No room to build CI's oss for Linux is not a failed build.** A builder
+  refused for capacity (a macOS image building, the memory budget full)
+  was cached as a failed build, so no job's container got oss for half an
+  hour; now the next job tries again.
 - **The MCP port's tool calls reach this server's API over loopback.**
   They went to the host the caller had reached the MCP port by, over plain
   HTTP, which App Transport Security in OS Server's app refuses for a
