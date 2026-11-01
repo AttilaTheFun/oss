@@ -6,7 +6,9 @@
 # apps CI publishes). The VM is the script's alone: leased for an hour,
 # renewed while it runs, released however it ends (a kill nothing can trap
 # leaves it an hour at most). The checkout's tree goes in with the runner's
-# bazelisk; Bazel there reads OS Server's cache, as every lease's does.
+# bazelisk where the runner is a Mac (else the VM's own, the xcode layer's
+# Homebrew one: an OS Server runner is a Linux container); Bazel there
+# reads OS Server's cache, as every lease's does.
 # Copied from the scripts other repositories' CI runs, with oss's steps.
 #
 #   ROOT=<the checkout>
@@ -36,7 +38,10 @@ OSS="/Applications/OS Server.app/Contents/Helpers/oss"
 
 mac_vm_start() {
     me="$(basename "$0")"
-    bazelisk="$(command -v bazelisk)" || { echo "$me: no bazelisk on the PATH to copy in" >&2; exit 1; }
+    bazelisk=""
+    if [ "$(uname)" = Darwin ]; then
+        bazelisk="$(command -v bazelisk)" || { echo "$me: no bazelisk on the PATH to copy in" >&2; exit 1; }
+    fi
     key_comment="${1:?mac_vm_start takes a comment for the SSH key}"
     work="$(mktemp -d)"
     chmod 700 "$work"
@@ -105,7 +110,13 @@ step="$1"
 shift
 case "$step" in
     unpack)
-        mkdir -p oss bin && tar -xzf tree.tar.gz -C oss && mv bazel bin/bazel && chmod +x bin/bazel || exit
+        mkdir -p oss bin && tar -xzf tree.tar.gz -C oss || exit
+        # The runner's bazelisk, or the VM's own (a runner that isn't a Mac's).
+        if [ -f bazel ]; then
+            mv bazel bin/bazel && chmod +x bin/bazel || exit
+        else
+            ln -sf "$(command -v bazelisk)" bin/bazel || { echo "in_vm.sh: no bazelisk in the VM" >&2; exit 1; }
+        fi
         xcodebuild -version | head -1
         xcrun simctl list runtimes | grep -i '^ios'
         ;;
@@ -151,7 +162,7 @@ mac_vm_copy_tree() {
     local tree
     tree="$(git -C "$ROOT" -c user.name=CI -c user.email=ci@localhost stash create)"
     git -C "$ROOT" archive --format=tar.gz -o "$work/vm/tree.tar.gz" "${tree:-HEAD}"
-    cp "$(readlink -f "$bazelisk")" "$work/vm/bazel"
+    [ -z "$bazelisk" ] || cp "$(readlink -f "$bazelisk")" "$work/vm/bazel"
     run "$OSS" machine upload "$lease" --identity="$work/key" "$work/vm" ci
     run in_vm unpack
 }
