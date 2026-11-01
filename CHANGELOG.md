@@ -9,6 +9,11 @@
   came back with a chunk out of place, which the client took for invalid
   JSON ("Unexpected character … index 32775"). Each pipe is now read on a
   thread of its own, its chunks in order.
+- **CI in OS Monitor** (API 15): a CI card shows how many runners are in
+  use of how many, each job waiting or running (why it waits: every
+  runner in use, or the limit with no room for its container; how long),
+  and the last few that ended, each a link to its run. `GET /v1/ci` says
+  it all at once, and the monitor token reads it and `/v1/ci/jobs`.
 - **`--wait` waits for a kept volume too** (and `oss machine run`, which
   always waits): a lease whose `:keep` volume another lease still has is
   asked for again until it's free, as one with no room is, rather than

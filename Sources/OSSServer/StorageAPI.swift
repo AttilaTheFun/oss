@@ -35,6 +35,12 @@ enum Access: Sendable {
     /// Whether it may do anything (lease, store, grant): the token or a key.
     var mayAct: Bool { application != nil }
 
+    /// OS Monitor's token: it reads, and does nothing else.
+    var isMonitor: Bool {
+        if case .monitor = self { return true }
+        return false
+    }
+
     /// The application it is: a key's, or `user` for the shared token.
     var application: String? {
         switch self {

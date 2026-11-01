@@ -68,6 +68,9 @@ public struct CIJob: Codable, Sendable, Hashable, Identifiable {
     /// How its runner said the job went (`Succeeded`, `Failed`, `Canceled`).
     public var result: String?
     public var error: String?
+    /// Why a queued job waits (API 15): every runner in use, or the limit
+    /// that has no room for its container (`busy`'s words).
+    public var waiting: String?
 
     public init(id: Int, repository: String, workflow: String? = nil, name: String, runID: Int, runAttempt: Int? = nil,
                 url: URL? = nil, runURL: URL? = nil, branch: String? = nil, commit: String? = nil, labels: [String],
@@ -96,8 +99,41 @@ public struct CIJob: Codable, Sendable, Hashable, Identifiable {
     }
 }
 
+/// CI as the server runs it (API 15): its runners, the repositories it
+/// serves, the jobs it took.
+public struct CIStatus: Codable, Sendable, Hashable {
+    public struct Repository: Codable, Sendable, Hashable {
+        /// `owner/name`, and the label its jobs ask for (with `self-hosted`).
+        public var name: String
+        public var label: String
+
+        public init(name: String, label: String) {
+            self.name = name
+            self.label = label
+        }
+    }
+
+    /// Runners at most at once, and how many are in use (being made,
+    /// waiting for their job or running it).
+    public var maxConcurrent: Int
+    public var running: Int
+    public var repositories: [Repository]
+    /// Newest first, as `GET /v1/ci/jobs`.
+    public var jobs: [CIJob]
+
+    public init(maxConcurrent: Int, running: Int, repositories: [Repository], jobs: [CIJob]) {
+        self.maxConcurrent = maxConcurrent
+        self.running = running
+        self.repositories = repositories
+        self.jobs = jobs
+    }
+}
+
 extension OSSClient {
     /// The CI jobs the server took (API 13), newest first; 404 `noCI` from
     /// a server that runs none.
     public func ciJobs() async throws -> [CIJob] { try await json("GET", "/v1/ci/jobs") }
+
+    /// CI as a whole (API 15); 404 `noCI` from a server that runs none.
+    public func ciStatus() async throws -> CIStatus { try await json("GET", "/v1/ci") }
 }

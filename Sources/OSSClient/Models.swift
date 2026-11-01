@@ -1092,6 +1092,9 @@ public enum OSS {
     /// (`LeaseRequest.waitTicket`) and keeps its place in line; an image
     /// build takes a place as a lease does (`LeaseRequest.build` and
     /// `buildPID`, `Lease.build`, `LeaseKind.build`).
+    /// 15 from 0.14.0: CI as a whole (`GET /v1/ci`: how many runners at
+    /// most and in use, the repositories and their labels, the jobs), each
+    /// waiting job's reason (`CIJob.waiting`); OS Monitor's token reads it.
     /// 7 from 0.13.0: storage (`/v1/storage/…`: objects by their SHA-256,
     /// kept while a holder's lease on them lasts), grants (`/v1/grants`: a
     /// URL that does one thing without the token), an iOS lease's app
@@ -1112,7 +1115,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 14
+    public static let apiLevel = 15
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
 }

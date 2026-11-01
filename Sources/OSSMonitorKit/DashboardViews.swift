@@ -3,9 +3,9 @@ import SwiftUI
 
 /// What a server is doing, whole: the Mac's CPU, memory and disk (OS
 /// Server's share, every other process's, what's free), what's running on
-/// it, its capacity, its files, the other apps using the most, its Bazel
-/// cache. OS Monitor shows it for each server; OS Server's window for its
-/// own.
+/// it, CI's runners and jobs, its capacity, its files, the other apps
+/// using the most, its Bazel cache. OS Monitor shows it for each server;
+/// OS Server's window for its own.
 @available(macOS 15, iOS 18, *)
 public struct ServerDashboard: View {
     let monitor: ServerMonitor
@@ -24,6 +24,7 @@ public struct ServerDashboard: View {
             if let usage = monitor.usage {
                 ResourcesCard(usage: usage, history: monitor.history)
                 MachinesCard(monitor: monitor)
+                if let ci = monitor.ci { CICard(ci: ci, now: monitor.now).id("ci") }
                 if let disk = usage.disk { DiskCard(disk: disk, day: monitor.day, volumes: monitor.volumes).id("disk") }
                 if let top = usage.topProcesses, !top.isEmpty { OthersCard(processes: top) }
                 if let status = monitor.status { CapacityCard(status: status) }
@@ -223,6 +224,122 @@ struct MachinesCard: View {
         guard let bytes = row.usage?.memoryBytes else { return "—" }
         let limit = row.usage?.memoryLimitBytes ?? row.lease.memoryLimitBytes
         return limit.map { "\(Format.bytes(bytes)) of \(Format.bytes($0))" } ?? Format.bytes(bytes)
+    }
+}
+
+// MARK: - CI
+
+/// CI's jobs as the server runs them: how many runners are in use of how
+/// many, then each job waiting or running (why it waits, how long), then
+/// the last few that ended, each a link to its run.
+@available(macOS 15, iOS 18, *)
+struct CICard: View {
+    let ci: CIStatus
+    let now: Date
+
+    /// Those that ended shown at most.
+    static let ended = 5
+
+    var body: some View {
+        let going = ci.jobs.filter { !$0.state.ended }.sorted { ($0.queued, $0.id) < ($1.queued, $1.id) }
+        let ended = Array(ci.jobs.filter(\.state.ended).prefix(Self.ended))
+        Card("CI", systemImage: "gearshape.2") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Runners")
+                    Spacer()
+                    Text("\(ci.running) of \(ci.maxConcurrent) in use").monospacedDigit().foregroundStyle(.secondary)
+                }
+                ShareBar(parts: [(Double(ci.running) / Double(max(1, ci.maxConcurrent)), Color.orange)])
+                if going.isEmpty && ended.isEmpty {
+                    Text("No jobs yet. \(ci.repositories.count) repositories served.").font(.callout).foregroundStyle(.secondary)
+                }
+                ForEach(going) { CIJobRow(job: $0, now: now) }
+                if !ended.isEmpty {
+                    Text("Ended").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, going.isEmpty ? 0 : 4)
+                    ForEach(ended) { CIJobRow(job: $0, now: now) }
+                }
+            }
+        }
+    }
+}
+
+/// One job: its state, its repository and name (a link to its run), why it
+/// waits or how it went, and how long.
+@available(macOS 15, iOS 18, *)
+struct CIJobRow: View {
+    let job: CIJob
+    let now: Date
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            CIStateBadge(job: job).frame(width: 74, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                let title = "\(job.repository.split(separator: "/").last.map(String.init) ?? job.repository) · \(job.name)"
+                if let link = job.runURL ?? job.url {
+                    Link(title, destination: link).font(.body.weight(.medium)).lineLimit(1)
+                } else {
+                    Text(title).font(.body.weight(.medium)).lineLimit(1)
+                }
+                Text([job.workflow, job.branch].compactMap { $0 }.joined(separator: " · ")).lineLimit(1)
+                    .font(.caption).foregroundStyle(.secondary)
+                if let note = note { Text(note).font(.caption).foregroundStyle(job.state == .failed ? Color.red : Color.secondary).lineLimit(2) }
+            }
+            Spacer(minLength: 8)
+            Text(time).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+        }
+    }
+
+    /// Why it waits, or what went wrong.
+    private var note: String? {
+        if job.state == .queued { return job.waiting.map { "Waiting: \($0)" } }
+        return job.error
+    }
+
+    private var time: String {
+        let job = job.timed(now)
+        if let ran = job.ran { return job.state.ended ? "ran \(Format.minutes(ran))" : "\(Format.minutes(ran)) running" }
+        return "\(Format.minutes(job.waited ?? 0)) waiting"
+    }
+}
+
+/// A job's state in a small capsule: waiting grey, starting blue, running
+/// orange, then how it ended.
+@available(macOS 15, iOS 18, *)
+struct CIStateBadge: View {
+    let job: CIJob
+
+    var body: some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 5)
+            .background(Capsule().fill(tint.opacity(0.15)))
+    }
+
+    private var text: String {
+        switch job.state {
+        case .queued: "Waiting"
+        case .starting: "Starting"
+        case .listening: "Listening"
+        case .running: "Running"
+        case .completed: job.result ?? "Done"
+        case .unclaimed: "Unclaimed"
+        case .skipped: "Skipped"
+        case .failed: "Failed"
+        }
+    }
+
+    private var tint: Color {
+        switch job.state {
+        case .queued, .skipped, .unclaimed: .gray
+        case .starting, .listening: .blue
+        case .running: .orange
+        case .failed: .red
+        case .completed: job.result == "Succeeded" ? .green : (job.result == "Canceled" ? .gray : .red)
+        }
     }
 }
 

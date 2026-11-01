@@ -98,7 +98,19 @@ actor CIService {
 
     /// Every job seen, newest first, with how long each waited and ran.
     func list(now: Date = Date()) -> [CIJob] {
-        jobs.values.sorted { ($0.queued, $0.id) > ($1.queued, $1.id) }.map { $0.timed(now) }
+        let full = active.count >= plan.maxConcurrent
+        return jobs.values.sorted { ($0.queued, $0.id) > ($1.queued, $1.id) }.map { job in
+            var job = job.timed(now)
+            // Waiting for a place, when every runner is in use.
+            if job.state == .queued, job.waiting == nil, full { job.waiting = "every runner in use (\(plan.maxConcurrent) at most)" }
+            return job
+        }
+    }
+
+    /// CI as a whole (API 15).
+    func status(now: Date = Date()) -> CIStatus {
+        CIStatus(maxConcurrent: plan.maxConcurrent, running: active.count,
+                 repositories: plan.repositories.map { CIStatus.Repository(name: $0.name, label: $0.label) }, jobs: list(now: now))
     }
 
     // MARK: Polling
@@ -178,6 +190,7 @@ actor CIService {
             return finish(id)
         }
         jobs[id]?.state = .starting
+        jobs[id]?.waiting = nil
         let holder = CINames.holder(job)
         let lease: String
         do {
@@ -185,6 +198,7 @@ actor CIService {
         } catch let busy as CIBusy {
             // Back in its place, tried again in a while.
             jobs[id]?.state = .queued
+            jobs[id]?.waiting = busy.description
             active.remove(id)
             queue.insert(id, at: 0)
             log("ci: \(job.repository) job \(id) waits: \(busy)")

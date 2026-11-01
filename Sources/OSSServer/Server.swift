@@ -1408,13 +1408,14 @@ enum Server {
                 return .json(reached(try await machines.lease(asked, local: LocalNetworks.isThisMac(request.remoteAddress))), status: 201)
             case ("GET", 2) where parts[1] == "machines":
                 return .json(await machines.all().filter { visible($0.platform) && (job == nil || $0.holder == job) }.map(reached))
-            case ("GET", 3) where parts[1] == "ci" && parts[2] == "jobs":
-                // CI's jobs (API 13), with the token or a key.
-                guard access.mayAct else { return .error("CI's jobs are read with the API's token or a key", status: 403) }
+            case ("GET", 3) where parts[1] == "ci" && parts[2] == "jobs", ("GET", 2) where parts[1] == "ci":
+                // CI's jobs (API 13) and CI as a whole (API 15), with the
+                // token, a key or OS Monitor's token.
+                guard access.mayAct || access.isMonitor else { return .error("CI's jobs are read with the API's token or a key", status: 403) }
                 guard let ci = api.ci else {
                     return response(for: APIError(error: "this server runs no CI jobs: \(api.ciOff ?? "it has no CI")", code: "noCI"))
                 }
-                return .json(await ci.list())
+                return parts.count == 3 ? .json(await ci.list()) : .json(await ci.status())
             case ("GET", 3) where parts[1] == "machines":
                 guard let lease = await machines.lease(parts[2]), visible(lease.platform) else { return .error("no lease \(parts[2])", status: 404) }
                 return .json(reached(lease))
