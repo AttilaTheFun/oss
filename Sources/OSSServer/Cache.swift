@@ -82,9 +82,13 @@ enum CacheClientFiles {
     static let begin = "# oss: the server's Bazel cache, read-only (its populate job writes it; the token is in .netrc)"
     static let end = "# oss: end"
 
-    static func bazelrc(host: String, port: Int) -> [String] {
-        [begin, "build --remote_cache=http://\(host):\(port)", "build --noremote_upload_local_results", end]
+    static func bazelrc(host: String, port: Int, writes: Bool = false) -> [String] {
+        [writes ? beginWrites : begin, "build --remote_cache=http://\(host):\(port)",
+         writes ? "build --remote_upload_local_results" : "build --noremote_upload_local_results", end]
     }
+
+    /// CI's populate job's: it writes (its password a cache-write grant).
+    static let beginWrites = "# oss: the server's Bazel cache, written by this populate job (its grant is in .netrc)"
 
     static func netrcEntry(host: String, token: String) -> String { "machine \(host) login bazel password \(token)" }
 
@@ -267,6 +271,11 @@ final class CacheServer: @unchecked Sendable {
     let config: CacheConfig
     let readToken: String
     private let writeToken: String
+    /// A CI populate job's cache-write grant, checked (set once CI's grants exist).
+    private let lock = NSLock()
+    private var writeGrant: (@Sendable (String) -> Bool)?
+
+    func allowWrites(_ check: @escaping @Sendable (String) -> Bool) { lock.withLock { writeGrant = check } }
 
     init(config: CacheConfig, store: CacheStore, readToken: String, writeToken: String) throws {
         let parameters = NWParameters.listening
@@ -309,6 +318,7 @@ final class CacheServer: @unchecked Sendable {
         }
         secret = secret.trimmingCharacters(in: .whitespaces)
         if constantTimeEqual(secret, writeToken) { return .write }
+        if let check = lock.withLock({ writeGrant }), check(secret) { return .write }
         if constantTimeEqual(secret, readToken) { return .read }
         return .none
     }

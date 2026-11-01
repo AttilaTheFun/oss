@@ -131,6 +131,28 @@ struct GrantKey: Sendable {
         return url
     }
 
+    /// The cache's write, for CI's populate job alone (`ci.populate`): a
+    /// password good while its runner's lease lasts, in place of the write
+    /// token, which never leaves the server's Mac.
+    static let cacheWriteVerb = "ci.cache-write"
+
+    func issueCacheWrite(holder: String, runner: String, live: JobGrants, now: Date = Date()) -> String {
+        live.open(runner)
+        log("grant: \(Self.cacheWriteVerb) for \(holder), while lease \(runner) lasts")
+        return token(GrantClaims(verb: Self.cacheWriteVerb, resource: "machines/\(runner)", holder: holder,
+                                 expires: Int(now.addingTimeInterval(Self.jobTTL).timeIntervalSince1970)))
+    }
+
+    /// Whether `token` is a populate job's cache write whose runner's lease
+    /// is still open.
+    func verifyCacheWrite(_ token: String, live: JobGrants, now: Date = Date()) -> Bool {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2, let payload = Data(base64URL: String(parts[0])),
+              let claims = try? JSONDecoder().decode(GrantClaims.self, from: payload), claims.verb == Self.cacheWriteVerb,
+              claims.resource.hasPrefix("machines/"), live.isOpen(String(claims.resource.dropFirst("machines/".count))) else { return false }
+        return verify(token, verb: Self.cacheWriteVerb, resource: claims.resource, now: now) != nil
+    }
+
     /// The claims, if `token` is a CI job's grant of this server's whose
     /// runner's lease is still open; nil otherwise.
     func verifyJob(_ token: String, live: JobGrants, now: Date = Date()) -> GrantClaims? {

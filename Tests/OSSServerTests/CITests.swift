@@ -597,6 +597,30 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
 #if canImport(Network)
 // MARK: A job's grant, at the API
 
+@Test func onlyThePopulateJobOnMainWritesTheCacheAndOnlyWhileItsRunnerLasts() throws {
+    let settings = try JSONDecoder().decode(CISettings.self, from: Data("""
+        {"repositories": ["owner/reviews"], "populate": {"owner/reviews": "populate"}}
+        """.utf8))
+    let repository = try #require(CIPlan.make(settings: settings, app: CIAppConfig(appId: 1), containerCapacity: 4).0?.repositories.first)
+    var job = CIJob(id: 1, repository: "owner/reviews", name: "populate", runID: 9, branch: "main", labels: [], queued: Date())
+    #expect(repository.populates(job))
+    job.branch = "a-pull-request"
+    #expect(!repository.populates(job))
+    job.branch = "main"
+    job.name = "linux"
+    #expect(!repository.populates(job))
+    // Its password: good while its runner's lease is open, and no other grant's.
+    let grants = GrantKey(key: Data(repeating: 7, count: 32)), live = JobGrants()
+    let password = grants.issueCacheWrite(holder: "populate-9@ci", runner: "ab12", live: live)
+    #expect(grants.verifyCacheWrite(password, live: live))
+    live.close("ab12")
+    #expect(!grants.verifyCacheWrite(password, live: live))
+    let jobGrant = try grants.issueJob(holder: "linux-9@ci", runner: "cd34", base: "http://h:7480", live: live)
+    #expect(!grants.verifyCacheWrite(JobGrantEnvironment.token(["OSS_GRANT": jobGrant.absoluteString])!, live: live))
+    #expect(CacheClientFiles.bazelrc(host: "h", port: 7490, writes: true).contains("build --remote_upload_local_results"))
+    #expect(CacheClientFiles.bazelrc(host: "h", port: 7490).contains("build --noremote_upload_local_results"))
+}
+
 @Test func aJobsGrantActsForTheJobAloneWhileItsRunnerLasts() async throws {
     let root = NSTemporaryDirectory() + "oss-ci-grant-\(UUID().uuidString)"
     var api = makeAPI(makeStore())

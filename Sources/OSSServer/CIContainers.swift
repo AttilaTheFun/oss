@@ -53,12 +53,17 @@ struct CIContainers: CIRunnerHost {
             } else {
                 log("ci: lease \(lease.id): no Linux oss to put in it (its job's scripts find none)")
             }
-            // The server's Bazel cache, read-only, as every VM lease's: a
-            // job's build in its container starts warm.
+            // The server's Bazel cache, as every VM lease's: a job's build in
+            // its container starts warm. Read-only, but for its repository's
+            // populate job on main, which writes it with a grant good while
+            // its runner lasts (the write token never leaves the server's Mac).
             if let cache = await machines.bazelCacheSettings(), let host = await serverURLs(lease.id).first.flatMap({ URL(string: $0)?.host }) {
-                try await putText(CacheClientFiles.bazelrc(host: host, port: cache.port).joined(separator: "\n") + "\n", into: lease,
-                                  "cat >> \"$HOME/.bazelrc\"")
-                try await putText(CacheClientFiles.netrcEntry(host: host, token: cache.readToken) + "\n", into: lease,
+                let writes = repository?.populates(job) == true
+                let password = writes ? grants.issueCacheWrite(holder: holder, runner: lease.id, live: jobGrants) : cache.readToken
+                if writes { log("ci: \(job.repository) job \(job.id) (\(job.name)) populates the Bazel cache") }
+                try await putText(CacheClientFiles.bazelrc(host: host, port: cache.port, writes: writes).joined(separator: "\n") + "\n",
+                                  into: lease, "cat >> \"$HOME/.bazelrc\"")
+                try await putText(CacheClientFiles.netrcEntry(host: host, token: password) + "\n", into: lease,
                                   "umask 077 && cat >> \"$HOME/.netrc\"")
             }
         } catch {

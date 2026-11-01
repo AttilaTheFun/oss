@@ -1274,6 +1274,8 @@ public final class ServerHost: Sendable {
         Task { await Components.shared.attach(containers: containers) { platform in await machines.held(platform) } }
         #endif
         let grants = GrantKey.ensure(), jobGrants = JobGrants()
+        // CI's populate job writes the cache with a grant of its own, while its runner lasts.
+        cache?.allowWrites { grants.verifyCacheWrite($0, live: jobGrants) }
         // CI's jobs in containers, where the GitHub App's files and server.json's `ci` say so.
         let (ci, ciOff) = makeCI(config: config, machines: machines, storage: storage, grants: grants, jobGrants: jobGrants)
         let api = API(machines: machines, token: token, cache: cache, storage: storage, grants: grants, jobGrants: jobGrants, ci: ci,

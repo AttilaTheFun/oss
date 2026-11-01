@@ -22,6 +22,9 @@
   the server's Bazel cache (~/.bazelrc and ~/.netrc, as a VM lease's), so
   a job clones and builds there and leases a machine only to run what it
   built.
+  Only a repository's populate job on main (`ci.populate`) writes the
+  cache, with a grant good while its runner lasts; the write token never
+  leaves the server's Mac.
 - **The line can't deadlock**: the oldest lease waiting is kept room for
   while the line moves, but once nothing has been granted or released for
   5 minutes a lease that fits goes ahead. The room kept could be what the
