@@ -2,6 +2,13 @@
 
 ## 0.14.0 (unreleased)
 
+- **A lease's processes are found through its helper too.** A container
+  lease's VM is matched by its `oss-machine` helper's arguments (its
+  helper.json), and any `oss-machine` is OS Server's own, whichever copy of
+  the app it runs from. A session container whose helper started before
+  the app was replaced runs from the old bundle; it was counted both as a
+  lease and as another app's VMs, and the budget showed no room for a
+  macOS VM.
 - **The MCP port's tool calls reach this server's API over loopback.**
   They went to the host the caller had reached the MCP port by, over plain
   HTTP, which App Transport Security in OS Server's app refuses for a

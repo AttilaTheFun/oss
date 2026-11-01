@@ -93,7 +93,9 @@ struct LibprocTable: ProcessTable {
         var row = ProcessRow(pid: pid, ppid: ppid, responsible: responsible, path: path, footprint: footprint,
                              cpuNanoseconds: ticks * timebase.numer / timebase.denom)
         if row.isVM { row.openFiles = openFiles(pid) }
-        if row.executable == "launchd_sim" { row.arguments = arguments(pid) }
+        // A simulator's device (its UDID), and a machine helper's lease (its
+        // helper.json's path) are in their arguments.
+        if row.executable == "launchd_sim" || row.executable == "oss-machine" { row.arguments = arguments(pid) }
         return row
     }
 
