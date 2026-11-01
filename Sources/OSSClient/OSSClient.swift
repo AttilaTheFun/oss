@@ -147,6 +147,10 @@ public struct OSSClient: Sendable {
     /// `CLIENT_ID` header): a CI job, a Visor session. What it leases and
     /// stores is then `<clientID>@<application>`'s.
     public var clientID: String?
+    /// The host the original caller reached the server by
+    /// (`OSSHeaders.reachedHost`), when this client is the server calling
+    /// itself over loopback.
+    public var reachedHost: String?
 
     /// The server's host: SSH, VNC and adb to a lease go to it too.
     public var host: String { server.host ?? "127.0.0.1" }
@@ -223,6 +227,7 @@ public struct OSSClient: Sendable {
     func authorization() async throws -> [String: String] {
         var headers = ["Authorization": "Bearer \(try await token())", "OSS-API": "\(OSS.apiLevel)"]
         if let clientID, !clientID.isEmpty { headers[OSSHeaders.clientID] = clientID }
+        if let reachedHost, !reachedHost.isEmpty { headers[OSSHeaders.reachedHost] = reachedHost }
         return headers
     }
 

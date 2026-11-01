@@ -2,6 +2,14 @@
 
 ## 0.14.0 (unreleased)
 
+- **The MCP port's tool calls reach this server's API over loopback.**
+  They went to the host the caller had reached the MCP port by, over plain
+  HTTP, which App Transport Security in OS Server's app refuses for a
+  tailnet or LAN name (NSURLErrorDomain -1022): every `oss_` tool failed
+  for a caller on another Mac. Now they go to `127.0.0.1` and name that
+  host in `OSS-Reached-Host`, which the API honours from loopback alone,
+  so forwarded ports and grants' URLs still answer as the caller reaches
+  the server.
 - **A busy server still says hello**: `/v1/hello` is answered by the
   API's listener at once, without waiting for a task, and a client asks
   this computer's server again with longer waits (4, 10, 15 s) before
