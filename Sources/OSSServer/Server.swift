@@ -98,6 +98,9 @@ actor MachineManager {
         self.processTable = processTable
     }
 
+    /// The server's Bazel cache, which leases read: its port and read token.
+    func bazelCacheSettings() -> (port: Int, readToken: String)? { bazelCache }
+
     /// This Mac's process table, where it can be read.
     static var macProcessTable: ProcessTable {
         #if os(macOS)

@@ -25,6 +25,10 @@ struct CISettings: Codable, Sendable, Equatable {
     /// Each job's container's CPUs and memory.
     var cpus: Int?
     var memoryGigabytes: Int?
+    /// A repository's own, where its jobs build in their container (a
+    /// Bazel build wants more than a job that only leases machines), by
+    /// repository: `{"owner/name": {"cpus": 6, "memoryGigabytes": 16}}`.
+    var sizes: [String: RunnerSize] = [:]
     /// Seconds between two looks at a repository's queued jobs.
     var pollSeconds: Int?
     /// Minutes a runner waits for a job before it's given up (GitHub gave
@@ -45,6 +49,7 @@ struct CISettings: Codable, Sendable, Equatable {
         maxConcurrent = try c.decodeIfPresent(Int.self, forKey: .maxConcurrent)
         cpus = try c.decodeIfPresent(Int.self, forKey: .cpus)
         memoryGigabytes = try c.decodeIfPresent(Int.self, forKey: .memoryGigabytes)
+        sizes = try c.decodeIfPresent([String: RunnerSize].self, forKey: .sizes) ?? [:]
         pollSeconds = try c.decodeIfPresent(Int.self, forKey: .pollSeconds)
         unclaimedMinutes = try c.decodeIfPresent(Int.self, forKey: .unclaimedMinutes)
         serverURL = try c.decodeIfPresent(String.self, forKey: .serverURL)
@@ -54,6 +59,13 @@ struct CISettings: Codable, Sendable, Equatable {
     func label(_ repository: String) -> String {
         labels[repository] ?? "\(repository.split(separator: "/").last.map(String.init) ?? repository)-ci"
     }
+}
+
+/// A repository's job containers' CPUs and memory (CISettings.sizes); what
+/// it leaves out is the default's.
+struct RunnerSize: Codable, Sendable, Equatable, Hashable {
+    var cpus: Int?
+    var memoryGigabytes: Int?
 }
 
 /// The GitHub App OS Server runs CI as (`~/.config/oss/ci-github-app.json`,
@@ -148,6 +160,9 @@ struct CIPlan: Sendable, Equatable {
     struct Repository: Sendable, Equatable, Hashable {
         var name: String
         var label: String
+        /// Its jobs' containers, where it has a size of its own.
+        var cpus: Int?
+        var memoryGigabytes: Int?
     }
 
     var appID: Int
@@ -175,7 +190,11 @@ struct CIPlan: Sendable, Equatable {
                                        : "none of server.json's ci repositories is among the App's file's")
         }
         var seen = Set<String>()
-        let repositories = allowed.filter { seen.insert($0.lowercased()).inserted }.map { Repository(name: $0, label: settings.label($0)) }
+        let repositories = allowed.filter { seen.insert($0.lowercased()).inserted }.map { name in
+            let size = settings.sizes[name] ?? settings.sizes.first { $0.key.lowercased() == name.lowercased() }?.value
+            return Repository(name: name, label: settings.label(name), cpus: size?.cpus.map { max(1, $0) },
+                              memoryGigabytes: size?.memoryGigabytes.map { max(1, $0) })
+        }
         let concurrent = settings.maxConcurrent ?? app.maxConcurrent
             ?? CIDefaults.concurrency(cores: cores, memoryBytes: memoryBytes, containerCapacity: containerCapacity)
         return (CIPlan(appID: app.appId, repositories: repositories, maxConcurrent: max(1, concurrent),

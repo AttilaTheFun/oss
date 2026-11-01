@@ -146,6 +146,14 @@ private func appFolder(config: String?, key: String?, configMode: Int = 0o600, k
     // Off, saying why.
     #expect(CIPlan.make(settings: nil, app: CIAppConfig(appId: 1), containerCapacity: 4).0 == nil)
     #expect(CIPlan.make(settings: CISettings(), app: CIAppConfig(appId: 1), containerCapacity: 4).1 != nil)
+    // A repository's own size, where its jobs build in their container; the rest the default.
+    let sized = try JSONDecoder().decode(CISettings.self, from: Data("""
+        {"repositories": ["owner/reviews", "owner/gh_mcp"], "sizes": {"owner/reviews": {"cpus": 6, "memoryGigabytes": 16}}}
+        """.utf8))
+    let sizedPlan = try #require(CIPlan.make(settings: sized, app: CIAppConfig(appId: 1), containerCapacity: 4).0)
+    #expect(sizedPlan.repositories.first { $0.name == "owner/reviews" }.map { ($0.cpus, $0.memoryGigabytes) }! == (6, 16))
+    #expect(sizedPlan.repositories.first { $0.name == "owner/gh_mcp" }.map { ($0.cpus, $0.memoryGigabytes) }! == (nil, nil))
+    #expect(sizedPlan.memoryGigabytes == 4)
     // A small Mac runs one.
     #expect(CIDefaults.concurrency(cores: 10, memoryBytes: 16 << 30, containerCapacity: 4) == 1)
     #expect(CIDefaults.concurrency(cores: 32, memoryBytes: 512 << 30, containerCapacity: 16) == 4)
