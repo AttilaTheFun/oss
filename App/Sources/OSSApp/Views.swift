@@ -448,59 +448,35 @@ struct MenuBarLabel: View {
     }
 }
 
-struct MenuBarView: View {
+struct ServerMenu: View {
     @Environment(Monitor.self) private var monitor
     @Environment(ServerRunner.self) private var server
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                StateDot(state: server.state)
-                Text(stateText).font(.headline)
-                Spacer()
-            }
-            if let host = monitor.usage?.host {
-                MeterRow(title: "CPU", value: "\(Format.cores(host.cpuPercent)) of \(host.cpus) cores",
-                         fraction: host.cpuPercent / Double(max(1, host.cpus) * 100), tint: .blue)
-                MeterRow(title: "Memory", value: "\(Format.bytes(host.memoryUsedBytes)) of \(Format.bytes(host.memoryBytes))",
-                         fraction: Double(host.memoryUsedBytes) / Double(max(1, host.memoryBytes)), tint: .purple)
-            }
-            Divider()
-            let rows = monitor.machines
-            if rows.isEmpty {
-                Text("Nothing is leased.").foregroundStyle(.secondary)
-            } else {
-                ForEach(rows) { row in
-                    HStack(spacing: 8) {
-                        Image(systemName: Format.symbol(row.lease.platform)).frame(width: 18)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(Format.machine(row.lease)).lineLimit(1)
-                            // Its kind, and what it's for where it says (a session's title), else its holder.
-                            HStack(spacing: 5) {
-                                if let kind = row.lease.kind { KindBadge(kind) }
-                                Text(row.lease.label ?? row.lease.holder).lineLimit(1)
-                            }
-                            .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        VStack(alignment: .trailing, spacing: 1) {
-                            Text(row.usage?.cpuPercent.map { "\(Format.cores($0)) cores" } ?? "—")
-                            Text(row.usage?.memoryBytes.map(Format.bytes) ?? "—").foregroundStyle(.secondary)
-                        }
-                        .font(.caption.monospacedDigit())
-                    }
-                }
-            }
-            Divider()
-            HStack {
-                Button("Open OS Server") { AppActivation.showWindow(openWindow) }
-                Spacer()
-                Button("Quit") { NSApp.terminate(nil) }
-            }
+        Text(stateText)
+        let leased = monitor.machines.count
+        Text(leased == 0 ? "Nothing is leased" : leased == 1 ? "1 machine leased" : "\(leased) machines leased")
+        Divider()
+        Button("Open OS Monitor") { OSMonitorApp.open() }
+            .disabled(OSMonitorApp.url == nil)
+        Button("Copy OS Monitor Connection Code") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(MonitorAccess.connection().link.absoluteString, forType: .string)
         }
-        .padding(14)
-        .frame(width: 340)
+        Divider()
+        // Until OS Monitor shows the machines' screens: the window that has them.
+        Button("Machines…") { AppActivation.showWindow(openWindow) }
+        Button("Settings…") {
+            NSApp.setActivationPolicy(.regular)
+            openSettings()
+            NSApp.activate()
+        }
+        .keyboardShortcut(",")
+        Divider()
+        Button("Quit OS Server") { NSApp.terminate(nil) }
+            .keyboardShortcut("q")
     }
 
     private var stateText: String {
@@ -511,5 +487,19 @@ struct MenuBarView: View {
         case .stopped: "Stopped"
         case .failed: "The server stopped"
         }
+    }
+}
+
+/// OS Monitor, the app that shows what this server (and others) is doing:
+/// opened from the menu where it's installed.
+@MainActor
+enum OSMonitorApp {
+    static let bundleID = "com.LoganShire.OSMonitor.Mac"
+
+    static var url: URL? { NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) }
+
+    static func open() {
+        guard let url else { return }
+        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
     }
 }
