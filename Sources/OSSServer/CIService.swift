@@ -159,7 +159,21 @@ actor CIService {
 
     /// Queued jobs of a repository's: those not seen before wait their
     /// turn, in the order GitHub queued them, among every repository's.
-    func offer(_ found: [GitHubREST.Job], repository: String) {
+    /// A job GitHub still has queued this long after its record here ended
+    /// is offered again.
+    static let requeueAfter: TimeInterval = 120
+
+    func offer(_ found: [GitHubREST.Job], repository: String, now: Date = Date()) {
+        // Still queued at GitHub, though its record here ended: its runner
+        // took another of the label's jobs (a runner takes whichever comes),
+        // or gave up. It was never run: a new record, and a runner again.
+        for job in found {
+            guard let seen = jobs[job.id], seen.state.ended, now.timeIntervalSince(seen.ended ?? seen.queued) >= Self.requeueAfter else { continue }
+            jobs[job.id] = nil
+            tries[job.id, default: 0] += 1
+            log("ci: \(repository) job \(job.id) (\(job.name)) is still queued at GitHub though its record here ended "
+                + "(\(seen.state.rawValue)): offered again")
+        }
         for job in found where jobs[job.id] == nil {
             jobs[job.id] = CIJob(id: job.id, repository: repository, workflow: job.workflow_name, name: job.name, runID: job.run_id,
                                  runAttempt: job.run_attempt, url: job.html_url,
