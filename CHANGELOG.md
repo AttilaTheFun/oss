@@ -2,6 +2,10 @@
 
 ## 0.14.0 (unreleased)
 
+- **The proof runs by hand only**, to propose a release or, on a branch
+  pushed at an earlier commit, to bisect a regression: a push to main gets
+  its build, tests and beta alone. A run by hand compares with the release
+  before the commit (else the commit before), not main as it is.
 - **A lease's processes are found through its helper too.** A container
   lease's VM is matched by its `oss-machine` helper's arguments (its
   helper.json), and any `oss-machine` is OS Server's own, whichever copy of

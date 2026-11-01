@@ -2,8 +2,8 @@
 # OS Server's proof, from CI: its apps built in a macOS VM leased from OS
 # Server itself (xcode-27.0), pictured with their canned servers, and each
 # picture compared with the one kept for it at the proof's base
-# (tools/ci/proof_baseline: a pull request's base branch, a push's commit
-# before; Tests/Proof there). Never this tree's kept pictures: a pull
+# (tools/ci/proof_baseline: a pull request's base branch, a run by hand's
+# release before; Tests/Proof there). Never this tree's kept pictures: a pull
 # request that changes a screen replaces its picture, so its own would
 # show every screen it changed as unchanged.
 #
@@ -107,9 +107,21 @@ xcrun swiftc -O -o "$work/snapshot_diff" "$ROOT/tools/ci/snapshot_diff.swift"
 xcrun swiftc -O -o "$work/window_shot" "$ROOT/tools/ci/window_shot.swift"
 xcrun swiftc -O -o "$work/proof_baseline" "$ROOT/tools/ci/proof_baseline/Baseline.swift" "$ROOT/tools/ci/proof_baseline/main.swift"
 xcrun swiftc -O -target arm64-apple-macos14 -o "$work/vm/window_rect" "$ROOT/tools/window_rect.swift"
-# A release's base is the release before: its tags, asked of origin.
+# A release's base is the release before: its tags, asked of origin. A run
+# by hand's (proposing a release, or proving an earlier commit to bisect)
+# is the release before the commit: the tags its history has before it.
 tags=""
-[ "${GITHUB_EVENT_NAME:-}" != release ] || tags="$(git -C "$ROOT" ls-remote --tags --refs origin 'v*' | sed 's#.*refs/tags/##')"
+case "${GITHUB_EVENT_NAME:-}" in
+    release) tags="$(git -C "$ROOT" ls-remote --tags --refs origin 'v*' | sed 's#.*refs/tags/##')" ;;
+    workflow_dispatch)
+        if [ "$(git -C "$ROOT" rev-parse --is-shallow-repository)" = true ]; then
+            git -C "$ROOT" fetch --quiet --unshallow --tags origin
+        else
+            git -C "$ROOT" fetch --quiet --tags origin
+        fi
+        tags="$(git -C "$ROOT" tag --merged "$commit^" --list 'v*' 2> /dev/null || true)"
+        ;;
+esac
 # shellcheck disable=SC2086 # the tags, a word each
 baseline="$("$work/proof_baseline" "${GITHUB_EVENT_NAME:-}" "${GITHUB_BASE_REF:-}" "${GITHUB_REF_NAME:-}" "$commit" $tags)"
 { read -r base_ref; read -r base_revision; read -r base_fetch; } <<< "$baseline"
