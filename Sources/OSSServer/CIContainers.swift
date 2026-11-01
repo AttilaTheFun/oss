@@ -272,6 +272,12 @@ actor CIRunnerKit {
             await containers.machines.release(builder.id, reason: "oss for Linux built")
             log("ci: oss for Linux built (\(digest.prefix(16)))")
             return path
+        } catch let busy as CIBusy {
+            // No room for the builder now is not a failed build: the next
+            // job's attempt tries again, rather than going without oss for
+            // the half hour a failed build waits.
+            log("ci: oss for Linux waits for room to build: \(busy)")
+            return nil
         } catch {
             if let builder { await containers.machines.release(builder.id, reason: "oss for Linux didn't build") }
             failed = (digest, Date())
