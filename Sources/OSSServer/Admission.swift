@@ -218,7 +218,12 @@ indirect enum AdmissionRefusal: Sendable, Equatable {
 /// from being starved by small ones: the oldest in line is kept room for,
 /// so a later request (waiting or not) that fits only by taking room it
 /// needs (its type's last place under the cap, or the memory the budget
-/// has left) waits too.
+/// has left) waits too. Unless the line is stalled: no lease granted or
+/// released for `stall` while the oldest waits. Then the room it's kept
+/// may be what a lease held is waiting for itself (a CI job's runner
+/// waiting for its VM, a proof holding one VM while it waits for the
+/// next), and nothing would ever free it; a request that fits goes ahead,
+/// and its end is what lets the line move again.
 struct AdmissionQueue: Sendable {
     struct Waiter: Sendable, Equatable {
         var ticket: String
@@ -232,11 +237,28 @@ struct AdmissionQueue: Sendable {
 
     var policy: LeasePolicy
     var patience: TimeInterval = 45
+    /// How long nothing granted or released makes the line stalled.
+    var stall: TimeInterval = 300
     private(set) var waiters: [Waiter] = []
+    /// When a lease was last granted or released.
+    private(set) var lastProgress: Date?
 
-    init(policy: LeasePolicy, patience: TimeInterval = 45) {
+    init(policy: LeasePolicy, patience: TimeInterval = 45, stall: TimeInterval = 300) {
         self.policy = policy
         self.patience = patience
+        self.stall = stall
+    }
+
+    /// A lease released (or granted elsewhere): the line moved.
+    mutating func progressed(now: Date = Date()) {
+        lastProgress = now
+    }
+
+    /// Whether nothing has been granted or released for `stall` while the
+    /// oldest waited.
+    func isStalled(now: Date = Date()) -> Bool {
+        guard let oldest = waiters.first else { return false }
+        return now.timeIntervalSince(max(lastProgress ?? oldest.arrived, oldest.arrived)) >= stall
     }
 
     /// Nil: grant it (its ticket leaves the line). Else why not; a `busy`
@@ -255,8 +277,8 @@ struct AdmissionQueue: Sendable {
             }
             return refusal
         }
-        // The oldest in line before this one: kept room for.
-        if let oldest = waiters.first, oldest.ticket != ticket,
+        // The oldest in line before this one: kept room for, while the line moves.
+        if let oldest = waiters.first, oldest.ticket != ticket, !isStalled(now: now),
            let refusal = policy.refusal(demand, held: held + [oldest.demand], outside: outside,
                                         leasesInUse: leasesInUse.map { $0 + oldest.demand.size.memoryBytes }) {
             let behind = AdmissionRefusal.behind(oldest.demand, waited: now.timeIntervalSince(oldest.arrived), refusal)
@@ -264,6 +286,7 @@ struct AdmissionQueue: Sendable {
             return behind
         }
         if let ticket { waiters.removeAll { $0.ticket == ticket } }
+        lastProgress = now
         return nil
     }
 

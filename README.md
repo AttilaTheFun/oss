@@ -201,7 +201,10 @@ line, oldest first, while it does. Each lease is granted as soon as its own
 limits allow, whatever waits for other ones, but the oldest in line is
 kept room for: a later lease (waiting or not) that would fit only by
 taking room it needs, its type's next place or the memory it waits for,
-waits too (`busy: a macos lease waiting 3 min goes first (…)`). `oss
+waits too (`busy: a macos lease waiting 3 min goes first (…)`). Unless the line
+has stalled: nothing granted or released for 5 minutes while the oldest
+waits (the room kept may be what a lease held waits for itself, a CI job's
+runner for its VM), when a lease that fits goes ahead. `oss
 status` shows the budget and what takes it, each type's cap, the line,
 and the Mac by whom: OS Server's leases (memory as given and as used, CPU,
 disk), OS Server itself, the other VMs by the app they are for (their
@@ -519,7 +522,7 @@ repositories server.json names, beside any runner they have already.
    32 GB, at most half the containers it lends: its cap, or as many of a
    job's as the budget holds; at least one), `image` (the jobs' image:
    Visor's agent image), `cpus` and `memoryGigabytes` (each
-   job's container: 4 and 8), `pollSeconds` (5), `unclaimedMinutes` (10)
+   job's container: 4 and 4), `pollSeconds` (5), `unclaimedMinutes` (10)
    and `serverURL` (the server as a job's container reaches it: by default
    this Mac's address on the containers' network).
 4. OS Server started again. Its log says `ci: running GitHub Actions jobs

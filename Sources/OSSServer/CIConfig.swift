@@ -127,7 +127,10 @@ enum CIDefaults {
         URL(string: "https://github.com/actions/runner/releases/download/v\(runnerVersion)/actions-runner-linux-arm64-\(runnerVersion).tar.gz")!
     }
     static let cpus = 4
-    static let memoryGigabytes = 8
+    /// A job's container: its runner and what the job runs in it (a
+    /// Linux build, scripts that lease machines). 4 GB: a job holds it while
+    /// it waits for those machines, and the budget is shared.
+    static let memoryGigabytes = 4
     static let pollSeconds = 5
     static let unclaimedMinutes = 10
 

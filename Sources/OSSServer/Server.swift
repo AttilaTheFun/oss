@@ -813,6 +813,7 @@ actor MachineManager {
     func release(_ id: String, reason: String) async {
         guard let lease = leases[id], lease.state != .returning, lease.state != .failed else { return }
         leases[id]?.state = .returning
+        admission.progressed()
         save()   // a restart from here on deletes the clone instead of bringing the lease back
         forwarders.removeValue(forKey: id)?.forEach { $0.stop() }
         log("lease \(id): \(reason); deleting \(lease.name)")
