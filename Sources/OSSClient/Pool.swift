@@ -159,10 +159,12 @@ public struct OSSPool: Sendable {
                     progress("\(server.name) (\(server.distance))")
                     return (server.client, try await server.client.lease(request, progress: progress))
                 } catch let error as OSSError where error.code == "busy" || error.message.hasPrefix("busy") || error.code == "notLocal"
-                                                || error.code == "noInventory" || error.code == "tooBig" {
+                                                || error.code == "noInventory" || error.code == "tooBig"
+                                                || (waitForCapacity && error.code == "volumeInUse") {
                     // Taken meanwhile, (a server before API 9) a container for
-                    // its own Mac only, simulators it can't list now, or more
-                    // than its whole budget: the next one.
+                    // its own Mac only, simulators it can't list now, more
+                    // than its whole budget, or (waiting) a volume it keeps
+                    // still another lease's: the next one, or again.
                     if error.code == "tooBig" { tooSmall.insert(server.name) }
                     continue
                 }

@@ -155,3 +155,41 @@ struct SlowHello: OSSTransport {
     }
     #expect(slow.tries.waits == [0.1, 0.2])
 }
+
+/// A server whose kept volume is another lease's for its first asks, then leases.
+struct HeldVolume: OSSTransport {
+    let refusals: Int
+    let asks = Asks()
+    final class Asks: @unchecked Sendable {
+        let lock = NSLock()
+        var count = 0
+        func add() -> Int { lock.lock(); defer { lock.unlock() }; count += 1; return count }
+    }
+
+    func send(_ request: OSSHTTPRequest) async throws -> OSSHTTPResponse {
+        guard request.method == "POST", request.url.path == "/v1/machines" else {
+            return OSSHTTPResponse(status: 404, headers: [:], body: try JSONEncoder.oss.encode(APIError(error: "no")))
+        }
+        guard asks.add() > refusals else {
+            return OSSHTTPResponse(status: 409, headers: [:],
+                                   body: try JSONEncoder.oss.encode(APIError(error: "volume ci is in use by lease a1", code: "volumeInUse")))
+        }
+        return OSSHTTPResponse(status: 201, headers: [:],
+                               body: try JSONEncoder.oss.encode(Lease(id: "b2", platform: .container, config: "c", name: "n", holder: "h",
+                                                                      state: .ready, created: Date(), expires: Date())))
+    }
+}
+
+@Test func aLeaseWaitedForWaitsForItsVolumeToo() async throws {
+    let held = HeldVolume(refusals: 2)
+    let client = OSSClient(server: URL(string: "http://127.0.0.1:7480")!, token: "t", transport: held)
+    let request = LeaseRequest(platform: .container, minutes: 5, holder: "h")
+    let lease = try await client.lease(request, waitForCapacity: true, retry: .milliseconds(1))
+    #expect(lease.id == "b2")
+    #expect(held.asks.count == 3)
+    // Not waiting, the refusal is the caller's.
+    let refused = await #expect(throws: OSSError.self) {
+        try await OSSClient(server: URL(string: "http://127.0.0.1:7480")!, token: "t", transport: HeldVolume(refusals: 1)).lease(request)
+    }
+    #expect(refused?.code == "volumeInUse")
+}
