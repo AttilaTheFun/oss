@@ -2,6 +2,13 @@
 
 ## 0.14.0 (unreleased)
 
+- **A long answer comes back in order.** The command line's HTTP (curl,
+  run by `Shell.run`) read curl's output with a pipe's readability
+  handler, and one still running as curl exited could append its chunk
+  after the rest: an answer of 32 KiB and more (a busy server's leases)
+  came back with a chunk out of place, which the client took for invalid
+  JSON ("Unexpected character … index 32775"). Each pipe is now read on a
+  thread of its own, its chunks in order.
 - **`--wait` waits for a kept volume too** (and `oss machine run`, which
   always waits): a lease whose `:keep` volume another lease still has is
   asked for again until it's free, as one with no room is, rather than
