@@ -31,7 +31,7 @@ struct SizeSettings: Codable, Sendable, Equatable {
 }
 
 /// A lease asked for or held, as the limits see it: its type and its size.
-struct LeaseDemand: Sendable, Equatable {
+struct LeaseDemand: Sendable, Equatable, Codable {
     var platform: Platform
     var size: LeaseSize
 }
@@ -224,8 +224,13 @@ indirect enum AdmissionRefusal: Sendable, Equatable {
 /// waiting for its VM, a proof holding one VM while it waits for the
 /// next), and nothing would ever free it; a request that fits goes ahead,
 /// and its end is what lets the line move again.
+///
+/// While a restart is pending (Restart.swift) a request with a ticket is
+/// held in line (`hold`), and the line is written to disk; after the
+/// restart it is put back first, in its order (`restore`), each place kept
+/// a while longer than `patience` for its client to find the server again.
 struct AdmissionQueue: Sendable {
-    struct Waiter: Sendable, Equatable {
+    struct Waiter: Sendable, Equatable, Codable {
         var ticket: String
         var demand: LeaseDemand
         var config: String
@@ -233,6 +238,9 @@ struct AdmissionQueue: Sendable {
         var arrived: Date
         var seen: Date
         var reason: String
+        /// Put back after a restart: its place kept until then whether or
+        /// not its client has asked again.
+        var graceUntil: Date?
     }
 
     var policy: LeasePolicy
@@ -290,6 +298,28 @@ struct AdmissionQueue: Sendable {
         return nil
     }
 
+    /// A request held whatever the limits say (a restart pending): its
+    /// place taken, or kept, with why.
+    mutating func hold(_ demand: LeaseDemand, ticket: String?, config: String, holder: String, reason: String, now: Date = Date()) {
+        prune(now: now)
+        wait(ticket.flatMap { $0.isEmpty ? nil : $0 }, demand, config: config, holder: holder, now: now, reason: reason)
+    }
+
+    /// The line kept across a restart, put back before anyone who asked
+    /// since, in its order, each place kept for `grace` (its client has to
+    /// find the server again first).
+    mutating func restore(_ line: [Waiter], grace: TimeInterval, now: Date = Date()) {
+        let tickets = Set(line.map(\.ticket))
+        waiters = line.map { waiter in
+            var waiter = waiter
+            waiter.seen = now
+            waiter.graceUntil = now.addingTimeInterval(grace)
+            waiter.reason = "waiting since before OS Server's restart"
+            return waiter
+        } + waiters.filter { !tickets.contains($0.ticket) }
+        lastProgress = now
+    }
+
     /// A waiter's place taken, or kept and seen again.
     private mutating func wait(_ ticket: String?, _ demand: LeaseDemand, config: String, holder: String, now: Date, reason: String) {
         guard let ticket else { return }
@@ -297,6 +327,7 @@ struct AdmissionQueue: Sendable {
             waiters[index].seen = now
             waiters[index].demand = demand
             waiters[index].reason = reason
+            waiters[index].graceUntil = nil
         } else {
             waiters.append(Waiter(ticket: ticket, demand: demand, config: config, holder: holder, arrived: now, seen: now, reason: reason))
         }
@@ -304,12 +335,18 @@ struct AdmissionQueue: Sendable {
 
     /// Those that stopped asking leave the line.
     mutating func prune(now: Date = Date()) {
-        waiters.removeAll { now.timeIntervalSince($0.seen) > patience }
+        waiters.removeAll { now.timeIntervalSince($0.seen) > patience && ($0.graceUntil.map { now > $0 } ?? true) }
+    }
+
+    /// The line as it is kept across a restart.
+    mutating func waitersForRestart(now: Date = Date()) -> [Waiter] {
+        prune(now: now)
+        return waiters
     }
 
     /// The line, oldest first, as the status shows it.
     func waiting(now: Date = Date()) -> [WaitingLease] {
-        waiters.filter { now.timeIntervalSince($0.seen) <= patience }.map {
+        waiters.filter { now.timeIntervalSince($0.seen) <= patience || ($0.graceUntil.map { now <= $0 } ?? false) }.map {
             WaitingLease(platform: $0.demand.platform, config: $0.config, holder: $0.holder, size: $0.demand.size, since: $0.arrived,
                          reason: $0.reason)
         }

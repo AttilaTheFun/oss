@@ -126,6 +126,13 @@ let usage = """
       oss files add <path>                                  hashed and kept (never evicted); prints its URL
       oss files list                                        what this server serves
       oss files remove <sha256>
+    A restart that waits for what runs (an update's; with the server's token):
+      oss restart [--hold] [--reason=WHY] [--wait]          no new lease (but a session's) and no new CI runner from now
+                                                            on; once the CI jobs, image builds and leases being made or
+                                                            deleted have ended, the server restarts itself, the line of
+                                                            leases waiting kept; --hold: it waits, ready, for `oss
+                                                            restart now` (an installer's, after replacing OS Server)
+      oss restart now | cancel | status [--json]
     CI (GitHub Actions jobs the server runs in containers of its own, one a job, where its GitHub App is set up):
       oss ci list [--json]                                  its jobs, newest first: state, repository, workflow and job,
                                                             how long each waited and ran, its lease, its page
@@ -958,6 +965,33 @@ public enum OSSCommand {
                 let grant = try await client.grant(request, holder: holder)
                 if arguments.flags.contains("json") { try printJSON(grant) } else { print(grant.url.absoluteString) }
 
+            case "restart":
+                // A pending restart (API 16): no new lease, what runs ends, then the restart.
+                let client = try await OSSClient.connect()
+                let restart: ServerRestart
+                switch sub ?? "request" {
+                case "request":
+                    restart = try await client.requestRestart(RestartRequest(reason: arguments.options["reason"],
+                                                                             hold: arguments.flags.contains("hold") ? true : nil))
+                case "now": restart = try await client.requestRestart(RestartRequest(now: true))
+                case "cancel": restart = try await client.cancelRestart()
+                case "status": restart = try await client.serverRestart()
+                default: fail("oss restart [--hold] [--reason=WHY] [--wait] | oss restart now | cancel | status [--json]")
+                }
+                if arguments.flags.contains("json") { try printJSON(restart) } else { print(restart.summary) }
+                // --wait: until it's made (the server's start changes) or, held, ready.
+                guard arguments.flags.contains("wait"), restart.pending || sub == "now" else { exit(0) }
+                let before = restart.serverStarted
+                var said = ""
+                while true {
+                    try await Task.sleep(for: .seconds(5))
+                    guard let now = try? await client.serverRestart() else { continue }   // restarting: no answer a while
+                    if now.serverStarted != before { print("restarted"); exit(0) }
+                    if now.hold, now.ready != nil, sub != "now" { print(now.summary); exit(0) }
+                    if !now.pending { print("called off"); exit(1) }
+                    let line = now.summary + (now.running.isEmpty ? "" : ": " + now.running.map { "\($0.id) \($0.label ?? $0.holder)" }.joined(separator: ", "))
+                    if line != said { print(line); said = line }
+                }
             case "ci":
                 // oss ci list: the GitHub Actions jobs the server ran in its containers (API 13).
                 guard sub == nil || sub == "list" else { fail("oss ci list [--json]") }

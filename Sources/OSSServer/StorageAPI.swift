@@ -88,6 +88,7 @@ extension Server {
         let status: Int
         switch error.code {
         case "busy", "notReady", "tooBig": status = 409
+        case "restarting": status = 503
         case "notLocal", "forbidden": status = 403
         case "notFound", "noObject", "noFile", "noCI": status = 404
         case "quota": status = 413

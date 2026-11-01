@@ -15,7 +15,8 @@ enum Entry {
         var containers: ContainerBackend?
         if #available(macOS 26, *) { containers = ContainerEngine() }
         do {
-            _ = try ServerHost.start(containers: containers)
+            // A restart is an exit: what ran it starts it again.
+            _ = try ServerHost.start(containers: containers, restart: { exit(0) })
         } catch {
             FileHandle.standardError.write(Data("OS Server: \(error)\n".utf8))
             exit(1)
