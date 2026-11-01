@@ -247,10 +247,14 @@ actor CIRunnerKit {
                 try? out.close()
                 try? input.close()
             }
+            // Linked against the image's Swift runtime, not statically: a
+            // job's container is the same image, and Swift 6.4's static
+            // stdlib on Linux leaves Foundation's CoreFoundation and
+            // Synchronization symbols unresolved for this package.
             let script = """
                 set -e
                 rm -rf /tmp/oss-source && mkdir -p /tmp/oss-source && tar -x -C /tmp/oss-source && cd /tmp/oss-source
-                swift build -c release --product oss --static-swift-stdlib >&2
+                swift build -c release --product oss >&2
                 cat .build/release/oss
                 """
             let command = try await ContainerCommand.start(socket, ["/bin/sh", "-c", script]) { data in
