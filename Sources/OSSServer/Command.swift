@@ -93,17 +93,19 @@ let usage = """
       oss serve | status | capabilities | doctor
       oss usage [--json]                                    the server's CPU and memory, and each lease's
       oss setup android [--api=35] [--tag=google_apis]     the Android SDK (emulator, platform-tools, a system image)
-      oss image build <macos|linux|windows> <config> --from=<base config> [--script=PATH] [--copy=HOST:GUEST]
+      oss image build <macos|linux|windows> <config> --from=<base config> [--script=PATH] [--copy=HOST:GUEST] [--wait]
+                                                            its VM takes a place in the server's limits first (its cap, the
+                                                            budget): refused if there is none, or with --wait queued for one
       oss image build ios <config> [--device="iPhone 17 Pro"] [--runtime=ID] [--script=PATH]
       oss image build android <config> [--api=35] [--tag=google_apis] [--script=PATH]
-      oss image install macos [config] [--ipsw=PATH] [--cpus=6] [--memory=16] [--disk=128]
+      oss image install macos [config] [--ipsw=PATH] [--cpus=6] [--memory=16] [--disk=128] [--wait]
                                                             OS Server's own macOS base (Virtualization's), installed
                                                             and runner made with no one at its screen (macOS 27)
-      oss image install linux [config] [--image=PATH] [--cpus=6] [--memory=8] [--disk=128]
+      oss image install linux [config] [--image=PATH] [--cpus=6] [--memory=8] [--disk=128] [--wait]
                                                             OS Server's own Ubuntu base (its QEMU's), from Ubuntu's
                                                             cloud image (downloaded and checked), GNOME and runner
                                                             set up by cloud-init
-      oss image install windows [config] --iso=PATH [--edition="Windows 11 Pro"] [--cpus=6] [--memory=8] [--disk=128]
+      oss image install windows [config] --iso=PATH [--edition="Windows 11 Pro"] [--cpus=6] [--memory=8] [--disk=128] [--wait]
                                                             OS Server's own Windows base (its QEMU's) from Windows 11
                                                             on Arm's ISO, installed by an answer file
       oss image import-utm <UTM VM name>… [--as=CONFIG]     UTM's macOS VMs as OS Server's own bases (APFS clones)
@@ -312,6 +314,61 @@ func describeOrigin(_ request: inout LeaseRequest, _ args: Arguments, environmen
 func leaseLine(_ lease: Lease) -> String {
     "\(lease.id)  \(lease.platform.rawValue)/\(lease.config)\(lease.device.map { " (\($0))" } ?? "")  \(lease.state.rawValue)  "
         + "\(lease.kind?.rawValue ?? "-")  \(lease.holder)  until \(iso(lease.expires))" + (lease.label.map { "  \($0)" } ?? "")
+}
+
+/// `oss status`'s lines for the limits: the memory budget and what the
+/// leases take of it (API 14), each type's leases against its cap or the
+/// budget's room, and the line of leases waiting. A server before API 14
+/// says only each type's count and limit.
+func capacityLines(_ status: Status, now: Date = Date()) -> [String] {
+    var lines: [String] = []
+    if let budget = status.budget { lines.append("  budget: \(budget.summary)") }
+    for platform in Platform.allCases {
+        let configs = status.bases.filter { $0.platform == platform }.map(\.config)
+        let capacity = status.capacity.first { $0.platform == platform }
+        let leased = capacity?.leased ?? 0, limit = capacity?.limit ?? 0
+        var line: String
+        if status.budget == nil {
+            line = "\(leased)/\(limit) leased"
+        } else if let cap = capacity?.cap {
+            line = "\(leased) of \(cap) leased" + (limit < cap ? ", room for \(max(0, limit - leased)) more in the budget" : "")
+        } else {
+            line = "\(leased) leased, room for \(max(0, limit - leased)) more (no cap)"
+        }
+        if let size = capacity?.size { line += "; \(size) each" }
+        lines.append("  \(platform.rawValue): \(line); configs: \(configs.isEmpty ? "none" : configs.joined(separator: ", "))")
+    }
+    for waiting in status.budget?.waiting ?? [] {
+        lines.append("  waiting: \(waiting.platform.rawValue)/\(waiting.config) (\(waiting.size)) for \(waiting.holder), "
+                     + "\(AdmissionRefusal.duration(now.timeIntervalSince(waiting.since))): \(waiting.reason)")
+    }
+    return lines
+}
+
+/// `oss status`'s lines for the Mac by whom (API 14): OS Server's leases,
+/// as given and as used, OS Server itself, the other VMs by app, and
+/// everything else, with the apps of it using the most.
+func hostLines(_ host: HostBreakdown) -> [String] {
+    func gb(_ bytes: Int64) -> String { "\(LeaseSize.gigabytes(bytes)) GB" }
+    func cpu(_ percent: Double?) -> String { percent.map { "\(Int($0.rounded()))% cpu" } ?? "cpu ?" }
+    var lines = ["  host: \(gb(host.memoryBytes)), \(host.cpus) cores, \(gb(host.memoryUsedBytes)) in use"
+                 + (host.disk.map { "; disk \(LeaseSize.gigabytes($0.freeBytes)) of \(gb($0.totalBytes)) free" } ?? "")]
+    let given = host.leases.reduce(Int64(0)) { $0 + ($1.memoryLimitBytes ?? 0) }
+    let used = host.leases.reduce(Int64(0)) { $0 + ($1.memoryBytes ?? 0) }
+    lines.append("    OS Server's leases: \(host.leases.count), \(gb(given)) given, \(gb(used)) used, "
+                 + cpu(host.leases.reduce(0) { $0 + ($1.cpuPercent ?? 0) }))
+    for lease in host.leases {
+        lines.append("      \(lease.id) \(lease.platform.rawValue)/\(lease.config): \(gb(lease.memoryLimitBytes ?? 0)) given, "
+                     + "\(lease.memoryBytes.map(gb) ?? "?") used, \(cpu(lease.cpuPercent))" + (lease.diskBytes.map { ", \(gb($0)) disk" } ?? ""))
+    }
+    lines.append("    OS Server itself: \(gb(host.server.memoryBytes)), \(cpu(host.server.cpuPercent))")
+    for group in host.otherVMs {
+        lines.append("    other VMs: \(group.owner): \(group.machines) VM\(group.machines == 1 ? "" : "s"), \(gb(group.memoryBytes)), "
+                     + cpu(group.cpuPercent) + (group.diskBytes.map { ", \(gb($0)) disk" } ?? ""))
+    }
+    let top = host.restTop.map { "\($0.name) \(gb($0.memoryBytes))" }.joined(separator: ", ")
+    lines.append("    everything else: \(gb(host.rest.memoryBytes)), \(cpu(host.rest.cpuPercent))" + (top.isEmpty ? "" : "; most: \(top)"))
+    return lines
 }
 
 /// A CI job in a line: its state (and result), repository, workflow and
@@ -946,11 +1003,8 @@ public enum OSSCommand {
                     try printJSON(status)
                 } else {
                     print("server \(status.server) (\(client.server.absoluteString))")
-                    for platform in Platform.allCases {
-                        let configs = status.bases.filter { $0.platform == platform }.map(\.config)
-                        let capacity = status.capacity.first { $0.platform == platform }
-                        print("  \(platform.rawValue): \(capacity?.leased ?? 0)/\(capacity?.limit ?? 0) leased; configs: \(configs.isEmpty ? "none" : configs.joined(separator: ", "))")
-                    }
+                    capacityLines(status).forEach { print($0) }
+                    if let host = status.host { hostLines(host).forEach { print($0) } }
                     // How many are CI's, sessions', agents' and by hand (a server before API 8 says no kinds).
                     if status.leases.contains(where: { $0.kind != nil }) {
                         let counts = LeaseKind.allCases.map { kind in "\(status.leases.filter { $0.kind == kind }.count) \(kind.rawValue)" }
@@ -1092,34 +1146,44 @@ public enum OSSCommand {
             case "image":
                 ManagementKey.settle()
                 #if canImport(Virtualization)
+            // An install runs a VM too: it takes a place in the server's limits
+            // first, as a build does (--wait for one).
+            let installed = arguments.positional.count >= 4 ? arguments.positional[3] : "base"
+            let wait = arguments.flags.contains("wait")
             if sub == "install", target == "linux" {
-                // oss image install linux [config] [--image=PATH] [--cpus=N] [--memory=GB] [--disk=GB]
-                try await LinuxInstaller.install(config: arguments.positional.count >= 4 ? arguments.positional[3] : "base",
-                                                 image: arguments.options["image"],
-                                                 cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
-                                                 memoryGB: Int(arguments.options["memory"] ?? "") ?? 8,
-                                                 diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                // oss image install linux [config] [--image=PATH] [--cpus=N] [--memory=GB] [--disk=GB] [--wait]
+                try await BuildPlace.holding(platform: .linux, layer: installed, from: installed, wait: wait,
+                                             label: "image install: linux \(installed)") { _ in
+                    try await LinuxInstaller.install(config: installed, image: arguments.options["image"],
+                                                     cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
+                                                     memoryGB: Int(arguments.options["memory"] ?? "") ?? 8,
+                                                     diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                }
                 exit(0)
             }
             if sub == "install", target == "windows" {
-                // oss image install windows [config] --iso=PATH [--edition="Windows 11 Pro"] [--cpus=N] [--memory=GB] [--disk=GB]
+                // oss image install windows [config] --iso=PATH [--edition="Windows 11 Pro"] [--cpus=N] [--memory=GB] [--disk=GB] [--wait]
                 guard let iso = arguments.options["iso"] else { fail("oss image install windows [config] --iso=<Windows 11 on Arm's ISO>") }
-                try await WindowsInstaller.install(config: arguments.positional.count >= 4 ? arguments.positional[3] : "base", iso: iso,
-                                                   edition: arguments.options["edition"] ?? "Windows 11 Pro",
-                                                   cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
-                                                   memoryGB: Int(arguments.options["memory"] ?? "") ?? 8,
-                                                   diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                try await BuildPlace.holding(platform: .windows, layer: installed, from: installed, wait: wait,
+                                             label: "image install: windows \(installed)") { _ in
+                    try await WindowsInstaller.install(config: installed, iso: iso, edition: arguments.options["edition"] ?? "Windows 11 Pro",
+                                                       cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
+                                                       memoryGB: Int(arguments.options["memory"] ?? "") ?? 8,
+                                                       diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                }
                 exit(0)
             }
             if sub == "install" {
-                // oss image install macos [config] [--ipsw=PATH] [--cpus=N] [--memory=GB] [--disk=GB]
+                // oss image install macos [config] [--ipsw=PATH] [--cpus=N] [--memory=GB] [--disk=GB] [--wait]
                 guard target == "macos" else { fail("oss image install macos|linux [config] … (see oss --help)") }
                 guard #available(macOS 27, *) else { fail("installing macOS with no one at its screen needs macOS 27 here") }
-                try await MacInstaller.install(config: arguments.positional.count >= 4 ? arguments.positional[3] : "base",
-                                               ipsw: arguments.options["ipsw"],
-                                               cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
-                                               memoryGB: Int(arguments.options["memory"] ?? "") ?? 16,
-                                               diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                try await BuildPlace.holding(platform: .macos, layer: installed, from: installed, wait: wait,
+                                             label: "image install: macos \(installed)") { _ in
+                    try await MacInstaller.install(config: installed, ipsw: arguments.options["ipsw"],
+                                                   cpus: Int(arguments.options["cpus"] ?? "") ?? 6,
+                                                   memoryGB: Int(arguments.options["memory"] ?? "") ?? 16,
+                                                   diskGB: Int(arguments.options["disk"] ?? "") ?? 128)
+                }
                 exit(0)
             }
             #endif
@@ -1156,8 +1220,12 @@ public enum OSSCommand {
                         let halves = pair.split(separator: ":", maxSplits: 1).map(String.init)
                         return halves.count == 2 ? (halves[0], halves[1]) : nil
                     }
-                    try await Images.build(platform: platform, layer: config, from: base, script: arguments.options["script"],
-                                           copies: copies)
+                    // A place in the server's limits first (its type's cap, the
+                    // memory budget; --wait for one), held while it builds.
+                    try await BuildPlace.holding(platform: platform, layer: config, from: base, wait: arguments.flags.contains("wait")) { place in
+                        try await Images.build(platform: platform, layer: config, from: base, script: arguments.options["script"],
+                                               copies: copies, work: place?.name)
+                    }
                 }
 
             default:

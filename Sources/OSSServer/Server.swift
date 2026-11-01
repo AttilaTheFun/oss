@@ -69,14 +69,34 @@ actor MachineManager {
     /// iOS leases' test runs (`oss machine xctest`): one at a time a lease,
     /// their files in the lease's folder until it ends.
     let xctests: XCTestRuns
+    /// The limits (Admission.swift) and the line of leases waiting for room.
+    private var admission: AdmissionQueue
+    /// The Mac's processes (HostAccounting.swift), read every 15 seconds:
+    /// the breakdown the status shows, what isn't the leases' (which comes
+    /// out of the budget), and each lease's footprint.
+    private let processTable: ProcessTable
+    private var host: HostBreakdown?
+    private var cpuSample: HostAccounting.CPUSample?
+    private var leaseFootprints: [String: Int64] = [:]
 
     init(config: ServerConfig, bazelCache: (port: Int, readToken: String)? = nil, containers: ContainerBackend? = nil,
-         leasesPath: String = Paths.leases, xctests: XCTestRuns = XCTestRuns()) {
+         leasesPath: String = Paths.leases, xctests: XCTestRuns = XCTestRuns(), processTable: ProcessTable = MachineManager.macProcessTable) {
         self.config = config
         self.bazelCache = bazelCache
         self.containers = containers
         self.leasesPath = leasesPath
         self.xctests = xctests
+        self.admission = AdmissionQueue(policy: config.leasePolicy())
+        self.processTable = processTable
+    }
+
+    /// This Mac's process table, where it can be read.
+    static var macProcessTable: ProcessTable {
+        #if os(macOS)
+        return LibprocTable()
+        #else
+        return NoProcessTable()
+        #endif
     }
 
     // MARK: Status
@@ -146,10 +166,92 @@ actor MachineManager {
         }
     }
 
+    /// Each type's line: how many are held and may be (its cap, or fewer
+    /// where the budget has room for fewer more of its default config).
     func capacity() -> [Capacity] {
-        Platform.allCases.map { platform in
-            Capacity(platform: platform, limit: config.limit(platform),
-                     leased: leases.values.filter { $0.platform == platform && $0.state != .failed }.count)
+        let held = heldDemands()
+        return Platform.allCases.map { platform in
+            admission.policy.capacity(platform, held: held, typical: measure(platform, config: config.defaultConfig(platform), container: nil),
+                                      outside: outsideMemory)
+        }
+    }
+
+    /// The budget, what the leases take of it, and who waits (API 14).
+    func budget() -> LeaseBudget {
+        admission.prune()
+        let held = heldDemands()
+        return LeaseBudget(memoryBytes: admission.policy.memoryBytes, leasedMemoryBytes: held.reduce(0) { $0 + $1.size.memoryBytes },
+                           outsideMemoryBytes: outsideMemory, hostLimitBytes: host == nil ? nil : admission.policy.hostLimitBytes,
+                           leasedCPUs: held.reduce(0) { $0 + $1.size.cpus }, maxCPUs: admission.policy.maxCPUs,
+                           waiting: admission.waiting())
+    }
+
+    /// The Mac by whom, as last sampled (nil where its processes can't be read).
+    func hostBreakdown() -> HostBreakdown? { host }
+
+    /// The Mac's processes read again: the breakdown, what isn't the
+    /// leases', and each lease's footprint.
+    func refreshHost() async {
+        let rows = await processTable.snapshot()
+        guard !rows.isEmpty else { return }
+        let held = leases.values.filter { $0.state != .failed }.sorted { $0.created < $1.created }
+        let disks = await DiskSizes.shared.leases(Dictionary(uniqueKeysWithValues: held.map { ($0.id, folder(of: $0)) }))
+        let space = await DiskSizes.shared.usage().map { DiskSpace(totalBytes: $0.totalBytes, freeBytes: $0.freeBytes) }
+        let hints = held.map { LeaseHint(lease: $0, allocatedBytes: countedSize($0).memoryBytes, diskBytes: disks[$0.id]) }
+        let result = HostAccounting.breakdown(rows, memoryUsed: processTable.memoryUsed(),
+                                              physicalMemory: Int64(clamping: ProcessInfo.processInfo.physicalMemory),
+                                              cpus: ProcessInfo.processInfo.activeProcessorCount, ourPID: getpid(), leases: hints,
+                                              previous: cpuSample, now: Date(), disk: space, allocatedBytes: processTable.allocatedBytes)
+        host = result.host
+        cpuSample = result.sample
+        leaseFootprints = result.leaseFootprints
+    }
+
+    /// What isn't the leases' (other VMs, other processes, OS Server
+    /// itself), as last sampled: it comes out of the budget.
+    private var outsideMemory: Int64 { host?.outsideMemoryBytes ?? 0 }
+
+    /// What the leases take now, each the more of its size and its
+    /// footprint (nil where the Mac's processes can't be read).
+    private var leasesInUse: Int64? {
+        guard host != nil else { return nil }
+        return leases.values.filter { $0.state != .failed }.reduce(0) { $0 + max(countedSize($1).memoryBytes, leaseFootprints[$1.id] ?? 0) }
+    }
+
+    /// The leases that hold room: every one but those failed.
+    private func heldDemands() -> [LeaseDemand] {
+        leases.values.filter { $0.state != .failed }.map { LeaseDemand(platform: $0.platform, size: countedSize($0)) }
+    }
+
+    /// What a lease counts against the budget: what it was granted with,
+    /// else (one kept from before 0.14) what it was given, else the
+    /// estimate for its type.
+    private func countedSize(_ lease: Lease) -> LeaseSize {
+        if let size = lease.size { return size }
+        if let cpus = lease.cpus, let memory = lease.memoryLimitBytes { return LeaseSize(cpus: cpus, memoryBytes: memory) }
+        return admission.policy.estimate(lease.platform)
+    }
+
+    /// What a lease of a type and config takes: a VM its base's CPUs and
+    /// memory (machine.json; UTM's bases the estimate), a container what it
+    /// asks for or else gets, a simulator or an emulator the estimate.
+    private func measure(_ platform: Platform, config: String, container: ContainerSpec?) -> LeaseSize {
+        switch platform {
+        case .container:
+            return LeaseSize(cpus: container?.cpus ?? ContainerDefaults.cpus, memoryBytes: container?.memoryBytes ?? ContainerDefaults.memoryBytes)
+        case .macos, .linux, .windows:
+            #if canImport(Virtualization)
+            if platform == .macos, MacVMStore.hasBase(config), let spec = try? MacMachineSpec.load(MacVMStore.basePath(config)) {
+                return LeaseSize(cpus: spec.cpus, memoryBytes: Int64(spec.memoryBytes))
+            }
+            if platform != .macos, QEMUStore.hasBase(platform, config),
+               let spec = try? QEMUMachineSpec.load(QEMUStore.basePath(platform, config)) {
+                return LeaseSize(cpus: spec.cpus, memoryBytes: Int64(spec.memoryBytes))
+            }
+            #endif
+            return admission.policy.estimate(platform)
+        case .ios, .android:
+            return admission.policy.estimate(platform)
         }
     }
 
@@ -204,6 +306,7 @@ actor MachineManager {
             throw APIError(error: "a device type and runtime are for an iOS lease", code: "noDevice")
         }
         let config = request.config ?? self.config.defaultConfig(request.platform)
+        if let layer = request.build { return try leaseForBuild(request, layer: layer, config: config, local: local, origin: origin) }
         // Simulators that couldn't be listed are no answer about the base.
         if request.platform == .ios, case .failure(let error) = await Simulators.inventory() {
             log("an ios lease refused: simctl couldn't list the simulators: \(error)")
@@ -217,10 +320,10 @@ actor MachineManager {
         // A simulator of a device type or runtime of its own: chosen now, so
         // one the server's Xcode hasn't got is refused before anything's made.
         let simulator = request.platform == .ios ? try await Simulators.choose(device: request.device, runtime: request.runtime, base: base) : nil
-        let held = leases.values.filter { $0.platform == request.platform && $0.state != .failed }.count
-        guard held < self.config.limit(request.platform) else {
-            throw APIError(error: "busy: \(held) of \(self.config.limit(request.platform)) \(request.platform.rawValue) machines are leased", code: "busy")
-        }
+        // Its type's cap and the budget, beside every lease held and the
+        // oldest waiting. Nothing awaits from here until the lease is in
+        // `leases`, so two requests can't both take the last room.
+        let size = try admit(request, config: config)
         let id = Random.hex(4)
         // A container may be held until it is released (an agent's, for days).
         let untilReleased = request.platform == .container && request.minutes == 0
@@ -230,6 +333,7 @@ actor MachineManager {
                           expires: untilReleased ? .distantFuture : Date().addingTimeInterval(TimeInterval(minutes * 60)))
         if request.platform.isVM { lease.sshUser = self.config.guestUser }
         lease.container = request.container
+        lease.size = size
         lease.device = simulator?.deviceType.name
         lease.runtime = simulator?.runtime.name
         lease.take(origin)
@@ -238,6 +342,49 @@ actor MachineManager {
         log("lease \(id): \(simulator.map { "\($0.deviceType.name) on \($0.runtime.name), set up as \(base.name)" } ?? base.name) "
             + "for \(lease.holder) (\(origin.kind.rawValue)), \(untilReleased ? "until released" : "\(minutes) min")")
         Task { await self.create(id, from: base, holderKey: request.sshPublicKey, simulator: simulator) }
+        return lease
+    }
+
+    /// Whether a lease may be granted now: its type's cap and the budget,
+    /// beside every lease held and the oldest waiting (Admission.swift);
+    /// the size it is granted at, else why not (`busy`, `tooBig`). Every
+    /// lease goes through it, an image build's place too.
+    func admit(_ request: LeaseRequest, config: String) throws -> LeaseSize {
+        let size = measure(request.platform, config: config, container: request.build == nil ? request.container : nil)
+        if let refusal = admission.decide(LeaseDemand(platform: request.platform, size: size), ticket: request.waitTicket, config: config,
+                                          holder: request.holder ?? "unknown", held: heldDemands(), outside: outsideMemory,
+                                          leasesInUse: leasesInUse) {
+            throw APIError(error: refusal.message, code: refusal.code)
+        }
+        return size
+    }
+
+    /// A VM's place for an image build (`LeaseRequest.build`): admitted as a
+    /// lease of its platform and its base's size (its type's cap, the
+    /// budget, the line), with no machine. The build, in `oss image build`'s
+    /// process on this Mac, makes its own, named as this lease is, so the
+    /// lease is ready at once and ends with nothing to delete.
+    private func leaseForBuild(_ request: LeaseRequest, layer: String, config: String, local: Bool, origin: LeaseOrigin) throws -> Lease {
+        guard request.platform.isVM else { throw APIError(error: "an image build's place is a VM's: macos, linux or windows") }
+        guard local else { throw APIError(error: "an image build's place is for a build on the server's Mac", code: "notLocal") }
+        guard !layer.isEmpty, layer.allSatisfy({ $0.isLetter || $0.isNumber || "-_.".contains($0) }) else {
+            throw APIError(error: "a layer's name is letters, digits, - _ and .")
+        }
+        let size = try admit(request, config: config)
+        let id = Random.hex(4)
+        let minutes = min(max(request.minutes ?? self.config.defaultMinutes, 1), self.config.maxMinutes)
+        var lease = Lease(id: id, platform: request.platform, config: config, name: "oss-build-\(request.platform.rawValue)-\(layer)-\(id)",
+                          holder: request.holder ?? "unknown", state: .ready, created: Date(),
+                          expires: Date().addingTimeInterval(TimeInterval(minutes * 60)))
+        lease.size = size
+        lease.build = layer
+        lease.buildPID = request.buildPID
+        lease.take(origin)
+        lease.kind = .build
+        if lease.label == nil { lease.label = "image build: \(layer) from \(config)" }
+        leases[id] = lease
+        save()
+        log("lease \(id): a place for building \(request.platform.rawValue) \(layer) from \(config) (\(size)) for \(lease.holder), \(minutes) min")
         return lease
     }
 
@@ -473,6 +620,8 @@ actor MachineManager {
         if let allotted = try? await UTM.allotment(lease.name) {
             leases[id]?.cpus = allotted.cpus
             leases[id]?.memoryLimitBytes = allotted.memoryBytes
+            // UTM's base said nothing before: counted from now as it is.
+            if let cpus = allotted.cpus, let memory = allotted.memoryBytes { leases[id]?.size = LeaseSize(cpus: cpus, memoryBytes: memory) }
         }
         try await handOver(id, lease: lease, address: address, qemuVNC: qemuVNC, holderKey: holderKey)
     }
@@ -669,6 +818,8 @@ actor MachineManager {
         log("lease \(id): \(reason); deleting \(lease.name)")
         switch lease.platform {
         case .macos, .linux, .windows:
+            // An image build's place: its machine is the build's.
+            if lease.build != nil { break }
             #if canImport(Virtualization)
             if lease.platform == .macos, FileManager.default.fileExists(atPath: MacVMStore.leasePath(lease.name)) {
                 await stopMacVM(lease.name)
@@ -724,6 +875,19 @@ actor MachineManager {
     /// Leases whose time ran out are released.
     func expire() async {
         let now = Date()
+        // An image build's place lasts as long as its build's process: never
+        // expired while it runs (its VM is running), released once it's gone.
+        for lease in leases.values where lease.build != nil && lease.state == .ready {
+            guard let pid = lease.buildPID else { continue }
+            if kill(pid, 0) == 0 || errno == EPERM {
+                if lease.expires < now.addingTimeInterval(600) {
+                    leases[lease.id]?.expires = now.addingTimeInterval(3600)
+                    save()
+                }
+            } else {
+                await release(lease.id, reason: "its build ended")
+            }
+        }
         for lease in leases.values where lease.expires < now && lease.state != .returning && lease.state != .failed {
             await release(lease.id, reason: "expired")
         }
@@ -871,6 +1035,11 @@ actor MachineManager {
         let ordered = saved.filter { !$0.platform.isVM } + saved.filter { $0.platform.isVM }
         let vms = config.useUTM && config.lends.map({ $0.contains(where: \.isVM) }) ?? true ? ((try? await UTM.list()) ?? []) : []
         for var lease in ordered where lease.state == .ready && lease.expires > Date() {
+            // An image build's place has no machine to find: kept while its build renews it.
+            if lease.build != nil {
+                leases[lease.id] = lease
+                continue
+            }
             #if canImport(Virtualization)
             // OS Server's own macOS VMs run in helpers of their own: forwarded
             // again while they run, started again from their disks when not (the
@@ -1048,9 +1217,11 @@ public final class ServerHost: Sendable {
             }
         }
         Task {
+            await machines.refreshHost()
             while true {
                 try? await Task.sleep(for: .seconds(15))
                 await machines.expire()
+                await machines.refreshHost()
                 await machines.reviveMachines()
             }
         }
@@ -1060,7 +1231,7 @@ public final class ServerHost: Sendable {
                 try? await Task.sleep(for: .seconds(60))
             }
         }
-        log("oss serving on :\(config.port)" + (mcp == nil ? "" : ", MCP on :\(config.mcpPort)") + "; capacity \(config.capacity)")
+        log("oss serving on :\(config.port)" + (mcp == nil ? "" : ", MCP on :\(config.mcpPort)") + "; " + config.leasePolicy().summary)
         return ServerHost(port: config.port, machines: machines, http: http, mcp: mcp, cache: cache)
     }
 
@@ -1129,6 +1300,13 @@ enum Server {
     /// The server's host as the asker reached it (its `Host`, without the
     /// port): where the asker reaches a lease's forwarded ports too.
     static func reachedHost(_ request: HTTPRequest) -> String {
+        // The server calling itself over loopback (its MCP port's tool
+        // calls) says whom it is answering for: their host, not loopback's.
+        if let address = request.remoteAddress, ["127.0.0.1", "::1", "::ffff:127.0.0.1"].contains(address),
+           let forwarded = request.header(OSSHeaders.reachedHost), !forwarded.isEmpty,
+           forwarded.allSatisfy({ $0.isLetter || $0.isNumber || ".-:[]".contains($0) }) {
+            return forwarded
+        }
         guard let host = request.header("host"), !host.isEmpty,
               host.allSatisfy({ $0.isLetter || $0.isNumber || ".-:[]".contains($0) }) else { return localHostName }
         if host.hasPrefix("["), let end = host.firstIndex(of: "]") { return String(host[...end]) }
@@ -1198,7 +1376,9 @@ enum Server {
                 return .json(Status(server: localHostName, bases: try await machines.bases().filter { visible($0.platform) },
                                     capacity: await machines.capacity().filter { visible($0.platform) },
                                     leases: await machines.all().filter { visible($0.platform) }.map(reached),
-                                    storage: await api.storage.info()))
+                                    storage: await api.storage.info(),
+                                    budget: await machines.budget(),
+                                    host: await machines.hostBreakdown()))
             case ("GET", 2) where parts[1] == "usage":
                 var usage = await machines.usage()
                 usage.machines = usage.machines.filter { visible($0.platform) }

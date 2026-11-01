@@ -24,12 +24,16 @@ extension Server {
         }
         let secret = request.header(OSSHeaders.apiKey) ?? request.header("authorization")?.replacingOccurrences(of: "Bearer ", with: "") ?? ""
         let clientID = request.header(OSSHeaders.clientID).flatMap { $0.isEmpty ? nil : $0 }
-        // The API at the host the caller reached this port at, so the URLs
-        // it gives (a grant's) are ones the caller can reach.
-        let host = calledHost(request) ?? "127.0.0.1"
+        // This server's own API over loopback (App Transport Security in
+        // the app refuses plain HTTP to its tailnet or LAN name, and loopback
+        // needs neither), told the host the caller reached this port at, so
+        // the URLs it gives (a grant's, forwarded ports) are ones the caller
+        // can reach.
+        let host = calledHost(request)
         let context = { () async throws -> MCPServer.Context in
-            var client = OSSClient(server: URL(string: "http://\(host):\(apiPort)") ?? URL(string: "http://127.0.0.1:\(apiPort)")!, token: secret)
+            var client = OSSClient(server: URL(string: "http://127.0.0.1:\(apiPort)")!, token: secret)
             client.clientID = clientID
+            client.reachedHost = host
             let config = ServerConfig.load()
             let publicKey = FileManager.default.contents(atPath: config.managementKey + ".pub")
                 .map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }

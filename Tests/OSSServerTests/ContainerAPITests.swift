@@ -188,11 +188,16 @@ struct ContainerServer {
     let url: URL
     let client: OSSClient
 
-    static func start(ports: ClosedRange<Int> = 38700...38709) async throws -> ContainerServer {
+    static func start(ports: ClosedRange<Int> = 38700...38709, budget: BudgetSettings = BudgetSettings(memoryGB: 1024),
+                      maxCPUs: Int = 64) async throws -> ContainerServer {
         let root = NSTemporaryDirectory() + "oss-containers-test-\(UUID().uuidString)"
         var config = ServerConfig()
         config.lends = [.container]
         config.useUTM = false
+        // Room for every test's leases (unless it tries the budget),
+        // whatever the Mac running them has.
+        config.budget = budget
+        config.maxCPUs = maxCPUs
         config.firstPort = ports.lowerBound
         config.lastPort = ports.upperBound
         let containers = FakeContainers(root: root)
@@ -234,8 +239,9 @@ struct ContainerServer {
 }
 
 /// `body` with a server of its own, stopped afterwards however it ends.
-func withContainerServer(ports: ClosedRange<Int>, _ body: (ContainerServer) async throws -> Void) async throws {
-    let server = try await ContainerServer.start(ports: ports)
+func withContainerServer(ports: ClosedRange<Int>, budget: BudgetSettings = BudgetSettings(memoryGB: 1024), maxCPUs: Int = 64,
+                         _ body: (ContainerServer) async throws -> Void) async throws {
+    let server = try await ContainerServer.start(ports: ports, budget: budget, maxCPUs: maxCPUs)
     do {
         try await body(server)
     } catch {

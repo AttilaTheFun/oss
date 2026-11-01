@@ -2,6 +2,14 @@
 
 ## 0.14.0 (unreleased)
 
+- **The MCP port's tool calls reach this server's API over loopback.**
+  They went to the host the caller had reached the MCP port by, over plain
+  HTTP, which App Transport Security in OS Server's app refuses for a
+  tailnet or LAN name (NSURLErrorDomain -1022): every `oss_` tool failed
+  for a caller on another Mac. Now they go to `127.0.0.1` and name that
+  host in `OSS-Reached-Host`, which the API honours from loopback alone,
+  so forwarded ports and grants' URLs still answer as the caller reaches
+  the server.
 - **A busy server still says hello**: `/v1/hello` is answered by the
   API's listener at once, without waiting for a task, and a client asks
   this computer's server again with longer waits (4, 10, 15 s) before
@@ -32,6 +40,80 @@
   0.14 first starts keep their own networks until their leases end.
   `oss-machine network-check` tries it for real (CI's macOS VM runs it).
   No API change.
+- **Lease limits: caps and a memory budget** (API 14; the ground TODO.md's
+  primary VMs will stand on). A lease is granted only while its type's
+  count cap, where server.json's `limits` sets one, and a memory budget
+  over every lease held (`budget.memoryGB`) both have room for it. By
+  default only macOS is capped (two, Apple's limit), and the budget is the
+  Mac's memory less what macOS keeps (16 GB or a quarter, whichever is
+  more, never more than half); a type with no cap takes whatever the
+  budget has room for. A lease's size (`Lease.size`) is a VM's base's CPUs
+  and memory, a container's request (else 4 and 8 GB), and for a
+  simulator and an emulator an estimate of their memory (2 GB and 4 GB;
+  server.json's `sizes`). server.json's `capacity`, its name before, is
+  read as `limits`: the types it names keep their caps; the ones it
+  doesn't (and a server.json with none: windows, linux, ios, android and
+  container were capped at 2, 2, 4, 2 and 4) are now limited by the budget
+  alone.
+- **CPUs are shared out, not budgeted**: most machines leave most of
+  theirs idle, and at worst everything slows down. `maxCPUs` (by default
+  the Mac's cores) is the most one VM or container may have; a lease
+  asking for more is refused.
+- **The Mac by whom, and what isn't OS Server's comes out of the budget**
+  (API 14). OS Server reads the Mac's process table every 15 seconds with
+  libproc (each process's executable, parent, footprint and CPU time, the
+  process macOS holds responsible for it; a VM's open files; a
+  simulator's `launchd_sim`'s arguments) and finds every VM on the Mac by
+  its process, whoever made it: each Virtualization VM's XPC service
+  (`com.apple.Virtualization.VirtualMachine`: an agent's containers run
+  through Containerization, Podman's vfkit, Apple's `container`), and
+  QEMU. `Status.host` says (a) OS Server's leases, each one's memory as
+  given and as used, CPU and disk, and OS Server itself; (b) the other VMs
+  by the app they are for (the responsible process's, or its parents'):
+  how many, their footprint, CPU and, where their open files say, disks;
+  (c) everything else, with the apps of it using the most; and the disk
+  free. What isn't the leases' (b, c and OS Server itself:
+  `outsideMemoryBytes`) comes out of the budget, and whatever the budget
+  the Mac keeps its reserve: the leases' use (each the more of its size
+  and its footprint) and everything else's stay under its memory less the
+  reserve (`hostLimitBytes`). `oss status` and `oss_status` show it.
+- **Refusals name the full limit** (API 14): 409 `busy: macos 2 of 2
+  leased`, `busy: memory 120 of 128 GB leased; this needs 16`; a lease
+  with more memory than the whole budget, or more CPUs than `maxCPUs`, is
+  409 `tooBig`, which `--wait` doesn't wait for.
+- **An image build takes a place like a lease** (API 14): `oss image
+  build` and `oss image install` for a VM, and OS Server's own component
+  installs, ask this Mac's server for a place before the VM starts
+  (`LeaseRequest.build`, its layer: admitted as a lease of its platform
+  and its base's size, against the type's cap and the memory budget,
+  queued with `--wait`). It is a lease with no machine, kind `build`
+  (`LeaseKind.build`), holder `image-build`, that its build's clone is
+  named after; it lasts as long as the build's process
+  (`LeaseRequest.buildPID`: never expired while it runs, released once
+  it's gone) and is given back when the VM has stopped. Before, a build
+  took a macOS VM outside the server's count, and leases granted meanwhile
+  failed to start ("maximum active VMs"). A build that fails now deletes
+  its clone (its `.building` folder, or UTM's), which was kept.
+- **`--wait` keeps a place in line** (API 14): `oss machine lease --wait`
+  (`OSSClient.lease(waitForCapacity:)`, `OSSPool`) asks again with a
+  ticket of its own (`LeaseRequest.waitTicket`), and the server keeps it in
+  line, oldest first, while it asks within 45 seconds. A lease is granted
+  as soon as its own limits allow, whatever waits for others, but the
+  oldest in line is kept room for: a later lease that would fit only by
+  taking its type's next place or the memory it needs waits too, so
+  small leases never starve a big one. A client before API 14 waits as
+  it did, without a place. `OSSPool` keeps its place at the nearest server
+  that lends the platform, and still takes room at any that has it first.
+- **The limits in the status** (API 14): `Status.budget` (the memory
+  budget, what the leases take of it, their CPUs together and `maxCPUs`,
+  and the line, each waiting lease's platform, config, holder, size, time
+  and last refusal), and each type's `Capacity.cap`, `used` and `size`;
+  `Capacity.limit` is how many may be held now (its cap, or fewer where
+  the budget has room for fewer more of its default config), which older
+  clients compare with `leased` as before. OS Server's window and OS
+  Monitor show the budget and each cap, `oss status` and `oss mcp`'s
+  `oss_status` the line too, and the server's log the limits when it
+  starts.
 - **CI's jobs in containers, for the repositories named** (API 13; the
   first step of TODO.md's "CI runners in containers"): with a GitHub
   App's id and key in `~/.config/oss/ci-github-app.json` and
@@ -51,7 +133,7 @@
   and stored with it. A runner no job came to in 10 minutes is given up and
   its registration deleted; a job still queued after its runner failed is
   tried again (three runners at most). At most `maxConcurrent` jobs at once
-  (one for every 8 cores and 32 GB, at most half the container capacity,
+  (one for every 8 cores and 32 GB, at most half the containers it lends,
   unless set), the rest waiting in the order GitHub queued them. Without
   the App's files, or without `ci`, nothing changes.
 - **A CI job's grant** (API 13): the job's container holds no token of

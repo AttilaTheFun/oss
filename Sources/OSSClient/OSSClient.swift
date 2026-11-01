@@ -147,6 +147,10 @@ public struct OSSClient: Sendable {
     /// `CLIENT_ID` header): a CI job, a Visor session. What it leases and
     /// stores is then `<clientID>@<application>`'s.
     public var clientID: String?
+    /// The host the original caller reached the server by
+    /// (`OSSHeaders.reachedHost`), when this client is the server calling
+    /// itself over loopback.
+    public var reachedHost: String?
 
     /// The server's host: SSH, VNC and adb to a lease go to it too.
     public var host: String { server.host ?? "127.0.0.1" }
@@ -223,6 +227,7 @@ public struct OSSClient: Sendable {
     func authorization() async throws -> [String: String] {
         var headers = ["Authorization": "Bearer \(try await token())", "OSS-API": "\(OSS.apiLevel)"]
         if let clientID, !clientID.isEmpty { headers[OSSHeaders.clientID] = clientID }
+        if let reachedHost, !reachedHost.isEmpty { headers[OSSHeaders.reachedHost] = reachedHost }
         return headers
     }
 
@@ -278,9 +283,14 @@ public struct OSSClient: Sendable {
 
     /// A lease asked for and waited on until it is ready, or (with
     /// `waitForCapacity`) first until the platform has room. `progress` hears
-    /// what it's waiting for.
+    /// what it's waiting for. Waiting, it asks with a ticket of its own
+    /// (API 14: a server before ignores it), so the server keeps its place in
+    /// line; a lease bigger than the server's whole budget (`tooBig`) isn't
+    /// waited for.
     public func lease(_ request: LeaseRequest, waitForCapacity: Bool = false,
                       progress: @Sendable (String) -> Void = { _ in }) async throws -> Lease {
+        var request = request
+        if waitForCapacity, request.waitTicket == nil { request.waitTicket = UUID().uuidString }
         var lease: Lease
         while true {
             do {
