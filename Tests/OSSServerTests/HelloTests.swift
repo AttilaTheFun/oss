@@ -22,4 +22,21 @@ import Testing
         #expect(Server.immediate(HTTPRequest(method: "GET", path: path, headers: [:], body: Data())) == nil)
     }
 }
+
+// The MCP port calls this server's own API over loopback, naming the host
+// its caller reached; that name is honoured from loopback alone.
+@Test func reachedHostFromLoopbackOnly() {
+    func request(from address: String?, forwarded: String?) -> HTTPRequest {
+        var headers = ["host": "127.0.0.1:7480"]
+        if let forwarded { headers["oss-reached-host"] = forwarded }
+        var request = HTTPRequest(method: "GET", path: "/v1/status", headers: headers, body: Data())
+        request.remoteAddress = address
+        return request
+    }
+    #expect(Server.reachedHost(request(from: "127.0.0.1", forwarded: "mac.example.ts.net")) == "mac.example.ts.net")
+    #expect(Server.reachedHost(request(from: "::1", forwarded: "mac.example.ts.net")) == "mac.example.ts.net")
+    #expect(Server.reachedHost(request(from: "100.64.0.9", forwarded: "evil.example")) == "127.0.0.1")
+    #expect(Server.reachedHost(request(from: "127.0.0.1", forwarded: nil)) == "127.0.0.1")
+    #expect(Server.reachedHost(request(from: "127.0.0.1", forwarded: "bad host/../")) == "127.0.0.1")
+}
 #endif

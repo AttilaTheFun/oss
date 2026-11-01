@@ -168,6 +168,11 @@ public enum OSSHeaders {
     public static let xctestRun = "OSS-XCTest-Run"
     /// An application's API key (API 12), in place of the bearer token.
     public static let apiKey = "API_KEY"
+    /// The host the original caller reached the server by, sent by the
+    /// server to its own API over loopback (its MCP port's tool calls), so
+    /// the addresses it answers (forwarded ports, grants' URLs) are ones
+    /// the caller can reach. Honoured only from 127.0.0.1 or ::1.
+    public static let reachedHost = "OSS-Reached-Host"
     /// Who a keyed request acts for within its application (API 12).
     public static let clientID = "CLIENT_ID"
 }
