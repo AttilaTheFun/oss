@@ -14,6 +14,11 @@
   runner in use, or the limit with no room for its container; how long),
   and the last few that ended, each a link to its run. `GET /v1/ci` says
   it all at once, and the monitor token reads it and `/v1/ci/jobs`.
+- **OS Monitor's memory bar shows what's reserved**: what OS Server's
+  machines are given and don't use (light blue) beside what OS Server and
+  its machines use (blue), every other process (light gray) and what's
+  free (gray). A Mac's memory looked half free while the budget, which
+  counts each lease's size, was full.
 - **`--wait` waits for a kept volume too** (and `oss machine run`, which
   always waits): a lease whose `:keep` volume another lease still has is
   asked for again until it's free, as one with no room is, rather than

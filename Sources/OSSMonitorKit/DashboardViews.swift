@@ -22,7 +22,7 @@ public struct ServerDashboard: View {
                 }
             }
             if let usage = monitor.usage {
-                ResourcesCard(usage: usage, history: monitor.history)
+                ResourcesCard(usage: usage, budget: monitor.status?.budget, history: monitor.history)
                 MachinesCard(monitor: monitor)
                 if let ci = monitor.ci { CICard(ci: ci, now: monitor.now).id("ci") }
                 if let disk = usage.disk { DiskCard(disk: disk, day: monitor.day, volumes: monitor.volumes).id("disk") }
@@ -43,7 +43,20 @@ public struct ServerDashboard: View {
 @available(macOS 15, iOS 18, *)
 struct ResourcesCard: View {
     let usage: Usage
+    /// What the leases are given (API 14): their memory reserved, which
+    /// the bar shows beside what they use.
+    let budget: LeaseBudget?
     let history: [ServerMonitor.Sample]
+
+    /// Memory OS Server's leases are given but don't use now: their sizes
+    /// together (the budget's count, else each lease's limit), less what
+    /// they use.
+    private var reservedIdle: Int64 {
+        let machines = usage.machines ?? []
+        let reserved = budget?.leasedMemoryBytes ?? machines.reduce(0) { $0 + ($1.memoryLimitBytes ?? 0) }
+        let used = machines.reduce(Int64(0)) { $0 + ($1.memoryBytes ?? 0) }
+        return max(0, reserved - used)
+    }
 
     var body: some View {
         let host = usage.host
@@ -57,10 +70,12 @@ struct ResourcesCard: View {
                 ShareRow(title: "CPU", total: "\(host.cpus) cores",
                          ours: ourCPU / cores, others: otherCPU / cores,
                          labels: (Format.cores(ourCPU), Format.cores(otherCPU), Format.cores(max(0, cores - ourCPU - otherCPU))))
+                let idle = min(reservedIdle, max(0, host.memoryBytes - Int64(ourMemory) - Int64(otherMemory)))
                 ShareRow(title: "Memory", total: Format.bytes(host.memoryBytes),
                          ours: ourMemory / Double(max(1, host.memoryBytes)), others: otherMemory / Double(max(1, host.memoryBytes)),
                          labels: (Format.bytes(Int64(ourMemory)), Format.bytes(Int64(otherMemory)),
-                                  Format.bytes(max(0, host.memoryBytes - Int64(ourMemory) - Int64(otherMemory)))))
+                                  Format.bytes(max(0, host.memoryBytes - Int64(ourMemory) - Int64(otherMemory) - idle))),
+                         reserved: Double(idle) / Double(max(1, host.memoryBytes)), reservedLabel: Format.bytes(idle))
                 if let disk = usage.disk {
                     let ours = disk.parts.reduce(0) { $0 + $1.bytes }
                     let used = disk.totalBytes - disk.freeBytes
@@ -82,8 +97,9 @@ struct ResourcesCard: View {
     }
 }
 
-/// One resource as a bar of three parts: OS Server's (and its machines'),
-/// every other process's, and what's free.
+/// One resource as a bar of its parts: what OS Server's machines are given
+/// and don't use (memory: light blue), what OS Server and its machines use
+/// (blue), every other process's (light gray), and what's free (gray).
 @available(macOS 15, iOS 18, *)
 struct ShareRow: View {
     let title: String
@@ -94,6 +110,9 @@ struct ShareRow: View {
     /// What the first part is called; no second part when `others` is nil.
     var oursName = "OS Server"
     var othersName: String? = "Others"
+    /// Reserved for OS Server's machines and not used by them (memory).
+    var reserved: Double = 0
+    var reservedLabel: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -102,15 +121,25 @@ struct ShareRow: View {
                 Spacer()
                 Text(total).foregroundStyle(.secondary).monospacedDigit()
             }
-            ShareBar(parts: [(ours, Color.accentColor), (others, Color.gray)])
+            ShareBar(parts: [(reserved, ShareColors.reserved), (ours, ShareColors.ours), (others, ShareColors.others)])
             HStack(spacing: 12) {
-                Legend(color: .accentColor, text: "\(oursName) \(labels.ours)")
-                if let othersName { Legend(color: .gray, text: "\(othersName) \(labels.others)") }
-                Legend(color: Color.gray.opacity(0.25), text: "Free \(labels.free)")
+                if let reservedLabel { Legend(color: ShareColors.reserved, text: "Reserved \(reservedLabel)") }
+                Legend(color: ShareColors.ours, text: "\(oursName) \(labels.ours)")
+                if let othersName { Legend(color: ShareColors.others, text: "\(othersName) \(labels.others)") }
+                Legend(color: ShareColors.free, text: "Free \(labels.free)")
             }
             .font(.caption)
         }
     }
+}
+
+/// A bar's colours: reserved light blue, used blue, others light gray,
+/// free gray.
+enum ShareColors {
+    static let reserved = Color.accentColor.opacity(0.35)
+    static let ours = Color.accentColor
+    static let others = Color.gray.opacity(0.35)
+    static let free = Color.gray.opacity(0.7)
 }
 
 struct ShareBar: View {
@@ -124,7 +153,7 @@ struct ShareBar: View {
                 }
                 Spacer(minLength: 0)
             }
-            .background(Color.gray.opacity(0.18))
+            .background(ShareColors.free)
             .clipShape(Capsule())
         }
         .frame(height: 10)
