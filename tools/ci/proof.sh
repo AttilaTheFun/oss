@@ -237,8 +237,9 @@ if lease_other ios; then
     ios="$(. "$work/lease-ios"; printf '%s' "$OSS_ID")"
     "$OSS" machine simctl "$ios" install "$work/ipa/Payload/OS Monitor.app"
     for appearance in light dark; do
-        # name, launch arguments, swipes down the dashboard (its disk card is scrolled to by the app)
-        for screen in "servers::0" "server:-fixture.open YES:0" "server-disk:-fixture.open YES -fixture.scroll disk:0" \
+        # name, launch arguments, swipes down the dashboard (its CI and disk cards are scrolled to by the app)
+        for screen in "servers::0" "server:-fixture.open YES:0" "server-ci:-fixture.open YES -fixture.scroll ci:0" \
+                      "server-disk:-fixture.open YES -fixture.scroll disk:0" \
                       "server-end:-fixture.open YES:6"; do
             name="${screen%%:*}"
             rest="${screen#*:}"
@@ -313,8 +314,8 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 fi
 
 # Every picture: OS Server's 8 (12 with the guests'), OS Monitor's 2 on the Mac and 8 on the iPhone.
-expected=18
-[ "$kind" = quick ] || expected=22
+expected=20
+[ "$kind" = quick ] || expected=24
 if [ "$count" -lt "$expected" ]; then
     echo "::error::$count of $expected pictures came back"
     status=1
