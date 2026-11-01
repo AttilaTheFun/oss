@@ -2,6 +2,17 @@
 
 ## 0.14.0 (unreleased)
 
+- **The line can't deadlock**: the oldest lease waiting is kept room for
+  while the line moves, but once nothing has been granted or released for
+  5 minutes a lease that fits goes ahead. The room kept could be what the
+  leases held were waiting for themselves (CI runners waiting for their
+  VMs, a proof holding one VM while it waits for the next), and the queue
+  stood still. And a CI job's container is 4 GB, not 8: it holds that
+  while its job waits for the machines it leases.
+- **A runner whose job was cancelled goes at once**: a runner still
+  waiting for its job asks every 30 s whether the job is over (its run
+  cancelled), and is given up then, not 10 minutes later, its container's
+  memory freed.
 - **A long answer comes back in order.** The command line's HTTP (curl,
   run by `Shell.run`) read curl's output with a pipe's readability
   handler, and one still running as curl exited could append its chunk
