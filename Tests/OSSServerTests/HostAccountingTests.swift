@@ -181,3 +181,24 @@ private func account(_ rows: [ProcessRow], previous: HostAccounting.CPUSample? =
     #expect(decoded.host?.otherVMs.map(\.owner) == ["Visor Server", "podman", "QEMU"])
     #expect(decoded.host?.outsideMemoryBytes == host.outsideMemoryBytes)
 }
+
+// A container lease whose helper was started before OS Server's app was
+// replaced: the helper runs from the old bundle, and its VM's open files
+// don't name the lease. It is still the lease's (found through its helper's
+// arguments), never another app's VMs, so nothing is counted twice.
+@Test func aLeaseUnderAHelperFromTheReplacedAppIsTheLeases() {
+    let old = "/Users/someone/Library/Application Support/OS Server/Backups/b1/replaced-OS Server.app/Contents/Helpers/oss-machine"
+    let rows = [
+        row(1, "/sbin/launchd", ppid: 0, footprint: 20 * mb),
+        row(100, "/Applications/OS Server.app/Contents/MacOS/OS Server", footprint: 400 * mb),
+        row(110, old, footprint: 40 * mb,
+            arguments: [old, "container", "\(support)/OS Server/Containers/containers/oss-lease-container-s1/helper.json"]),
+        row(111, vz, responsible: 110, footprint: 14 * gb, openFiles: ["/private/var/folders/xx/rootfs-clone.ext4"]),
+    ]
+    let session = LeaseHint(lease: lease("s1", .container), allocatedBytes: 16 * gb, diskBytes: nil)
+    let result = HostAccounting.breakdown(rows, memoryUsed: 20 * gb, physicalMemory: 64 * gb, cpus: 12, ourPID: 100, leases: [session],
+                                          previous: nil, now: Date(timeIntervalSince1970: 1_000), disk: nil, allocatedBytes: { _ in nil })
+    #expect(result.host.otherVMs.isEmpty, "\(result.host.otherVMs)")
+    #expect(result.host.leases.first?.memoryBytes == 14 * gb + 40 * mb)
+    #expect(result.leaseFootprints["s1"] == 14 * gb + 40 * mb)
+}

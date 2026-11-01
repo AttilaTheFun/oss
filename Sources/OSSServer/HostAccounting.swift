@@ -125,13 +125,19 @@ enum HostAccounting {
             var roots: [Int32] = []
             switch lease.platform {
             case .macos, .linux, .windows, .container:
+                // Its machine's helper (`oss-machine <its helper.json>`),
+                // whichever copy of the app it runs from: one started before
+                // the app was replaced runs from the old bundle.
+                let helpers = Set(rows.filter { row in
+                    isMachineHelper(row) && row.arguments.contains { $0.contains("/\(lease.name)/") || $0.contains("/\(lease.name).") }
+                }.map(\.pid))
                 roots = rows.filter { row in
-                    row.isVM && row.openFiles.contains { file in
+                    row.isVM && (row.openFiles.contains { file in
                         file.contains("/\(lease.name).vm/") || file.contains("/\(lease.name).utm/") || file.contains("/containers/\(lease.name)/")
                             // An image build's place: the clone its build names after it.
                             || file.contains("/\(lease.name).building/")
-                    }
-                }.map(\.pid)
+                    } || row.responsible.map(helpers.contains) == true || helpers.contains(row.ppid))
+                }.map(\.pid) + helpers
             case .ios:
                 if let udid = lease.udid {
                     roots = rows.filter { $0.executable == "launchd_sim" && $0.arguments.contains { $0.contains(udid) } }.map(\.pid)
@@ -146,8 +152,12 @@ enum HostAccounting {
         // from its app (its helpers, launchd's children; its QEMU), and a VM
         // of its own that is no lease's (a base being built), but for its
         // leases'.
+        // A machine helper is OS Server's whichever copy of the app it runs
+        // from (one started before the app was replaced keeps the old path).
         let own = rows.filter { row in
-            ourApp != nil && (appName(row) == ourApp || (row.isVM && owner(of: row.pid, in: byPID) == ourApp))
+            isMachineHelper(row)
+                || (ourApp != nil && (appName(row) == ourApp || (row.isVM && owner(of: row.pid, in: byPID) == ourApp)))
+                || (row.isVM && row.responsible.flatMap { byPID[$0] }.map(isMachineHelper) == true)
         }
         let server = tree([ourPID] + own.map(\.pid)).subtracting(allLeasePIDs)
 
@@ -207,6 +217,9 @@ enum HostAccounting {
         return Result(host: host, sample: CPUSample(at: now, times: Dictionary(rows.map { ($0.pid, $0.cpuNanoseconds) }, uniquingKeysWith: { a, _ in a })),
                       leaseFootprints: leasePIDs.mapValues(memory))
     }
+
+    /// OS Server's machine helper (`oss-machine`), from any copy of its app.
+    static func isMachineHelper(_ row: ProcessRow) -> Bool { row.executable == "oss-machine" }
 
     /// What a process is for a person: the app its executable is in (the
     /// first `.app` in its path, so an app's helpers are the app), or its
