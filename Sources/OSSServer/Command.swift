@@ -345,6 +345,32 @@ func capacityLines(_ status: Status, now: Date = Date()) -> [String] {
     return lines
 }
 
+/// `oss status`'s lines for the Mac by whom (API 14): OS Server's leases,
+/// as given and as used, OS Server itself, the other VMs by app, and
+/// everything else, with the apps of it using the most.
+func hostLines(_ host: HostBreakdown) -> [String] {
+    func gb(_ bytes: Int64) -> String { "\(LeaseSize.gigabytes(bytes)) GB" }
+    func cpu(_ percent: Double?) -> String { percent.map { "\(Int($0.rounded()))% cpu" } ?? "cpu ?" }
+    var lines = ["  host: \(gb(host.memoryBytes)), \(host.cpus) cores, \(gb(host.memoryUsedBytes)) in use"
+                 + (host.disk.map { "; disk \(LeaseSize.gigabytes($0.freeBytes)) of \(gb($0.totalBytes)) free" } ?? "")]
+    let given = host.leases.reduce(Int64(0)) { $0 + ($1.memoryLimitBytes ?? 0) }
+    let used = host.leases.reduce(Int64(0)) { $0 + ($1.memoryBytes ?? 0) }
+    lines.append("    OS Server's leases: \(host.leases.count), \(gb(given)) given, \(gb(used)) used, "
+                 + cpu(host.leases.reduce(0) { $0 + ($1.cpuPercent ?? 0) }))
+    for lease in host.leases {
+        lines.append("      \(lease.id) \(lease.platform.rawValue)/\(lease.config): \(gb(lease.memoryLimitBytes ?? 0)) given, "
+                     + "\(lease.memoryBytes.map(gb) ?? "?") used, \(cpu(lease.cpuPercent))" + (lease.diskBytes.map { ", \(gb($0)) disk" } ?? ""))
+    }
+    lines.append("    OS Server itself: \(gb(host.server.memoryBytes)), \(cpu(host.server.cpuPercent))")
+    for group in host.otherVMs {
+        lines.append("    other VMs: \(group.owner): \(group.machines) VM\(group.machines == 1 ? "" : "s"), \(gb(group.memoryBytes)), "
+                     + cpu(group.cpuPercent) + (group.diskBytes.map { ", \(gb($0)) disk" } ?? ""))
+    }
+    let top = host.restTop.map { "\($0.name) \(gb($0.memoryBytes))" }.joined(separator: ", ")
+    lines.append("    everything else: \(gb(host.rest.memoryBytes)), \(cpu(host.rest.cpuPercent))" + (top.isEmpty ? "" : "; most: \(top)"))
+    return lines
+}
+
 /// A CI job in a line: its state (and result), repository, workflow and
 /// job, how long it waited and ran, its lease, its page.
 func ciJobLine(_ job: CIJob) -> String {
@@ -978,6 +1004,7 @@ public enum OSSCommand {
                 } else {
                     print("server \(status.server) (\(client.server.absoluteString))")
                     capacityLines(status).forEach { print($0) }
+                    if let host = status.host { hostLines(host).forEach { print($0) } }
                     // How many are CI's, sessions', agents' and by hand (a server before API 8 says no kinds).
                     if status.leases.contains(where: { $0.kind != nil }) {
                         let counts = LeaseKind.allCases.map { kind in "\(status.leases.filter { $0.kind == kind }.count) \(kind.rawValue)" }

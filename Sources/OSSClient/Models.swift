@@ -589,31 +589,115 @@ public struct Capacity: Codable, Sendable {
     }
 }
 
-/// The memory a server lends at most, what its leases take of it, and who
-/// waits (API 14): a lease is granted only while its type's cap and this
-/// both have room for it. CPUs aren't budgeted: `leasedCPUs` is what the
-/// leases were given together (more than the Mac's cores, often), and
-/// `maxCPUs` the most one machine may have.
+/// The memory a server lends at most, what takes it, and who waits (API
+/// 14): a lease is granted only while its type's cap and this both have
+/// room for it. What isn't OS Server's leases' (`outsideMemoryBytes`: other
+/// VMs, other processes, OS Server itself; 0 where the server can't
+/// measure it) comes out of it, and the Mac keeps its reserve whatever the
+/// budget (`hostLimitBytes`: its memory less that, which the leases' use
+/// and everything else's together stay under). CPUs aren't budgeted:
+/// `leasedCPUs` is what the leases were given together (more than the
+/// Mac's cores, often), and `maxCPUs` the most one machine may have.
 public struct LeaseBudget: Codable, Sendable {
     public var memoryBytes: Int64
     public var leasedMemoryBytes: Int64
+    public var outsideMemoryBytes: Int64
+    public var hostLimitBytes: Int64?
     public var leasedCPUs: Int
     public var maxCPUs: Int
     /// The leases waiting for room (`--wait`), oldest first: the first is
     /// kept room for, so later ones that would delay it wait too.
     public var waiting: [WaitingLease]
 
-    public init(memoryBytes: Int64, leasedMemoryBytes: Int64, leasedCPUs: Int, maxCPUs: Int, waiting: [WaitingLease] = []) {
+    public init(memoryBytes: Int64, leasedMemoryBytes: Int64, outsideMemoryBytes: Int64 = 0, hostLimitBytes: Int64? = nil,
+                leasedCPUs: Int, maxCPUs: Int, waiting: [WaitingLease] = []) {
         self.memoryBytes = memoryBytes
         self.leasedMemoryBytes = leasedMemoryBytes
+        self.outsideMemoryBytes = outsideMemoryBytes
+        self.hostLimitBytes = hostLimitBytes
         self.leasedCPUs = leasedCPUs
         self.maxCPUs = maxCPUs
         self.waiting = waiting
     }
 
-    /// `48 of 112 GB leased; 30 cpus (at most 8 a machine)`.
+    /// `48 of 112 GB leased, 20 outside OS Server's leases; 30 cpus (at most 8 a machine)`.
     public var summary: String {
-        "\(LeaseSize.gigabytes(leasedMemoryBytes)) of \(LeaseSize.gigabytes(memoryBytes)) GB leased; \(leasedCPUs) cpus (at most \(maxCPUs) a machine)"
+        "\(LeaseSize.gigabytes(leasedMemoryBytes)) of \(LeaseSize.gigabytes(memoryBytes)) GB leased"
+            + (outsideMemoryBytes > 0 ? ", \(LeaseSize.gigabytes(outsideMemoryBytes)) outside OS Server's leases" : "")
+            + "; \(leasedCPUs) cpus (at most \(maxCPUs) a machine)"
+    }
+}
+
+/// What the server's Mac is doing, by whom (API 14): OS Server's leases and
+/// OS Server itself, every other VM on the Mac by the app it is for, and
+/// everything else. What isn't OS Server's leases' (`outsideMemoryBytes`)
+/// comes out of what it lends. Sampled every 15 seconds; CPU percentages
+/// are of one core (100: one core busy), since the sample before.
+public struct HostBreakdown: Codable, Sendable {
+    public var sampledAt: Date
+    public var memoryBytes: Int64
+    /// What the Mac uses, as Activity Monitor counts it.
+    public var memoryUsedBytes: Int64
+    public var cpus: Int
+    /// OS Server's leases: each one's memory as given (`memoryLimitBytes`)
+    /// and as used (`memoryBytes`, its processes' footprint), its CPU and
+    /// its disk.
+    public var leases: [MachineUsage]
+    /// OS Server itself, its helpers too, but for its leases.
+    public var server: ResourceShare
+    /// The other VMs (Virtualization's and QEMU's), by the app they are for.
+    public var otherVMs: [VMGroup]
+    /// Everything else, and the apps of it using the most memory.
+    public var rest: ResourceShare
+    public var restTop: [ProcessUsage]
+    /// The volume OS Server's folder is on.
+    public var disk: DiskSpace?
+    /// What isn't OS Server's leases': itself, the other VMs and the rest.
+    public var outsideMemoryBytes: Int64
+
+    public init(sampledAt: Date, memoryBytes: Int64, memoryUsedBytes: Int64, cpus: Int, leases: [MachineUsage], server: ResourceShare,
+                otherVMs: [VMGroup], rest: ResourceShare, restTop: [ProcessUsage], disk: DiskSpace?, outsideMemoryBytes: Int64) {
+        self.sampledAt = sampledAt
+        self.memoryBytes = memoryBytes
+        self.memoryUsedBytes = memoryUsedBytes
+        self.cpus = cpus
+        self.leases = leases
+        self.server = server
+        self.otherVMs = otherVMs
+        self.rest = rest
+        self.restTop = restTop
+        self.disk = disk
+        self.outsideMemoryBytes = outsideMemoryBytes
+    }
+}
+
+/// The VMs on the server's Mac of one app that isn't OS Server (Visor's,
+/// Podman's, Apple's `container`'s): how many, their footprint and CPU, and
+/// their disks, where their open files say (nil where they can't be read).
+public struct VMGroup: Codable, Sendable, Hashable {
+    public var owner: String
+    public var machines: Int
+    public var memoryBytes: Int64
+    public var cpuPercent: Double
+    public var diskBytes: Int64?
+
+    public init(owner: String, machines: Int, memoryBytes: Int64, cpuPercent: Double, diskBytes: Int64? = nil) {
+        self.owner = owner
+        self.machines = machines
+        self.memoryBytes = memoryBytes
+        self.cpuPercent = cpuPercent
+        self.diskBytes = diskBytes
+    }
+}
+
+/// A volume's size and what's free on it.
+public struct DiskSpace: Codable, Sendable, Hashable {
+    public var totalBytes: Int64
+    public var freeBytes: Int64
+
+    public init(totalBytes: Int64, freeBytes: Int64) {
+        self.totalBytes = totalBytes
+        self.freeBytes = freeBytes
     }
 }
 
@@ -657,15 +741,20 @@ public struct Status: Codable, Sendable {
     /// The memory budget, what the leases take of it, and who waits (API
     /// 14; nil from an older server).
     public var budget: LeaseBudget?
+    /// The Mac by whom: OS Server's leases, other VMs, everything else
+    /// (API 14; nil from an older server, or one that can't read its
+    /// processes).
+    public var host: HostBreakdown?
 
     public init(server: String, bases: [Base], capacity: [Capacity], leases: [Lease], storage: StorageInfo? = nil,
-                budget: LeaseBudget? = nil) {
+                budget: LeaseBudget? = nil, host: HostBreakdown? = nil) {
         self.server = server
         self.bases = bases
         self.capacity = capacity
         self.leases = leases
         self.storage = storage
         self.budget = budget
+        self.host = host
     }
 }
 
@@ -994,8 +1083,9 @@ public enum OSS {
     /// stores objects in the job's name (`<job>-<run>@ci`) while the job's
     /// runner lasts, as its bearer or as `?grant=`.
     /// 14 from 0.14.0: lease limits: a count cap per type where server.json
-    /// sets one and a memory budget over every lease (`Status.budget`,
-    /// `Capacity.cap`, `used` and `size`, `Lease.size`), CPUs shared out,
+    /// sets one and a memory budget over every lease, less what isn't its
+    /// leases' (`Status.budget`, `Capacity.cap`, `used` and `size`,
+    /// `Lease.size`; the Mac by whom in `Status.host`), CPUs shared out,
     /// at most `maxCPUs` a machine; `busy` names the limit that is full,
     /// `tooBig` a lease bigger than the whole budget or with more CPUs than
     /// one machine may have; a lease waited for names its wait

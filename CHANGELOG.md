@@ -59,6 +59,24 @@
   theirs idle, and at worst everything slows down. `maxCPUs` (by default
   the Mac's cores) is the most one VM or container may have; a lease
   asking for more is refused.
+- **The Mac by whom, and what isn't OS Server's comes out of the budget**
+  (API 14). OS Server reads the Mac's process table every 15 seconds with
+  libproc (each process's executable, parent, footprint and CPU time, the
+  process macOS holds responsible for it; a VM's open files; a
+  simulator's `launchd_sim`'s arguments) and finds every VM on the Mac by
+  its process, whoever made it: each Virtualization VM's XPC service
+  (`com.apple.Virtualization.VirtualMachine`: an agent's containers run
+  through Containerization, Podman's vfkit, Apple's `container`), and
+  QEMU. `Status.host` says (a) OS Server's leases, each one's memory as
+  given and as used, CPU and disk, and OS Server itself; (b) the other VMs
+  by the app they are for (the responsible process's, or its parents'):
+  how many, their footprint, CPU and, where their open files say, disks;
+  (c) everything else, with the apps of it using the most; and the disk
+  free. What isn't the leases' (b, c and OS Server itself:
+  `outsideMemoryBytes`) comes out of the budget, and whatever the budget
+  the Mac keeps its reserve: the leases' use (each the more of its size
+  and its footprint) and everything else's stay under its memory less the
+  reserve (`hostLimitBytes`). `oss status` and `oss_status` show it.
 - **Refusals name the full limit** (API 14): 409 `busy: macos 2 of 2
   leased`, `busy: memory 120 of 128 GB leased; this needs 16`; a lease
   with more memory than the whole budget, or more CPUs than `maxCPUs`, is

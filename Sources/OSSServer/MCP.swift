@@ -178,7 +178,7 @@ enum MCPServer {
             case "oss_status":
                 let status = try await client.status()
                 // The budget, each type's room and who waits, as `oss status` says them.
-                var lines = capacityLines(status).map { $0.trimmingCharacters(in: .whitespaces) }
+                var lines = (capacityLines(status) + (status.host.map(hostLines) ?? [])).map { $0.trimmingCharacters(in: .whitespaces) }
                 let held = status.leases.filter { Self.isMine($0.holder, context: context) }
                 lines.append(held.isEmpty ? "you hold no machines" : "you hold:")
                 for lease in held { lines.append("  \(leaseLine(lease))") }
