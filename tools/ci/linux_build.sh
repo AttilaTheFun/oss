@@ -31,6 +31,11 @@ swift build --product oss
 # The tree from a file, not a pipe: exec then makes oss this process, so the
 # runner's cancel reaches it, and it releases the container. The file is in
 # the job's own temporary folder, which the runner empties after the job.
+# On OS Server's own runner, a container of that image already: built in place.
+if [ "$(uname)" = Linux ]; then
+    cd "$ROOT" && exec sh -c "swift --version && swift build --product oss && .build/debug/oss --help | head -1"
+fi
+
 tree="${RUNNER_TEMP:-$(mktemp -d)}/oss-tree.tar"
 git -C "$ROOT" archive --format=tar -o "$tree" HEAD
 exec "$OSS" machine run container --image="$IMAGE" --rosetta --cpus=6 --memory=8 --inside --workdir=/ -- sh -c "$build" < "$tree"

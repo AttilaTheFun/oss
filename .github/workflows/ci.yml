@@ -1,7 +1,10 @@
 name: CI
-# OS Server's CI, on its own self-hosted runner (label oss-ci: a Mac that
-# runs OS Server, as a user of its own), which leases what each job runs in
-# from that OS Server (README.md, "This repository's CI"):
+# OS Server's CI, on self-hosted runners leasing from OS Server (README.md,
+# "This repository's CI"): its own single-use ones (label oss-jit: a Linux
+# container of Visor's agent image for each job, made and deleted by OS
+# Server) for the jobs whose Mac work is in a leased VM, and the Mac's
+# runner (oss-ci, a user of its own) for those that need the Mac itself
+# (the proof's tools, a release):
 # - build-and-test: swift build and swift test, the App package's build and
 #   OS Monitor's Bazel build, in a macOS VM (tools/ci/mac_vm_tests.sh);
 # - linux: the command line built for Linux in a container
@@ -48,7 +51,7 @@ jobs:
     if: >
       github.event_name != 'release' &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, oss-ci]
+    runs-on: [self-hosted, oss-jit]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
@@ -63,7 +66,7 @@ jobs:
     if: >
       github.event_name != 'release' &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, oss-ci]
+    runs-on: [self-hosted, oss-jit]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -102,7 +105,7 @@ jobs:
     if: >
       github.event_name != 'release' &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, oss-ci]
+    runs-on: [self-hosted, oss-jit]
     timeout-minutes: 90
     permissions:
       contents: read
