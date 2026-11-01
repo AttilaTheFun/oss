@@ -288,6 +288,8 @@ struct XCTestServer {
         var config = ServerConfig()
         config.lends = [.ios]
         config.useUTM = false
+        // Room for every test's leases, whatever the Mac running them has.
+        config.budget = BudgetSettings(memoryGB: 1024)
         let xcode = FakeXcode(developer: try makeFakeXcode("\(root)/xcode"))
         let machines = MachineManager(config: config, leasesPath: "\(root)/leases.json",
                                       xctests: XCTestRuns(tools: xcode, root: "\(root)/uploads", stoppingWait: stoppingWait))

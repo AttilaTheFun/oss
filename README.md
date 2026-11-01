@@ -37,8 +37,12 @@ server's HTTP API, which programs can call too: Swift ones through the
 | `ios` | a simulator on the server's Mac | ~7 s | `oss machine simctl` (install, launch, openurl, …), screenshots, `oss machine xctest` |
 | `android` | an emulator on the server's Mac | ~6 s | `adb connect <server>:<port>`, or `oss machine adb` |
 
-Default capacity: two of each VM platform (16 GB each), four simulators
-and two emulators. All of it is configurable.
+What it lends is limited two ways (Limits, below): a count cap for a type
+where server.json sets one (by default only macOS's two, Apple's limit),
+and a memory budget that every lease counts against (by default the
+Mac's memory less what macOS keeps). A type with no cap takes whatever
+the budget has room for; CPUs are shared out, at most `maxCPUs` a
+machine.
 
 A simulator's and an emulator's status bar is held still from the moment
 it's ready (9:41, full Wi-Fi and battery; on iOS full signal and no
@@ -147,6 +151,44 @@ A lease that says no kind (from a client before API 8, or one that left
 it out) is taken by its holder: Visor's, `visor:<session>`, are a
 `session` for a container and an `agent` for anything else; any other
 holder's are `manual`.
+
+### Limits
+
+A lease is granted only while its type's cap and the server's memory
+budget both have room for it:
+
+- **Caps**, a type's leases at once, where server.json's `limits` names it
+  (`{"macos": 2, "windows": 1}`); by default only macOS's two (Apple's
+  limit of macOS VMs a Mac runs at once). A type it doesn't name has no
+  cap.
+- **The budget**, `budget.memoryGB`, which every lease's memory counts
+  against, summed over the leases held: how many VMs and containers, and
+  how large, the server lends at once. By default the Mac's memory less
+  what macOS and its own apps keep (16 GB or a quarter, whichever is more,
+  never more than half); macOS pages out what doesn't fit, so past it
+  every lease slows down, and the Mac with them.
+- **CPUs are shared out, not budgeted**: most machines leave most of
+  theirs idle, and at worst everything slows down. One VM or container may
+  have at most `maxCPUs` (by default the Mac's cores); a lease asking for
+  more is refused.
+- **A lease's size** (`Lease.size`): a VM's is its base's (what
+  `machine.json` gives it; a UTM base's the estimate until it is made), a
+  container's what it asks for (`--cpus`, `--memory`; else 4 and 8 GB),
+  and a simulator's and an emulator's memory an estimate, 2 GB and 4 GB
+  (server.json's `sizes`), while they run on the Mac itself.
+
+Past a limit a lease is refused, 409 `busy` naming the one that is full
+(`busy: macos 2 of 2 leased`, `busy: memory 120 of 128 GB leased; this
+needs 16`); one with more memory than the whole budget, or more CPUs than
+`maxCPUs`, is 409 `tooBig`, which no wait would get. With `--wait` (`waitForCapacity`), it asks again every 15 seconds
+with a ticket of its own (`waitTicket`), and keeps its place in line,
+oldest first, while it does. Each lease is granted as soon as its own
+limits allow, whatever waits for other ones, but the oldest in line is
+kept room for: a later lease (waiting or not) that would fit only by
+taking room it needs, its type's next place or the memory it waits for,
+waits too (`busy: a macos lease waiting 3 min goes first (…)`). `oss
+status` shows the budget and what the leases take of it, each type's cap,
+and the line.
 
 ### Containers
 
@@ -456,8 +498,9 @@ repositories server.json names, beside any runner they have already.
    ```
 
    Also `maxConcurrent` (jobs at once: by default one for every 8 cores and
-   32 GB, at most half the containers it lends, at least one), `image` (the
-   jobs' image: Visor's agent image), `cpus` and `memoryGigabytes` (each
+   32 GB, at most half the containers it lends: its cap, or as many of a
+   job's as the budget holds; at least one), `image` (the jobs' image:
+   Visor's agent image), `cpus` and `memoryGigabytes` (each
    job's container: 4 and 8), `pollSeconds` (5), `unclaimedMinutes` (10)
    and `serverURL` (the server as a job's container reaches it: by default
    this Mac's address on the containers' network).
@@ -712,10 +755,10 @@ containers, which it couldn't read.
 | --- | --- |
 | `GET /v1/hello` | `{"server": "oss"}`: is this an oss server |
 | `GET /v1/capabilities` | its version, API level, features and platforms |
-| `GET /v1/status` | bases, capacity, leases |
+| `GET /v1/status` | bases, capacity, leases; from API 14 the limits: `budget` (`memoryBytes`, the budget; `leasedMemoryBytes`, what the leases take; `leasedCPUs`, the leases' CPUs together, shared out; `maxCPUs`, one machine's at most; `waiting`, the line oldest first, each one's `platform`, `config`, `holder`, `size`, `since` and `reason`, its last refusal), and each type's `capacity` its `cap` (absent: none), `used` and `size` (a lease of its default config), and `limit` how many may be held now (its cap, or fewer where the budget has room for fewer more), which a client before API 14 compares `leased` with as before; each lease's `size` (`cpus`, `memoryBytes`) |
 | `GET /v1/doctor` | whether the server can drive UTM, simulators and emulators |
 | `GET /v1/keys`, `POST /v1/keys` `{"application"}`, `DELETE /v1/keys/<application>` | the applications with keys (`application`, `created`; never a key); a new key for one, replacing its old one (`{"application", "key"}`, shown this once, kept as its SHA-256); its key taken away. On the server's own Mac and as `user` only (API 12) |
-| `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?, "container"?, "kind"?, "label"?, "link"?, "labels"?, "device"?, "runtime"?}` | a lease (state `creating`; poll it until `ready`). A container's `container` is a `ContainerSpec` (`image`, `cpus`, `memoryBytes`, `diskBytes`, `mounts`, `volumes`, `rosetta`, `environment`, `workingDirectory`, `command`); `minutes: 0` holds it until released; only a client on the server's Mac gets one. `kind` is `ci`, `session`, `agent` or `manual` (one a server doesn't know reads as `manual`; without one, the holder's: a `visor:` holder's container `session`, its other machines `agent`, anyone else's `manual`); `label` is kept to one line of at most 200 characters; `link` must be http or https (400 otherwise); `labels` (API 12), at most 32 names (letters, digits, `. _ - /`, at most 100) and one-line values, kept with the lease. An iOS lease's `device` (a device type's name or identifier) and `runtime` (an iOS runtime's name, version or identifier), any case (API 11): its simulator made of them, the config's base's for the one not given; one the server's Xcode hasn't got, or a type the runtime doesn't run, is 400 `noDevice`, naming the close ones; while simctl can't list the server's simulators (Xcode mid-update, CoreSimulator waiting on its first launch), an iOS lease is 400 `noInventory`, saying why, not `no ios base` |
+| `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?, "container"?, "kind"?, "label"?, "link"?, "labels"?, "device"?, "runtime"?, "waitTicket"?, "build"?}` | a lease (state `creating`; poll it until `ready`), if its type's cap and the budget have room (Limits, above): else 409 `busy` naming the full limit, or `tooBig` for one with more memory than the whole budget or more CPUs than `maxCPUs`. `waitTicket` (API 14), the same on every try, keeps a lease waited for in line while it asks again within 45 seconds. `build` (API 14), a layer's name: a place for `oss image build`'s VM, admitted as its platform's lease of its base's (`config`'s) size, with no machine, kind `build`, ready at once, from the server's Mac only; `buildPID`, the building process, which it lasts as long as. A container's `container` is a `ContainerSpec` (`image`, `cpus`, `memoryBytes`, `diskBytes`, `mounts`, `volumes`, `rosetta`, `environment`, `workingDirectory`, `command`); `minutes: 0` holds it until released; only a client on the server's Mac gets one. `kind` is `ci`, `session`, `agent`, `manual` or (API 14) `build` (one a server doesn't know reads as `manual`; without one, the holder's: a `visor:` holder's container `session`, its other machines `agent`, anyone else's `manual`); `label` is kept to one line of at most 200 characters; `link` must be http or https (400 otherwise); `labels` (API 12), at most 32 names (letters, digits, `. _ - /`, at most 100) and one-line values, kept with the lease. An iOS lease's `device` (a device type's name or identifier) and `runtime` (an iOS runtime's name, version or identifier), any case (API 11): its simulator made of them, the config's base's for the one not given; one the server's Xcode hasn't got, or a type the runtime doesn't run, is 400 `noDevice`, naming the close ones; while simctl can't list the server's simulators (Xcode mid-update, CoreSimulator waiting on its first launch), an iOS lease is 400 `noInventory`, saying why, not `no ios base` |
 | `GET /v1/machines`, `GET /v1/machines/<id>` | leases (each with its `kind`, `label`, `link` and `labels`; an iOS lease's `device` and `runtime`, by name); one lease: ports, VNC password, UDID, adb port…; a container's forwarded ports (`ports`: `{"port", "host", "hostPort"}`, `host` the server as the asker reached it) |
 | `POST /v1/machines/<id>/renew` `{"minutes"?}` | its time set again |
 | `DELETE /v1/machines/<id>` | released |
@@ -816,11 +859,11 @@ files), `oss_simctl`, `oss_adb`, `oss_install`, `oss_storage`,
 1. **OS Server**, the app: put `OS Server.app` in /Applications and open
    it (from a checkout, `App/build.sh --install`). It is the server (in its
    own process), and shows what the Mac and each lease use: CPU, memory
-   and disk against what each was given, the capacity per platform, the
-   Bazel cache, the server's log, and **Screen** beside a VM's lease for
-   its screen, live. Closing its window leaves it in the menu bar (no Dock
-   icon). Quitting it keeps every lease: each machine runs in a process of
-   its own, taken up again when it starts.
+   and disk against what each was given, the budget and the capacity per
+   platform, the Bazel cache, the server's log, and **Screen** beside a
+   VM's lease for its screen, live. Closing its window leaves it in the
+   menu bar (no Dock icon). Quitting it keeps every lease: each machine
+   runs in a process of its own, taken up again when it starts.
 2. **Set Up**: its first launch asks what this Mac lends; Settings ›
    Components adds or removes any later. Each component is installed from
    a download, or a file you give it, with no one at its screen, into OS
@@ -877,10 +920,20 @@ settings, its token, the leases (`State/`), the macOS bases (`Machines/`).
 Settings (`server.json` there, every field optional):
 
 ```json
-{"port": 7480, "capacity": {"macos": 2, "windows": 2, "linux": 2, "ios": 4, "android": 2, "container": 4},
+{"port": 7480, "limits": {"macos": 2}, "budget": {"memoryGB": 96}, "maxCPUs": 28,
+ "sizes": {"ios": {"memoryGB": 2}, "android": {"memoryGB": 4}},
  "defaultMinutes": 60, "maxMinutes": 480, "defaultConfig": {"macos": "vanilla", "ios": "iphone", "android": "phone"},
  "managementKey": "<OS Server's folder>/ssh/id_ed25519"}
 ```
+
+`limits` are the types' count caps (Limits, above: macOS's two unless
+named; `null` takes a cap away, 0 lends none), `budget.memoryGB` the
+memory every lease together may take (left out, its default from the
+Mac: here a 128 GB Mac), `maxCPUs` the most CPUs one VM or container may
+have (left out, the Mac's cores: here 28), `sizes` the memory taken for
+the leases nothing measures (simulators, emulators). A server.json from
+before 0.14 says `capacity`, read as `limits`: the types it names keep
+their caps, and the others are limited by the budget alone.
 
 A Bazel cache (off without `"cache"`; `{}` for these defaults):
 
@@ -991,6 +1044,17 @@ the same config.
 clones `oss-<platform>-<base>`, boots it, copies in what `--copy` names
 (rsync over SSH), runs the script over SSH as `runner` (`.sh`, or `.ps1`
 on Windows), shuts it down cleanly and names it `oss-<platform>-<config>`.
+Its VM takes a place in the running server's limits before it starts, as a
+lease does (Limits, above: macOS's cap, the memory budget): with both
+macOS places leased it is refused, or with `--wait` waits in line for one,
+and while it runs no lease is granted a VM the Mac won't start (a Mac runs
+at most two macOS VMs). The place is a lease with no machine, kind `build`,
+holder `image-build`, shown in `oss status` like any; it lasts as long as
+the build's process (never expiring while it runs, released once it's
+gone) and is given back when the build's VM has stopped, however the build
+ended. `oss image install` and OS Server's own component installs take
+one too. A build that fails deletes its clone (its `.building` folder).
+With no server answering on the Mac it builds without a place, as before.
 For example, a layer with Homebrew and Git on macOS:
 
 ```sh

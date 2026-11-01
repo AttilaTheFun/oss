@@ -235,12 +235,21 @@ struct CapacitySection: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 9) {
+                // What every lease together may take, and takes (API 14).
+                if let budget = monitor.status?.budget {
+                    HStack(spacing: 8) {
+                        Image(systemName: "gauge.medium").frame(width: 18)
+                        Text("Budget")
+                        Spacer()
+                        Text(budget.summary).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                }
                 ForEach(monitor.status?.capacity ?? [], id: \.platform) { capacity in
                     HStack(spacing: 8) {
                         Image(systemName: Format.symbol(capacity.platform)).frame(width: 18)
                         Text(Format.platform(capacity.platform))
                         Spacer()
-                        Text("\(capacity.leased) of \(capacity.limit)").monospacedDigit().foregroundStyle(.secondary)
+                        Text(capacity.summary(budgeted: monitor.status?.budget != nil)).monospacedDigit().foregroundStyle(.secondary)
                     }
                     let configs = (monitor.status?.bases ?? []).filter { $0.platform == capacity.platform }.map(\.config)
                     if !configs.isEmpty {
