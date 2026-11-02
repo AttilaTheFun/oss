@@ -1,25 +1,24 @@
 {
   "fill": {
-    "automatic-gradient": "extended-srgb:0.16078,0.36078,0.94902,1.00000"
+    "automatic-gradient": "extended-srgb:0.86275,0.33725,0.11765,1.00000"
   },
   "groups": [
     {
       "layers": [
-        { "image-name": "Lights.svg", "name": "Lights" }
+        { "image-name": "Sparks.svg", "name": "Sparks" }
       ],
       "shadow": { "kind": "neutral", "opacity": 0.2 },
       "translucency": { "enabled": false, "value": 0 },
-      "name": "Lights"
+      "name": "Sparks"
     },
     {
       "layers": [
-        { "image-name": "Front.svg", "name": "Front" },
-        { "image-name": "Middle.svg", "name": "Middle" },
-        { "image-name": "Back.svg", "name": "Back" }
+        { "image-name": "Face.svg", "name": "Face" },
+        { "image-name": "Anvil.svg", "name": "Anvil" }
       ],
       "shadow": { "kind": "neutral", "opacity": 0.3 },
       "translucency": { "enabled": true, "value": 0.3 },
-      "name": "Machines"
+      "name": "Anvil"
     }
   ],
   "supported-platforms": {
