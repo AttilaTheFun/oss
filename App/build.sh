@@ -59,7 +59,7 @@ cp -R "$QEMU_CACHE/share/" "$APP/Contents/Resources/qemu/"   # its firmware, ROM
 cp "$QEMU_CACHE/SOURCES.txt" "$APP/Contents/Resources/qemu/"  # what was bundled, for its sources
 mkdir -p "$APP/Contents/Helpers/axe"
 tar -xzf "$AXE_ARCHIVE" -C "$APP/Contents/Helpers/axe" --exclude "./AXe_AXe.bundle*"  # its agent skill, not code
-# The icon: Icon/OSServer.icon (Icon Composer), rendered at each size an
+# The icon: Icon/Shireworks.icon (Icon Composer), rendered at each size an
 # .icns holds by Xcode's ictool.
 ICTOOL="${ICTOOL:-$(xcode-select -p)/../Applications/Icon Composer.app/Contents/Executables/ictool}"
 ICONSET="$(mktemp -d)/AppIcon.iconset"
@@ -67,7 +67,7 @@ mkdir -p "$ICONSET"
 for points in 16 32 128 256 512; do
   for scale in 1 2; do
     suffix=$([ "$scale" = 2 ] && echo "@2x" || true)
-    "$ICTOOL" Icon/OSServer.icon --export-image --output-file "$ICONSET/icon_${points}x${points}${suffix}.png" \
+    "$ICTOOL" Icon/Shireworks.icon --export-image --output-file "$ICONSET/icon_${points}x${points}${suffix}.png" \
       --platform macOS --rendition Default --width "$points" --height "$points" --scale "$scale" >/dev/null
   done
 done
