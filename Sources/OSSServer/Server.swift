@@ -545,7 +545,7 @@ actor MachineManager {
         guard let lease = leases[id], let guest = primaryGuest(of: lease) else { throw APIError(error: "its primary macOS VM is gone") }
         let script = SlotUser.makeScript(lease: id, password: Random.hex(16), keychainPassword: SlotSecrets.keychainPassword(id, key: config.managementKey))
         let made = try await guest.run(script, timeout: 180)
-        guard made.ok else { throw APIError(error: "its user wasn't made on the primary: \(made.stderr.suffix(400))") }
+        guard made.ok else { throw APIError(error: "its user wasn't made on the primary: \(made.error.suffix(400))") }
         guard leases[id]?.state == .creating else { _ = try? await guest.run(SlotUser.deleteScript(lease: id), timeout: 120); return }
         leases[id]?.guestAddress = guest.address
         leases[id]?.sshUser = SlotUser.name(id)
@@ -1029,7 +1029,7 @@ actor MachineManager {
             // Its user deleted on its primary, with its files (gone already if the primary is).
             if let guest = primaryGuest(of: lease) {
                 let deleted = try? await guest.run(SlotUser.deleteScript(lease: id), timeout: 120)
-                if deleted?.ok != true { log("lease \(id): deleting slot user \(SlotUser.name(id)) failed: \(deleted?.stderr.suffix(300) ?? "no answer")") }
+                if deleted?.ok != true { log("lease \(id): deleting slot user \(SlotUser.name(id)) failed: \(deleted?.error.suffix(300) ?? "no answer")") }
             }
         }
         // A primary's slots go with it.
