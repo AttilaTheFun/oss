@@ -2,6 +2,13 @@
 
 ## 0.14.0 (unreleased)
 
+- **The primary macOS VM** (API 17, docs/primary-vms.md): server.json's
+  `primary.macos` keeps a VM of OS Server's own running (by default
+  `xcode_27_2`, 8 CPUs and 24 GB, 4 slots), cloned at its own size, held as
+  a lease of kind `primary` (holder `primary@oss`, its memory the budget's,
+  one of macOS's two), checked every minute and made again when it stops
+  answering or its settings change; the API won't release it. OS Monitor
+  shows it as Primary. Its slots, `mac` leases, come next.
 - **A CI runner keeps room for its job's VM**: runners that build hold
   their container (16 GB) while their jobs wait for a macOS VM, and four
   started at once held the memory their jobs' VMs needed, so none could

@@ -289,6 +289,9 @@ public enum LeaseKind: String, Codable, CaseIterable, Sendable {
     /// An image build's VM on the server's own Mac (API 14): a place
     /// held while the build runs (`LeaseRequest.build`).
     case build
+    /// A primary VM (API 17, docs/primary-vms.md): OS Server's own, kept
+    /// running, whose slots it lends; never released through the API.
+    case primary
 
     /// A kind this build doesn't know (a newer server's) reads as `manual`:
     /// an unknown value would otherwise fail the whole status it came in
@@ -1192,7 +1195,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 16
+    public static let apiLevel = 17
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
 }

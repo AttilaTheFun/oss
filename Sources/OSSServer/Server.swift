@@ -417,6 +417,82 @@ actor MachineManager {
         return lease
     }
 
+    // MARK: The primary VMs (Primary.swift)
+
+    /// Checks of the primary in a row that it didn't answer.
+    private var primaryMisses = 0
+    /// What last kept a primary from being made, said once.
+    private var primaryTrouble: String?
+
+    /// The primary macOS VM kept (PrimaryPlan.step): made where server.json
+    /// has one and none is held, checked once it is ready, released when it
+    /// stops answering or isn't as server.json says (the next call makes it
+    /// again). Called every minute.
+    func keepPrimary() async {
+        let settings = config.primary?.macos
+        switch PrimaryPlan.step(settings, lendsMacOS: config.lends(.macos), restartPending: pendingRestart != nil,
+                                held: Array(leases.values)) {
+        case .none, .wait:
+            return
+        case .make:
+            guard let settings else { return }
+            do {
+                let lease = try await leasePrimaryMac(settings)
+                primaryTrouble = nil
+                primaryMisses = 0
+                log("primary: lease \(lease.id), macOS \(settings.config), \(settings.cpus) CPUs and \(settings.memoryGigabytes) GB, "
+                    + "\(settings.slots) slots")
+            } catch {
+                // Said once until it changes: a busy budget is tried again each minute.
+                let said = "\(error)"
+                if said != primaryTrouble { log("primary: not made yet: \(said)") }
+                primaryTrouble = said
+            }
+        case .release(let id, let why):
+            primaryMisses = 0
+            await release(id, reason: "the primary VM is released: \(why)")
+        case .check(let id):
+            guard let lease = leases[id], let address = lease.guestAddress else { return }
+            let guest = Guest(platform: .macos, address: address, user: config.guestUser, key: config.managementKey)
+            if await guest.reachable() {
+                primaryMisses = 0
+                return
+            }
+            primaryMisses += 1
+            log("primary: lease \(id) didn't answer (\(primaryMisses) of \(PrimaryPlan.misses))")
+            if primaryMisses >= PrimaryPlan.misses {
+                primaryMisses = 0
+                await release(id, reason: "the primary VM stopped answering; made again")
+            }
+        }
+    }
+
+    /// The primary macOS VM's lease: a clone of its base at its own size
+    /// (not the base's), admitted against the budget and macOS's cap as any
+    /// lease, held until released, OS Server's own.
+    private func leasePrimaryMac(_ settings: PrimaryMacSettings) async throws -> Lease {
+        guard let base = await findBase(.macos, settings.config) else {
+            throw APIError(error: "no macos base \(settings.config) for the primary VM")
+        }
+        let size = settings.size
+        if let refusal = admission.decide(LeaseDemand(platform: .macos, size: size), ticket: nil, config: settings.config,
+                                          holder: PrimaryPlan.holder, held: heldDemands(), outside: outsideMemory,
+                                          leasesInUse: leasesInUse) {
+            throw APIError(error: refusal.message, code: refusal.code)
+        }
+        let id = Random.hex(4)
+        var lease = Lease(id: id, platform: .macos, config: settings.config, name: "oss-primary-macos-\(id)",
+                          holder: PrimaryPlan.holder, state: .creating, created: Date(), expires: .distantFuture)
+        lease.sshUser = config.guestUser
+        lease.size = size
+        lease.kind = .primary
+        lease.label = "Primary macOS VM: \(settings.slots) slots"
+        leases[id] = lease
+        save()
+        Task { await self.create(id, from: base, holderKey: nil, simulator: nil) }
+        return lease
+    }
+
     private func create(_ id: String, from base: Base, holderKey: String?, simulator: Simulators.Choice?) async {
         guard let lease = leases[id] else { return }
         do {
@@ -670,6 +746,11 @@ actor MachineManager {
                 var made = try MacMachineSpec.load(path)
                 made.mac = Random.mac()
                 made.origin = base.config
+                // The primary's own size, not its base's.
+                if lease.kind == .primary, let size = lease.size {
+                    made.cpus = size.cpus
+                    made.memoryBytes = UInt64(size.memoryBytes)
+                }
                 try made.save(path)
                 try await MacVMJobs.start(name: lease.name, path: path)
                 spec = made
@@ -1349,6 +1430,13 @@ public final class ServerHost: Sendable {
                 await machines.reviveMachines()
             }
         }
+        // The primary VMs kept (Primary.swift), once a minute.
+        Task {
+            while true {
+                await machines.keepPrimary()
+                try? await Task.sleep(for: .seconds(60))
+            }
+        }
         Task {
             while true {
                 await machines.recordHistory()
@@ -1562,7 +1650,12 @@ enum Server {
                 try await machines.deleteVolume(parts[2].removingPercentEncoding ?? parts[2])
                 return .json(["deleted": parts[2]])
             case ("DELETE", 3) where parts[1] == "machines":
-                guard await machines.lease(parts[2]) != nil else { return .error("no lease \(parts[2])", status: 404) }
+                guard let held = await machines.lease(parts[2]) else { return .error("no lease \(parts[2])", status: 404) }
+                // A primary VM is OS Server's own (Primary.swift): server.json says whether it's kept.
+                guard held.kind != .primary else {
+                    return .json(APIError(error: "lease \(held.id) is OS Server's primary VM: server.json's primary says whether it is kept",
+                                          code: "primary"), status: 409)
+                }
                 let id = parts[2]
                 Task { await machines.release(id, reason: "released") }
                 return .json(["released": id])
