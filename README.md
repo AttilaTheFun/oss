@@ -489,6 +489,25 @@ oss machine xctest <id> --tests=bazel-bin/app/HelloWorldUITests.zip --host=bazel
   --tests=<object> …`, the bundles already in storage (put with a
   `storage.put` grant).
 
+### The primary macOS VM
+
+A VM of OS Server's own, kept running, where tests and apps run without a
+whole VM of their own: CI builds in its job's Linux container and runs what
+it built on a slot of the primary (docs/primary-vms.md). Since API 17,
+server.json's `primary` keeps one:
+
+```json
+"primary": {"macos": {"config": "xcode_27_2", "cpus": 8, "memoryGigabytes": 24, "slots": 4}}
+```
+
+(`{"macos": {}}` takes those defaults.) OS Server clones it from its base
+when it starts, at its own size, and holds it as a lease of its own (kind
+`primary`, holder `primary@oss`): its memory is the budget's, and it is one
+of the two macOS VMs Apple allows. It is checked every minute, and released
+and made again when it stops answering three times running or server.json's
+settings change; `release` refuses it (409, `primary`). Its slots (`mac`
+leases: a user of their own on it, and `oss machine xctest` there) come next.
+
 ### Self-hosted CI
 
 ```yaml
