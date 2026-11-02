@@ -200,8 +200,14 @@ actor MachineManager {
     /// Why a CI runner of `memoryBytes` waits now, or nil (CIRoom): nothing
     /// waits ahead of it, and a macOS VM still fits beside it.
     func ciRunnerRefusal(memoryBytes: Int64) -> String? {
-        let headroom = config.lends(.macos) ? admission.policy.estimate(.macos).memoryBytes : 0
-        return CIRoom.refusal(runner: memoryBytes, budget: budget(), headroom: headroom)
+        // Types at their cap: another of them waits for one to be released (and takes its memory).
+        let held = leases.values.filter { $0.state != .returning && $0.state != .failed }
+        let atCap = Set(Platform.allCases.filter { platform in
+            admission.policy.caps[platform].map { cap in held.filter { $0.platform == platform }.count >= cap } ?? false
+        })
+        // Room kept for a macOS VM only while one more may be leased.
+        let headroom = config.lends(.macos) && !atCap.contains(.macos) ? admission.policy.estimate(.macos).memoryBytes : 0
+        return CIRoom.refusal(runner: memoryBytes, budget: budget(), headroom: headroom, atCap: atCap)
     }
 
     /// The Mac by whom, as last sampled (nil where its processes can't be read).
