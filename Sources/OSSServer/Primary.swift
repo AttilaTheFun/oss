@@ -182,3 +182,13 @@ enum SlotSecrets {
         #endif
     }
 }
+
+extension LeaseBudget {
+    /// The budget as a client sees it: its waiting line without the leases
+    /// of platforms the client can't read (a slot's, below API 17).
+    func visible(_ isVisible: (Platform) -> Bool) -> LeaseBudget {
+        var budget = self
+        budget.waiting = waiting.filter { isVisible($0.platform) }
+        return budget
+    }
+}

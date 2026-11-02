@@ -1660,9 +1660,15 @@ enum Server {
         let machines = api.machines, cache = api.cache
         let parts = (request.path.split(separator: "?").first ?? "").split(separator: "/").map(String.init)
         // A client below API 6 (an OSSClient before 0.9 sends no OSS-API)
-        // can't read a container's platform: it is shown none.
-        let seesContainers = (Int(request.header("oss-api") ?? "") ?? 0) >= 6
-        func visible(_ platform: Platform) -> Bool { seesContainers || platform != .container }
+        // can't read a container's platform: it is shown none. One below API
+        // 17 can't read a slot's (`mac`): a Platform it doesn't know fails
+        // its whole status (Visor's own OSSClient read "no server answered"
+        // from 0.14's first primary): it is shown none either.
+        let clientAPI = Int(request.header("oss-api") ?? "") ?? 0
+        let seesContainers = clientAPI >= 6, seesSlots = clientAPI >= 17
+        func visible(_ platform: Platform) -> Bool {
+            (seesContainers || platform != .container) && (seesSlots || platform != .mac)
+        }
         // A container's forwarded ports, at the server's host as this asker reached it.
         let host = reachedHost(request)
         func reached(_ lease: Lease) -> Lease { Self.addressed(lease, host: host) }
@@ -1699,7 +1705,7 @@ enum Server {
                                     capacity: await machines.capacity().filter { visible($0.platform) },
                                     leases: await machines.all().filter { visible($0.platform) }.map(reached),
                                     storage: await api.storage.info(),
-                                    budget: await machines.budget(),
+                                    budget: await machines.budget().visible(visible),
                                     host: await machines.hostBreakdown(),
                                     restart: await machines.restartPending()))
             case ("GET", 2) where parts[1] == "usage":
