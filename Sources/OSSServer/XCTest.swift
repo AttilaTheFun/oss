@@ -436,7 +436,7 @@ enum XCTestFolder {
     /// A zip unpacked beside the run's folder, and the one `.<kind>` it
     /// holds (at its top, or in one of `looking`) moved into the folder:
     /// its name.
-    private static func unpack(_ archive: String, kind: String, into folder: String, looking: [String], what: String) async throws -> String {
+    static func unpack(_ archive: String, kind: String, into folder: String, looking: [String], what: String) async throws -> String {
         let handle = FileHandle(forReadingAtPath: archive)
         let magic = try? handle?.read(upToCount: 4)
         try? handle?.close()
@@ -696,6 +696,21 @@ actor XCTestRuns {
     func state(_ lease: String, run: String) -> State {
         if active[lease]?.run == run { return .running }
         return runs[lease]?.contains(run) == true ? .done : .unknown
+    }
+
+    /// The primary's GUI session (a Mac slot's `--gui` run): one run at a
+    /// time has it.
+    private var gui: String?
+
+    /// The GUI session taken for `run`, if no other run has it.
+    func takeGUI(_ run: String) -> Bool {
+        guard gui == nil || gui == run else { return false }
+        gui = run
+        return true
+    }
+
+    func giveGUI(_ run: String) {
+        if gui == run { gui = nil }
     }
 
     /// The lease ended: its run (if any) stopped, its runs' files deleted.

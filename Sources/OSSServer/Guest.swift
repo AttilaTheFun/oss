@@ -18,6 +18,10 @@ struct Guest: Sendable {
          "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
     }
 
+    /// `ssh`'s arguments to run `remote` in the guest (a command line of
+    /// its own: nothing secret in it).
+    func sshArguments(_ remote: String) -> [String] { options + ["\(user)@\(address)", remote] }
+
     /// Runs a script in the guest: bash on macOS and Linux, PowerShell on
     /// Windows, read from standard input (nothing secret on a command line).
     func run(_ script: String, timeout: TimeInterval = 120) async throws -> ProcessResult {

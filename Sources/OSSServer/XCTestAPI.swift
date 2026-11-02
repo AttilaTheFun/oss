@@ -51,10 +51,12 @@ enum XCTestAPI {
     /// The iOS lease a request may use: its holder's, its simulator booted.
     static func lease(_ id: String, access: Access, request: HTTPRequest, api: API) async throws -> Lease {
         let lease = try await Server.holdersLease(id, access: access, request: request, api: api, what: "an xctest and its results are")
-        guard lease.platform == .ios else {
-            throw APIError(error: "xctest is for an iOS lease (a simulator): build the tests for the iOS simulator and lease ios")
+        guard lease.platform == .ios || lease.platform == .mac else {
+            throw APIError(error: "xctest is for an iOS lease (a simulator) or a Mac slot (lease mac): build the tests for one of them")
         }
-        guard lease.state == .ready, lease.udid != nil else { throw APIError(error: "lease \(id) isn't ready yet", code: "notReady") }
+        guard lease.state == .ready, lease.platform == .mac || lease.udid != nil else {
+            throw APIError(error: "lease \(id) isn't ready yet", code: "notReady")
+        }
         return lease
     }
 
@@ -79,6 +81,15 @@ enum XCTestAPI {
         guard only.count <= 1000, only.allSatisfy({ !$0.isEmpty && $0.count <= 1024 && !$0.hasPrefix("-") && !$0.contains(where: \.isNewline) }) else {
             throw APIError(error: "onlyTesting: at most 1000 tests, each Class, Class/method or <bundle>/Class/method")
         }
+        let mac = lease.platform == .mac
+        if mac {
+            guard !asked.ui else { throw APIError(error: "a UI test (an XCTRunner app) is iOS's: a Mac slot runs unit tests, logic and hosted") }
+            guard only.allSatisfy(MacXCTest.validTest) else {
+                throw APIError(error: "onlyTesting on a Mac slot: letters, digits and _ / ( ) . - alone")
+            }
+        } else if asked.gui {
+            throw APIError(error: "--gui is a Mac slot's (its primary's GUI session): a simulator's tests have their own")
+        }
         let runs = api.machines.xctests
         let run = try await runs.start(lease.id)
         // Its lease ended while the last run was being stopped: its runs went with it.
@@ -89,7 +100,11 @@ enum XCTestAPI {
         let folder = runs.folder(lease: lease.id, run: run)
         let prepared: XCTestFolder.Prepared
         do {
-            prepared = try await prepare(asked, lease: lease, folder: folder, api: api)
+            if mac {
+                prepared = try await prepareMac(asked, lease: lease, folder: folder, api: api)
+            } else {
+                prepared = try await prepare(asked, lease: lease, folder: folder, api: api)
+            }
             // Its lease ended meanwhile: its folder went with it.
             guard await runs.state(lease.id, run: run) == .running else { throw APIError(error: "lease \(lease.id) has ended", code: "notFound") }
         } catch {
@@ -110,12 +125,37 @@ enum XCTestAPI {
         // lease's next run waits while it's stopped.
         let tools = runs.tools
         let arguments = XCTestFolder.arguments(prepared, udid: lease.udid ?? "", folder: folder, onlyTesting: only)
+        let output: @Sendable (Data) async -> Bool = { data in
+            let sent = await peer.send(ExecFrame.stdout(data).encoded)
+            if !sent { await runs.stopping(lease.id, run: run) }
+            return sent
+        }
+        let slot = mac ? await api.machines.slotRun(lease.id) : nil
+        if mac, slot == nil {
+            await runs.finish(lease.id, run: run, discard: true)
+            _ = await peer.send(ExecFrame.stderr(Data("oss: lease \(lease.id)'s primary macOS VM is gone\n".utf8)).encoded)
+            _ = await peer.send(ExecFrame.exit(127).encoded)
+            peer.close()
+            return
+        }
+        let gui = asked.gui
         let work = Task {
-            try await tools.xcodebuild(arguments) { data in
-                let sent = await peer.send(ExecFrame.stdout(data).encoded)
-                if !sent { await runs.stopping(lease.id, run: run) }
-                return sent
+            guard let slot else { return try await tools.xcodebuild(arguments, output: output) }
+            let place = MacXCTest.Place(lease: lease.id, run: run, gui: gui, console: slot.console)
+            // A GUI run waits for the primary's session (one at a time there).
+            if gui {
+                let free = await runs.takeGUI(run)
+                if !free {
+                    _ = await peer.send(ExecFrame.stderr(Data("oss: waiting for the primary's GUI session (another --gui run has it)\n".utf8)).encoded)
+                    while true {
+                        if await runs.takeGUI(run) { break }
+                        try await Task.sleep(for: .seconds(2))
+                    }
+                }
             }
+            defer { if gui { Task { await runs.giveGUI(run) } } }
+            return try await MacXCTest.run(folder: folder, place: place, guest: slot.guest, keychainPassword: slot.keychainPassword,
+                                           bundle: prepared.layout.bundle, onlyTesting: only, output: output)
         }
         await runs.attach(lease.id, run: run) { work.cancel() }
         // Nothing comes from the client once it is upgraded: its connection closing is its going.
@@ -186,6 +226,23 @@ enum XCTestAPI {
             for hash in opened { await api.storage.close(hash) }
             throw error
         }
+    }
+
+    /// A Mac run's folder made ready from the holder's objects: the bundle
+    /// (and its macOS app) unpacked, the .xctestrun written (MacXCTest).
+    private static func prepareMac(_ asked: XCTestRequest, lease: Lease, folder: String, api: API) async throws -> XCTestFolder.Prepared {
+        var opened: [String] = []
+        defer { let held = opened; Task { for hash in held { await api.storage.close(hash) } } }
+        var paths: [String] = []
+        for object in [asked.tests] + (asked.host.map { [$0] } ?? []) {
+            let hash = try await api.storage.resolve(object, holder: lease.holder)
+            guard let (path, _) = await api.storage.open(hash) else { throw APIError(error: "no object \(object) of \(lease.holder)'s", code: "notFound") }
+            opened.append(hash)
+            paths.append(path)
+        }
+        let (layout, xctestrun) = try await MacXCTest.prepare(tests: paths[0], host: paths.count > 1 ? paths[1] : nil, in: folder)
+        return XCTestFolder.Prepared(layout: XCTestRunFile.Layout(bundle: layout.bundle, host: layout.host, ui: false), xctestrun: xctestrun,
+                                     resultBundle: "\(folder)/result.xcresult")
     }
 
     // MARK: Its results

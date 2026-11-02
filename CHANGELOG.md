@@ -15,6 +15,12 @@
   many at once as `primary.macos.slots` (the type's cap), taking nothing of
   the budget. Released with their primary; a primary isn't replaced for new
   settings while a slot of its is held.
+- **`oss machine xctest` on a slot** (API 17): macos_unit_test bundles
+  (logic, or hosted with `--host=<App>.zip`) run on the primary by xcodebuild
+  as the slot's user, its keychain unlocked; the folder made ready here
+  (a macOS .xctestrun), copied there, the result bundle copied back for the
+  JUnit and `--result`. `--gui` (XCTestRequest.gui): in the primary's
+  console session, one at a time, for tests that draw a window.
 - **A CI runner keeps room for its job's VM**: runners that build hold
   their container (16 GB) while their jobs wait for a macOS VM, and four
   started at once held the memory their jobs' VMs needed, so none could
