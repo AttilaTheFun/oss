@@ -6,9 +6,10 @@ hosting `OSSServer` from the root package) with the command line (`oss`,
 the root package's) in `Contents/Helpers`, both signed with the Mac's
 Apple Development identity (ad hoc without one) and Virtualization's
 entitlement. `--zip` also makes `build/OS-Server.zip`; `--install` copies
-the app to /Applications. Its icon is `Icon/OSServer.icon` (Icon Composer:
-a glass stack of machines), rendered with Xcode's `ictool`; the
-repository's `.github/icon.png` is the same document at 512 px.
+the app to /Applications. Its icon is `Icon/Shireworks.icon` (Icon Composer:
+a glass anvil with sparks on ember, the app's name to come), rendered with
+Xcode's `ictool`; the repository's `.github/icon.png` is the same document
+at 512 px.
 
 - **The server** is `ServerHost`, started at launch in this process
   (`ServerRunner`): its log lines appended to `~/Library/Logs/OS Server.log`
