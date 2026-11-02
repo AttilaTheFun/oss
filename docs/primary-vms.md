@@ -65,12 +65,17 @@ oss machine xctest <id> --tests=bazel-bin/app/AppTests.zip --host=bazel-bin/app/
   JUnit and the result bundle (a hosted run's; a plain xctest's JUnit from
   its output) by the run's id, as long as the lease.
 - **One run at a time a slot**; Ctrl-C ends it.
-- **Windows drawn** (a snapshot test's window): v1 runs as the slot's user
-  outside any login session, which logic tests and hosted tests that open
-  no window need (checked by Apple Cross over SSH, 2026-11-02). A test that
-  draws a window needs a GUI session: v2 gives a slot one (the primary's
-  console user's, one slot at a time, or a session of the slot's user),
-  decided when the first such test moves.
+- **Windows drawn** (`--gui`): a test that draws a window, even one never
+  shown (reviews' and releases' Mac picture tests, through
+  pipeline_snapshots' MacSnapshotHost: an NSWindow with an
+  NSHostingController), needs a WindowServer connection, so a GUI session.
+  A run with `--gui` runs in the primary's console session (its logged-in
+  user, `launchctl asuser`), one such run at a time on the primary, the
+  others waiting their turn; its files are still the slot's. Without
+  `--gui` a run is the slot's user's outside any login session, which logic
+  tests and hosted tests that open no window need (checked by Apple Cross
+  over SSH, 2026-11-02; visor's four Mac bundles are such). A session of
+  each slot's own can come later if `--gui` runs queue.
 
 ### Apps on a slot
 
@@ -93,6 +98,6 @@ tool that needs a Mac but not a whole VM.
    held; OS Monitor shows it.
 2. `mac` leases: slot users made and deleted; `machine exec`/`upload`/
    `download` on them.
-3. `machine xctest` on a `mac` lease: plain and hosted.
+3. `machine xctest` on a `mac` lease: plain and hosted, and `--gui`.
 4. The repositories' Mac tests move (Apple Cross: applications; the Visor
    agent: visor and reviews; Shireworks with it).
