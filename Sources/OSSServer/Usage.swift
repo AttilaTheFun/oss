@@ -114,6 +114,9 @@ enum UsageProbe {
                 }
             case .android:
                 if let pid = lease.emulatorPID { roots = [Int(pid)] }
+            case .mac:
+                // A slot's processes are its primary's, counted there.
+                break
             }
             let processes = Dictionary(roots.flatMap { tree($0, in: all) }.map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a }).values
             ourPIDs.formUnion(processes.map(\.pid))
