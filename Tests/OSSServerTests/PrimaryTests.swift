@@ -95,10 +95,12 @@ import OSSClient
 }
 
 @Test func aSlotUsersScriptsMakeAndDeleteIt() {
-    let make = SlotUser.makeScript(lease: "ab12", password: "pw", keychainPassword: "kc")
-    #expect(make.contains("sysadminctl -addUser \"$user\""))
+    let make = SlotUser.makeScript(lease: "ab12", password: "kc")
+    #expect(make.contains("sysadminctl -addUser \"$user\" -fullName \"OS Server slot ab12\" -password 'kc'"))
     #expect(make.contains("user=oss-ab12"))
-    #expect(make.contains("security unlock-keychain -p 'kc' '/Users/oss-ab12/Library/Keychains/login.keychain-db'"))
+    // The login keychain sysadminctl made, unlocked with the same password; made again if it won't.
+    #expect(make.contains("if ! sudo -u \"$user\" -H security unlock-keychain -p 'kc' '/Users/oss-ab12/Library/Keychains/login.keychain-db'"))
+    #expect(make.contains("security create-keychain -p 'kc' '/Users/oss-ab12/Library/Keychains/login.keychain-db'"))
     let delete = SlotUser.deleteScript(lease: "ab12")
     #expect(delete.contains("sysadminctl -deleteUser \"$user\""))
     #expect(delete.contains("rm -rf \"/Users/$user\""))

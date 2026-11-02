@@ -127,10 +127,14 @@ enum SlotUser {
     static func keychain(_ lease: String) -> String { "/Users/\(name(lease))/Library/Keychains/login.keychain-db" }
 
     /// The user made, its home, its keychain made, its default and unlocked
-    /// (no locking on sleep or idle). `password` is the user's own (it never
-    /// logs in), `keychainPassword` the server's for its keychain.
-    static func makeScript(lease: String, password: String, keychainPassword: String) -> String {
+    /// (no locking on sleep or idle). `password` is the server's for the
+    /// slot: the user's own (it never logs in) and its keychain's, as
+    /// `sysadminctl -addUser` makes the user's login keychain with its
+    /// password. A keychain that won't unlock with it (one left by an
+    /// earlier user of the name) is made again.
+    static func makeScript(lease: String, password: String) -> String {
         let user = name(lease)
+        let keychain = keychain(lease)
         return """
             set -euo pipefail
             user=\(user)
@@ -139,13 +143,14 @@ enum SlotUser {
             fi
             sudo createhomedir -c -u "$user" >/dev/null
             sudo -u "$user" -H mkdir -p "/Users/$user/Library/Keychains"
-            if [ ! -f '\(keychain(lease))' ]; then
-                sudo -u "$user" -H security create-keychain -p '\(keychainPassword)' '\(keychain(lease))'
+            if ! sudo -u "$user" -H security unlock-keychain -p '\(password)' '\(keychain)' 2>/dev/null; then
+                sudo -u "$user" -H rm -f '\(keychain)'
+                sudo -u "$user" -H security create-keychain -p '\(password)' '\(keychain)'
+                sudo -u "$user" -H security unlock-keychain -p '\(password)' '\(keychain)'
             fi
-            sudo -u "$user" -H security list-keychains -d user -s '\(keychain(lease))'
-            sudo -u "$user" -H security default-keychain -d user -s '\(keychain(lease))'
-            sudo -u "$user" -H security unlock-keychain -p '\(keychainPassword)' '\(keychain(lease))'
-            sudo -u "$user" -H security set-keychain-settings '\(keychain(lease))'
+            sudo -u "$user" -H security list-keychains -d user -s '\(keychain)'
+            sudo -u "$user" -H security default-keychain -d user -s '\(keychain)'
+            sudo -u "$user" -H security set-keychain-settings '\(keychain)'
             id "$user"
             """
     }
