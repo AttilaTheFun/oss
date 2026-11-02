@@ -695,3 +695,23 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     let behind = CIRoom.refusal(runner: 4 * gb, budget: budget(leased: 0, waiting: [vm]), headroom: 16 * gb)
     #expect(behind?.contains("test-1@ci's macos") == true)
 }
+
+/// macOS at its cap (two VMs leased): no room is kept for a third, which
+/// can't be leased, and a macOS lease waiting for one of the two holds no
+/// runner back (it takes the memory of the one released). A lease waiting
+/// for memory still does.
+@Test func atMacOSsCapARunnerKeepsNoRoomForAThirdVM() {
+    let gb: Int64 = 1 << 30
+    func budget(waiting: [WaitingLease] = []) -> LeaseBudget {
+        LeaseBudget(memoryBytes: 96 * gb, leasedMemoryBytes: 64 * gb, outsideMemoryBytes: 23 * gb, leasedCPUs: 0, maxCPUs: 28, waiting: waiting)
+    }
+    // 9 GB free: a 4 GB runner fits once no VM's room is kept.
+    #expect(CIRoom.refusal(runner: 4 * gb, budget: budget(), headroom: 16 * gb) != nil)
+    #expect(CIRoom.refusal(runner: 4 * gb, budget: budget(), headroom: 0, atCap: [.macos]) == nil)
+    let vm = WaitingLease(platform: .macos, config: "xcode_27_2", holder: "test-1@ci", size: LeaseSize(cpus: 6, memoryBytes: 16 * gb),
+                          since: Date(timeIntervalSince1970: 0), reason: "cap")
+    #expect(CIRoom.refusal(runner: 4 * gb, budget: budget(waiting: [vm]), headroom: 0, atCap: [.macos]) == nil)
+    let container = WaitingLease(platform: .container, config: "", holder: "build@ci", size: LeaseSize(cpus: 6, memoryBytes: 16 * gb),
+                                 since: Date(timeIntervalSince1970: 0), reason: "memory")
+    #expect(CIRoom.refusal(runner: 4 * gb, budget: budget(waiting: [vm, container]), headroom: 0, atCap: [.macos]) != nil)
+}

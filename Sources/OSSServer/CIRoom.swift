@@ -11,8 +11,13 @@ import OSSClient
 enum CIRoom {
     /// Why a runner of `runner` bytes waits, or nil if it may start.
     /// `headroom`: what a macOS VM takes (0 where the server lends none).
-    static func refusal(runner: Int64, budget: LeaseBudget, headroom: Int64) -> String? {
-        if let first = budget.waiting.first {
+    ///
+    /// `atCap`: the types whose cap is reached (macOS's two): a lease of one
+    /// waits for one of them to be released, whose memory it then takes, so a
+    /// runner doesn't hold it back, and no room is kept for one (the caller
+    /// passes no headroom when macOS is at its cap).
+    static func refusal(runner: Int64, budget: LeaseBudget, headroom: Int64, atCap: Set<Platform> = []) -> String? {
+        if let first = budget.waiting.first(where: { !atCap.contains($0.platform) }) {
             return "a lease waits ahead (\(first.holder)'s \(first.platform.rawValue), since \(first.since.formatted(.iso8601)))"
         }
         let free = budget.memoryBytes - budget.leasedMemoryBytes - budget.outsideMemoryBytes
