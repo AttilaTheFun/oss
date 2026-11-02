@@ -26,12 +26,17 @@ public struct XCTestRequest: Codable, Sendable, Hashable {
     /// `Class/method` (Swift Testing's `Suite/function()`), with or without
     /// the bundle's name before them.
     public var onlyTesting: [String]?
+    /// A Mac slot's run in the primary's GUI session (API 17): for tests that
+    /// draw a window (even one never shown), which need WindowServer. Run as
+    /// the primary's console user, one such run at a time on the primary.
+    public var gui: Bool
 
-    public init(tests: String, host: String? = nil, ui: Bool = false, onlyTesting: [String]? = nil) {
+    public init(tests: String, host: String? = nil, ui: Bool = false, onlyTesting: [String]? = nil, gui: Bool = false) {
         self.tests = tests
         self.host = host
         self.ui = ui
         self.onlyTesting = onlyTesting
+        self.gui = gui
     }
 
     public init(from decoder: Decoder) throws {
@@ -40,6 +45,7 @@ public struct XCTestRequest: Codable, Sendable, Hashable {
         host = try c.decodeIfPresent(String.self, forKey: .host)
         ui = try c.decodeIfPresent(Bool.self, forKey: .ui) ?? false
         onlyTesting = try c.decodeIfPresent([String].self, forKey: .onlyTesting)
+        gui = try c.decodeIfPresent(Bool.self, forKey: .gui) ?? false
     }
 }
 

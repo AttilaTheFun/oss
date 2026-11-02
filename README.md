@@ -519,8 +519,31 @@ A slot is a macOS user on the primary (`oss-<id>`), made at lease with an
 empty home and a login keychain of its own (its password the server's,
 unlocked; a user that never logs in has none otherwise), and deleted at
 release. It is reached through the API alone: no SSH or VNC of its own.
-`busy` while the primary is being made. `oss machine xctest` on a slot
-comes next.
+`busy` while the primary is being made.
+
+**Mac tests on a slot**, as `oss machine xctest` runs iOS tests on a
+simulator: rules_apple's `macos_unit_test` bundles, built on Linux
+(rules_applecross) or a Mac.
+
+```sh
+oss machine lease mac --wait
+oss machine xctest <id> --tests=bazel-bin/app/LogicTests.zip                         # no host: Xcode's xctest agent hosts it
+oss machine xctest <id> --tests=bazel-bin/app/AppTests.zip --host=bazel-bin/app/App.zip   # injected into the app
+oss machine xctest <id> --tests=bazel-bin/app/WindowTests.zip --gui                  # draws a window: the primary's GUI session
+```
+
+The run's folder is made ready on the server's Mac (the bundles unpacked, a
+macOS .xctestrun written: a logic test hosted by Xcode's `xctest` agent, a
+hosted one injected into `<App>.app/Contents/MacOS/<executable>`), copied
+into the slot's home on the primary, and run there by `xcodebuild
+test-without-building -destination platform=macOS` as the slot's user, its
+keychain unlocked; its output streamed back, its result bundle copied back
+(the JUnit and `--result` as an iOS run's), its folder there deleted. A test
+that draws a window, even one never shown, needs WindowServer: `--gui` runs
+it as the primary's console user in its session, one such run at a time on
+the primary (the others wait, saying so), with that user's keychain.
+`--only-testing` on a slot takes letters, digits and `_ / ( ) . -` alone; a
+slot runs no UI tests (`--ui`, XCTRunner's, are iOS's).
 
 ### Self-hosted CI
 

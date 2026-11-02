@@ -546,6 +546,13 @@ actor MachineManager {
         return Guest(platform: .macos, address: address, user: config.guestUser, key: config.managementKey)
     }
 
+    /// What a slot's xctest run needs (MacXCTest.Slot), while it has a primary.
+    func slotRun(_ id: String) -> MacXCTest.Slot? {
+        guard let lease = leases[id], lease.platform == .mac, let guest = primaryGuest(of: lease) else { return nil }
+        return MacXCTest.Slot(guest: guest, keychainPassword: SlotSecrets.keychainPassword(id, key: config.managementKey),
+                              console: config.guestUser)
+    }
+
     /// A slot's user made on its primary, with its home and keychain.
     private func createSlot(_ id: String) async throws {
         guard let lease = leases[id], let guest = primaryGuest(of: lease) else { throw APIError(error: "its primary macOS VM is gone") }
@@ -1032,7 +1039,9 @@ actor MachineManager {
         case .container:
             await containers?.stop(name: lease.name, spec: lease.container)
         case .mac:
-            // Its user deleted on its primary, with its files (gone already if the primary is).
+            // Its tests stopped first, their files here deleted; then its
+            // user on its primary, with its files (gone already if the primary is).
+            await xctests.forget(id)
             if let guest = primaryGuest(of: lease) {
                 let deleted = try? await guest.run(SlotUser.deleteScript(lease: id), timeout: 120)
                 if deleted?.ok != true { log("lease \(id): deleting slot user \(SlotUser.name(id)) failed: \(deleted?.error.suffix(300) ?? "no answer")") }

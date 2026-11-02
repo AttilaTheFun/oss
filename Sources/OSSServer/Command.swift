@@ -58,7 +58,7 @@ let usage = """
       oss machine simctl <id> <simctl arguments…>          iOS: install ./My.app, launch <bundle id>, openurl …
       oss machine install <id> <sha256 | name>              iOS: an .ipa or zipped .app of yours from storage installed
       oss machine install --url=GRANT <sha256 | name>       the same with a machine.install grant, no token
-      oss machine xctest <id> --tests=<object | file> [--host=<object | file>] [--ui] [--only-testing=Class[/method]]…
+      oss machine xctest <id> --tests=<object | file> [--host=<object | file>] [--ui] [--gui] [--only-testing=Class[/method]]…
                          [--result=out.xcresult.zip] [--junit=out.xml]
                                                             iOS: rules_apple's test bundle (<name>.zip) and its host (an
                                                             .ipa) run on the simulator by xcodebuild, as bazel test runs
@@ -481,7 +481,7 @@ func xctestCommand(_ arguments: Arguments, put: ((URL) async throws -> String)?,
                    run: (XCTestRequest, @escaping @Sendable (ExecFrame) -> Void) async throws -> XCTestRun,
                    junit: (String) async throws -> Data, result: (String, URL) async throws -> Void) async throws -> Int32 {
     guard let tests = arguments.options["tests"] else {
-        fail("oss machine xctest <id> --tests=<object | file> [--host=<object | file>] [--ui] [--only-testing=Class[/method]]… "
+        fail("oss machine xctest <id> --tests=<object | file> [--host=<object | file>] [--ui] [--gui] [--only-testing=Class[/method]]… "
              + "[--result=out.xcresult.zip] [--junit=out.xml]")
     }
     guard !arguments.flags.contains("ui") || arguments.options["host"] != nil else { fail("a UI test needs its host: --host=<App.ipa>") }
@@ -509,7 +509,7 @@ func xctestCommand(_ arguments: Arguments, put: ((URL) async throws -> String)?,
     var host: String?
     if let given = arguments.options["host"] { host = try await object(given) }
     let request = XCTestRequest(tests: try await object(tests), host: host, ui: arguments.flags.contains("ui"),
-                                onlyTesting: arguments.all["only-testing"])
+                                onlyTesting: arguments.all["only-testing"], gui: arguments.flags.contains("gui"))
     let outcome = try await run(request) { frame in
         switch frame {
         case .stdout(let data): FileHandle.standardOutput.write(data)
