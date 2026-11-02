@@ -40,6 +40,13 @@ end for CI).
   slot asked for when all are held waits in line as any lease does
   (`--wait`).
 - **Ready in**: about a second (a user made).
+- **Its keychain**: a user that never logs in has no login keychain, and
+  tests that keep a token (pipeline_app's Keychain.swift) need one. A slot's
+  user gets `login.keychain-db` made at lease, with a password only the
+  server keeps, set as its default and unlocked before each run (and
+  deleted with the user). A `--gui` run, in the console user's session,
+  gets the slot's keychain as its default for the run, not the console
+  user's.
 
 ### Tests on a slot: `oss machine xctest <mac lease>`
 
