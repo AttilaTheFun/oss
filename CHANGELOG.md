@@ -2,6 +2,12 @@
 
 ## 0.14.0 (unreleased)
 
+- **A runner keeps no room for a VM that can't be leased**: with macOS at
+  its cap (both VMs leased), the room CIRoom kept for "a macOS VM its jobs
+  may lease" held every runner back, a 4 GB Linux job's too, though no
+  third VM could come. Room is kept only while another may be leased, and a
+  lease waiting at its type's cap (it takes the memory of the one released)
+  holds no runner back; one waiting for memory still does.
 - **The primary macOS VM** (API 17, docs/primary-vms.md): server.json's
   `primary.macos` keeps a VM of OS Server's own running (by default
   `xcode_27_2`, 8 CPUs and 24 GB, 4 slots), cloned at its own size, held as
