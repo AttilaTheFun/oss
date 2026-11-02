@@ -2,6 +2,12 @@
 
 ## 0.14.0 (unreleased)
 
+- **A CI runner keeps room for its job's VM**: runners that build hold
+  their container (16 GB) while their jobs wait for a macOS VM, and four
+  started at once held the memory their jobs' VMs needed, so none could
+  finish. A runner now starts only when nothing waits ahead of it (no
+  stall escape for a runner) and a macOS VM still fits beside it
+  (CIRoom); else its job waits, saying why.
 - **A job still queued is offered again**: a runner takes whichever of
   its label's jobs GitHub gives it, so the job it was made for could keep
   waiting at GitHub while its record here said it had ended, and it was
