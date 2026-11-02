@@ -105,3 +105,13 @@ import OSSClient
     #expect(SlotSecrets.keychainPassword("ab12", key: "/nonexistent") == SlotSecrets.keychainPassword("ab12", key: "/nonexistent"))
     #expect(SlotSecrets.keychainPassword("ab12", key: "/nonexistent") != SlotSecrets.keychainPassword("cd34", key: "/nonexistent"))
 }
+
+/// A client below API 17 can't read a slot's platform: the waiting line it
+/// is shown has none (Server.route's `visible` hides them elsewhere).
+@Test func aBudgetsWaitingLineHidesWhatAClientCantRead() {
+    let waiting = [WaitingLease(platform: .mac, config: "xcode_27_2", holder: "a", size: LeaseSize(cpus: 0, memoryBytes: 0), since: Date(), reason: "cap"),
+                   WaitingLease(platform: .macos, config: "xcode_27_2", holder: "b", size: LeaseSize(cpus: 6, memoryBytes: 16 << 30), since: Date(), reason: "cap")]
+    let budget = LeaseBudget(memoryBytes: 96 << 30, leasedMemoryBytes: 0, leasedCPUs: 0, maxCPUs: 28, waiting: waiting)
+    #expect(budget.visible { $0 != .mac }.waiting.map(\.holder) == ["b"])
+    #expect(budget.visible { _ in true }.waiting.count == 2)
+}
