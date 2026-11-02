@@ -104,9 +104,10 @@ jobs:
   beta:
     # After build-and-test: nothing published from a tree whose tests fail.
     needs: build-and-test
-    if: >
-      github.event_name != 'release' &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # main's commits alone, as every repository's betas are (the owner,
+    # 2026-10-31): a pull request's run is its build and tests, and a beta of
+    # each of its pushes held a second macOS VM (one of two) for minutes.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: [self-hosted, oss-jit]
     timeout-minutes: 90
     permissions:
