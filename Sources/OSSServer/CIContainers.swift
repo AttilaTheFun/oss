@@ -43,6 +43,9 @@ struct CIContainers: CIRunnerHost {
         labels[CINames.holderLabel] = holder
         // Its repository's size, where it has one (its jobs build in it).
         let repository = plan.repositories.first { $0.name.lowercased() == job.repository.lowercased() }
+        // Room kept for the machines its job leases (CIRoom).
+        let memory = Int64(repository?.memoryGigabytes ?? plan.memoryGigabytes) << 30
+        if let refusal = await machines.ciRunnerRefusal(memoryBytes: memory) { throw CIBusy(description: refusal) }
         let lease = try await self.lease(holder: runnerHolder, label: "\(job.repository) · \(job.workflow ?? "a workflow") #\(job.runID) · \(job.name)",
                                     link: job.url ?? job.runURL, labels: labels, cpus: repository?.cpus,
                                     memoryGigabytes: repository?.memoryGigabytes)

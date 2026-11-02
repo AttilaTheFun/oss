@@ -197,6 +197,13 @@ actor MachineManager {
                            waiting: admission.waiting())
     }
 
+    /// Why a CI runner of `memoryBytes` waits now, or nil (CIRoom): nothing
+    /// waits ahead of it, and a macOS VM still fits beside it.
+    func ciRunnerRefusal(memoryBytes: Int64) -> String? {
+        let headroom = config.lends(.macos) ? admission.policy.estimate(.macos).memoryBytes : 0
+        return CIRoom.refusal(runner: memoryBytes, budget: budget(), headroom: headroom)
+    }
+
     /// The Mac by whom, as last sampled (nil where its processes can't be read).
     func hostBreakdown() -> HostBreakdown? { host }
 
