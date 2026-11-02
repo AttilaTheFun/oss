@@ -232,6 +232,9 @@ func describe(_ lease: Lease, _ client: OSSClient) -> String {
     case .android:
         lines.append("  adb connect \(env["OSS_ADB"]!)   (then adb -s \(env["OSS_ADB"]!) …)")
         lines.append("  or: oss machine adb \(lease.id) install ./app.apk | shell … | logcat -d")
+    case .mac:
+        lines.append("  a slot on \(client.host)'s primary macOS VM (\(lease.config))")
+        lines.append("  oss machine xctest \(lease.id) --tests=<Tests.zip> [--host=<App.zip>] [--gui]")
     case .container:
         lines.append("  \(lease.container?.image ?? "a container") on \(client.host)")
         lines.append("  oss machine exec \(lease.id) [--tty] -- <command>")
@@ -1241,6 +1244,8 @@ public enum OSSCommand {
                 switch platform {
                 case .container:
                     fail("a container's image comes from a registry: nothing to build here")
+                case .mac:
+                    fail("a slot is its primary's: build the primary's base (macos) instead")
                 case .ios:
                     try await Simulators.build(config: config, deviceType: arguments.options["device"] ?? "iPhone 17 Pro",
                                                runtime: arguments.options["runtime"], script: arguments.options["script"])

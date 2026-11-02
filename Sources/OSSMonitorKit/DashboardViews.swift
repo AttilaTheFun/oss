@@ -696,6 +696,7 @@ public enum Format {
         case .linux: "Linux"
         case .windows: "Windows"
         case .container: "Container"
+        case .mac: "Mac slot"
         }
     }
 
@@ -707,6 +708,7 @@ public enum Format {
         case .linux: "server.rack"
         case .windows: "pc"
         case .container: "shippingbox"
+        case .mac: "macwindow"
         }
     }
 

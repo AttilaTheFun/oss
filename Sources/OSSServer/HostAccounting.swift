@@ -144,6 +144,9 @@ enum HostAccounting {
                 }
             case .android:
                 if let pid = lease.emulatorPID { roots = [pid] }
+            case .mac:
+                // A slot's processes are its primary's, counted there.
+                break
             }
             leasePIDs[lease.id] = tree(roots)
         }
