@@ -552,9 +552,18 @@ repositories server.json names, beside any runner they have already.
    32 GB, at most half the containers it lends: its cap, or as many of a
    job's as the budget holds; at least one), `image` (the jobs' image:
    Visor's agent image), `cpus` and `memoryGigabytes` (each
-   job's container: 4 and 4), `pollSeconds` (5), `unclaimedMinutes` (10)
+   job's container: 4 and 4), `sizes` (a repository's own, where its jobs
+   build in their container: `{"owner/reviews": {"cpus": 6,
+   "memoryGigabytes": 16}}`), `pollSeconds` (5), `unclaimedMinutes` (10)
    and `serverURL` (the server as a job's container reaches it: by default
    this Mac's address on the containers' network).
+   Each job's container reads the server's Bazel cache (~/.bazelrc and
+   ~/.netrc, as a VM lease's), so a job builds there warm: clone (the
+   checkout) and build in the job's container, and lease a machine only to
+   run what it built. Only `populate`'s job writes it (`{"owner/name":
+   "populate"}`, the job's name, on main alone: the post-merge job that
+   fills it), with a cache-write grant good while its runner lasts in
+   place of the write token, which never leaves the server's Mac.
 4. OS Server started again. Its log says `ci: running GitHub Actions jobs
    for …`, or why CI is off; `oss ci list` too.
 

@@ -41,14 +41,30 @@ struct CIContainers: CIRunnerHost {
         var labels = ["oss.ci.repository": job.repository, "oss.ci.run": "\(job.runID)", "oss.ci.job": "\(job.id)"]
         labels[CINames.runnerLabel] = "\(job.repository)#\(job.id)"
         labels[CINames.holderLabel] = holder
+        // Its repository's size, where it has one (its jobs build in it).
+        let repository = plan.repositories.first { $0.name.lowercased() == job.repository.lowercased() }
         let lease = try await self.lease(holder: runnerHolder, label: "\(job.repository) · \(job.workflow ?? "a workflow") #\(job.runID) · \(job.name)",
-                                    link: job.url ?? job.runURL, labels: labels)
+                                    link: job.url ?? job.runURL, labels: labels, cpus: repository?.cpus,
+                                    memoryGigabytes: repository?.memoryGigabytes)
         do {
             try await put(runner, into: lease, "mkdir -p \"$HOME/actions-runner\" && tar -xz -C \"$HOME/actions-runner\"")
             if let client {
                 try await put(client, into: lease, "mkdir -p \"$HOME/.local/bin\" && cat > \"$HOME/.local/bin/oss\" && chmod 755 \"$HOME/.local/bin/oss\"")
             } else {
                 log("ci: lease \(lease.id): no Linux oss to put in it (its job's scripts find none)")
+            }
+            // The server's Bazel cache, as every VM lease's: a job's build in
+            // its container starts warm. Read-only, but for its repository's
+            // populate job on main, which writes it with a grant good while
+            // its runner lasts (the write token never leaves the server's Mac).
+            if let cache = await machines.bazelCacheSettings(), let host = await serverURLs(lease.id).first.flatMap({ URL(string: $0)?.host }) {
+                let writes = repository?.populates(job) == true
+                let password = writes ? grants.issueCacheWrite(holder: holder, runner: lease.id, live: jobGrants) : cache.readToken
+                if writes { log("ci: \(job.repository) job \(job.id) (\(job.name)) populates the Bazel cache") }
+                try await putText(CacheClientFiles.bazelrc(host: host, port: cache.port, writes: writes).joined(separator: "\n") + "\n",
+                                  into: lease, "cat >> \"$HOME/.bazelrc\"")
+                try await putText(CacheClientFiles.netrcEntry(host: host, token: password) + "\n", into: lease,
+                                  "umask 077 && cat >> \"$HOME/.netrc\"")
             }
         } catch {
             await machines.release(lease.id, reason: "its runner couldn't be put in it")
@@ -102,8 +118,10 @@ struct CIContainers: CIRunnerHost {
 
     /// A container leased (held until released) and ready, for a runner or
     /// for building oss.
-    func lease(holder: String, label: String, link: URL?, labels: [String: String], cpus: Int? = nil) async throws -> Lease {
-        let spec = ContainerSpec(image: plan.image, cpus: cpus ?? plan.cpus, memoryBytes: Int64(plan.memoryGigabytes) << 30, rosetta: true)
+    func lease(holder: String, label: String, link: URL?, labels: [String: String], cpus: Int? = nil,
+               memoryGigabytes: Int? = nil) async throws -> Lease {
+        let spec = ContainerSpec(image: plan.image, cpus: cpus ?? plan.cpus, memoryBytes: Int64(memoryGigabytes ?? plan.memoryGigabytes) << 30,
+                                 rosetta: true)
         let request = LeaseRequest(platform: .container, minutes: 0, holder: holder, container: spec, kind: .ci, label: label, link: link,
                                    labels: labels)
         let made: Lease
@@ -126,6 +144,14 @@ struct CIContainers: CIRunnerHost {
     }
 
     /// A file into the container, on the standard input of `script`.
+    /// Text put in a lease's container through a script's standard input.
+    func putText(_ text: String, into lease: Lease, _ script: String) async throws {
+        let file = NSTemporaryDirectory() + "oss-ci-\(Random.hex(4))"
+        FileManager.default.createFile(atPath: file, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600])
+        defer { try? FileManager.default.removeItem(atPath: file) }
+        try await put(file, into: lease, script)
+    }
+
     func put(_ file: String, into lease: Lease, _ script: String) async throws {
         guard let socket = lease.execSocket, let handle = FileHandle(forReadingAtPath: file) else {
             throw APIError(error: "\(file) can't be put in lease \(lease.id)")
