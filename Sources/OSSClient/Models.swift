@@ -8,6 +8,10 @@ public enum Platform: String, Codable, CaseIterable, Sendable {
     /// on that Mac until API 9, to one anywhere since (but its mounts,
     /// which share the Mac's folders).
     case container
+    /// A slot on the server's primary macOS VM (API 17, docs/primary-vms.md):
+    /// a user of its own there, for tests and tools that need a Mac but not
+    /// a whole VM; reached through the API alone.
+    case mac
 
     public var isVM: Bool { self == .macos || self == .linux || self == .windows }
 }
@@ -289,6 +293,9 @@ public enum LeaseKind: String, Codable, CaseIterable, Sendable {
     /// An image build's VM on the server's own Mac (API 14): a place
     /// held while the build runs (`LeaseRequest.build`).
     case build
+    /// A primary VM (API 17, docs/primary-vms.md): OS Server's own, kept
+    /// running, whose slots it lends; never released through the API.
+    case primary
 
     /// A kind this build doesn't know (a newer server's) reads as `manual`:
     /// an unknown value would otherwise fail the whole status it came in
@@ -375,6 +382,9 @@ public struct Lease: Codable, Sendable {
     public var build: String?
     /// The process building, whose life the place lasts.
     public var buildPID: Int32?
+    /// A slot's primary (API 17; a `mac` lease's): the lease of the primary
+    /// macOS VM it is a user on.
+    public var primary: String?
 
     public init(id: String, platform: Platform, config: String, name: String, holder: String, state: LeaseState,
                 created: Date, expires: Date, error: String? = nil, kind: LeaseKind? = nil, label: String? = nil, link: URL? = nil) {
@@ -1192,7 +1202,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 16
+    public static let apiLevel = 17
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
 }

@@ -670,3 +670,28 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     #expect(try decoded(APIError.self, off).code == "noCI")
 }
 #endif
+
+/// A runner starts only when nothing waits ahead of it and a macOS VM
+/// still fits beside it: four 16 GB runners whose jobs each waited for a
+/// 16 GB VM once held all the memory between them (2026-11-02).
+@Test func aRunnerLeavesRoomForAVMAndWaitsBehindAnyoneWaiting() {
+    let gb: Int64 = 1 << 30
+    func budget(leased: Int64, outside: Int64 = 0, waiting: [WaitingLease] = []) -> LeaseBudget {
+        LeaseBudget(memoryBytes: 96 * gb, leasedMemoryBytes: leased * gb, outsideMemoryBytes: outside * gb, leasedCPUs: 0, maxCPUs: 28,
+                    waiting: waiting)
+    }
+    // 96 GB, 23 outside: three 16 GB runners fit with a VM's room; a fourth doesn't.
+    #expect(CIRoom.refusal(runner: 16 * gb, budget: budget(leased: 0, outside: 23), headroom: 16 * gb) == nil)
+    #expect(CIRoom.refusal(runner: 16 * gb, budget: budget(leased: 32, outside: 23), headroom: 16 * gb) == nil)
+    let fourth = CIRoom.refusal(runner: 16 * gb, budget: budget(leased: 48, outside: 23), headroom: 16 * gb)
+    #expect(fourth?.contains("keeping room for a macOS VM") == true)
+    // A small runner still fits where a big one doesn't.
+    #expect(CIRoom.refusal(runner: 4 * gb, budget: budget(leased: 48, outside: 23), headroom: 16 * gb) == nil)
+    // No macOS lent here: no room kept.
+    #expect(CIRoom.refusal(runner: 16 * gb, budget: budget(leased: 64), headroom: 0) == nil)
+    // A job's VM waiting: no runner goes ahead of it, whatever fits.
+    let vm = WaitingLease(platform: .macos, config: "xcode_27_2", holder: "test-1@ci", size: LeaseSize(cpus: 4, memoryBytes: 16 * gb),
+                          since: Date(timeIntervalSince1970: 0), reason: "busy")
+    let behind = CIRoom.refusal(runner: 4 * gb, budget: budget(leased: 0, waiting: [vm]), headroom: 16 * gb)
+    #expect(behind?.contains("test-1@ci's macos") == true)
+}

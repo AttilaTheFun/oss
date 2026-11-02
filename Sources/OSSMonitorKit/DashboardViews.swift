@@ -611,6 +611,7 @@ public struct KindBadge: View {
         case .agent: .indigo
         case .manual: .gray
         case .build: .brown
+        case .primary: .purple
         }
     }
 }
@@ -695,6 +696,7 @@ public enum Format {
         case .linux: "Linux"
         case .windows: "Windows"
         case .container: "Container"
+        case .mac: "Mac slot"
         }
     }
 
@@ -706,6 +708,7 @@ public enum Format {
         case .linux: "server.rack"
         case .windows: "pc"
         case .container: "shippingbox"
+        case .mac: "macwindow"
         }
     }
 
@@ -716,6 +719,7 @@ public enum Format {
         case .agent: "Agent"
         case .manual: "Manual"
         case .build: "Build"
+        case .primary: "Primary"
         }
     }
 }
