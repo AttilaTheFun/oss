@@ -141,9 +141,13 @@ mac_vm_lease() {
     # Renewed every ten minutes; told to stop, it stops its sleep too.
     (
         trap 'kill $! 2> /dev/null; exit 0' TERM
-        while :; do
+        # Only while the script runs: one killed past its traps (a cancel
+        # that ends in SIGKILL) leaves this loop, which must not keep its
+        # lease past the hour. $$ is the script, in this subshell too.
+        while kill -0 "$$" 2> /dev/null; do
             sleep 600 &
             wait $!
+            kill -0 "$$" 2> /dev/null || break
             "$OSS" machine renew "$lease" --minutes=60 > /dev/null || true
         done
     ) &
