@@ -52,6 +52,9 @@ public enum ServerLog {
 actor MachineManager {
     let config: ServerConfig
     private var leases: [String: Lease] = [:]
+    /// Leases saved by a later build that this one can't read (a rollback):
+    /// written back as they are, and what they name left alone.
+    private var unreadLeases: [[String: Any]] = []
     /// The bases, as last listed (refreshed in the background: UTM can take
     /// minutes to answer while it's busy).
     private var knownBases: [Base] = []
@@ -1305,13 +1308,19 @@ actor MachineManager {
     // MARK: Persistence
 
     private func save() {
-        LeaseFile.write(Array(leases.values), to: leasesPath)
+        LeaseFile.write(Array(leases.values), unread: unreadLeases, to: leasesPath)
     }
 
     /// After a restart: leases still running get their forwards back; clones
-    /// nobody holds any more are deleted.
+    /// nobody holds any more are deleted, but never one a lease this build
+    /// can't read names, and none at all when the file can't be read.
     func recover() async {
-        let saved = LeaseFile.read(leasesPath)
+        let file = LeaseFile.readAll(leasesPath)
+        let saved = file.records
+        unreadLeases = file.unread
+        let unreadNames = file.unreadValues("name"), unreadUDIDs = file.unreadValues("udid")
+        // Held: an unread lease's machine, or every machine when the file is unreadable.
+        func held(name: String) -> Bool { file.unreadable || unreadNames.contains(name) || leases.values.contains { $0.name == name } }
         // What this server doesn't lend, it leaves alone (a second server's
         // machines, named like its own).
         let simulators = config.lends(.ios) ? ((try? await Simulators.devices()) ?? []) : []
@@ -1393,7 +1402,7 @@ actor MachineManager {
             log("lease \(lease.id): recovered")
         }
         // Clones nobody holds: deleted.
-        for vm in vms where vm.name.hasPrefix("oss-lease-") && !leases.values.contains(where: { $0.name == vm.name }) {
+        for vm in vms where vm.name.hasPrefix("oss-lease-") && !held(name: vm.name) {
             log("deleting \(vm.name): no lease holds it")
             try? await utm.run {
                 if vm.status != "stopped" { try await UTM.stop(vm.name) }
@@ -1402,22 +1411,26 @@ actor MachineManager {
         }
         #if canImport(Virtualization)
         for name in (try? FileManager.default.contentsOfDirectory(atPath: MacVMStore.leases)) ?? []
-        where name.hasSuffix(".vm") && !leases.values.contains(where: { "\($0.name).vm" == name }) {
+        where name.hasSuffix(".vm") && !held(name: String(name.dropLast(3))) {
             log("deleting \(name): no lease holds it")
             await MacVMJobs.stop(String(name.dropLast(3)))
             await QEMUVMs.stop("\(MacVMStore.leases)/\(name)", ports: nil)
             MacVMStore.remove("\(MacVMStore.leases)/\(name)")
         }
         #endif
-        for device in simulators where device.name.hasPrefix("oss-lease-") && !leases.values.contains(where: { $0.udid == device.udid }) {
+        for device in simulators where device.name.hasPrefix("oss-lease-") && !file.unreadable && !unreadUDIDs.contains(device.udid)
+            && !leases.values.contains(where: { $0.udid == device.udid }) {
             log("deleting simulator \(device.name): no lease holds it")
             await Simulators.release(udid: device.udid)
         }
         for lease in saved where lease.platform == .android && leases[lease.id] == nil && config.lends(.android) {
             await Emulators.release(name: lease.name, port: lease.consolePort, pid: lease.emulatorPID)
         }
-        if let containers, config.lends(.container) {
-            await containers.prune(keeping: Set(leases.values.filter { $0.platform == .container }.map(\.name)))
+        if let containers, config.lends(.container), !file.unreadable {
+            await containers.prune(keeping: Set(leases.values.filter { $0.platform == .container }.map(\.name)).union(unreadNames))
+        }
+        if file.unreadable || !unreadLeases.isEmpty {
+            log("recover: \(file.unreadable ? "leases.json unreadable" : "\(unreadLeases.count) leases a later build saved"): their machines left alone")
         }
         save()
     }
