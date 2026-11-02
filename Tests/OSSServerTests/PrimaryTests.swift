@@ -56,3 +56,52 @@ import OSSClient
         Issue.record("a primary of another size is replaced"); return
     }
 }
+
+/// Slots (`mac` leases): as many as the primary lends, its type's cap; none
+/// without a primary; taking nothing of the budget, so a full budget still
+/// has room for one.
+@Test func slotsAreTheirPrimarysCapAndTakeNoMemory() throws {
+    let gb: Int64 = 1 << 30
+    let config = try JSONDecoder().decode(ServerConfig.self, from: Data(#"{"budget": {"memoryGB": 96}, "primary": {"macos": {"slots": 2}}}"#.utf8))
+    let policy = config.leasePolicy(memoryBytes: 128 << 30, cores: 16)
+    #expect(policy.caps[.mac] == 2)
+    let slot = LeaseDemand(platform: .mac, size: policy.estimate(.mac))
+    #expect(slot.size.memoryBytes == 0)
+    // A budget all but full (the primary and agents): a slot still fits.
+    let full = [LeaseDemand(platform: .macos, size: LeaseSize(cpus: 8, memoryBytes: 24 * gb)),
+                LeaseDemand(platform: .macos, size: LeaseSize(cpus: 6, memoryBytes: 16 * gb))]
+    #expect(policy.refusal(slot, held: full, outside: 56 * gb) == nil)
+    #expect(policy.capacity(.mac, held: full, typical: slot.size).limit == 2)
+    // Two held: the third waits for one.
+    #expect(policy.refusal(slot, held: full + [slot, slot]) != nil)
+    #expect(policy.capacity(.mac, held: full + [slot], typical: slot.size).limit == 2)
+    // No primary: no cap of slots (leaseSlot lends none), the caps as they were.
+    #expect(ServerConfig().leasePolicy(memoryBytes: 128 << 30, cores: 16).caps[.mac] == nil)
+}
+
+@Test func aSlotsOrphansAndItsPrimarysSlots() {
+    func lease(_ id: String, _ platform: Platform, kind: LeaseKind? = nil, primary: String? = nil, state: LeaseState = .ready) -> Lease {
+        var lease = Lease(id: id, platform: platform, config: "xcode_27_2", name: id, holder: "h", state: state, created: Date(), expires: .distantFuture)
+        lease.kind = kind
+        lease.primary = primary
+        return lease
+    }
+    let held = [lease("p1", .macos, kind: .primary), lease("s1", .mac, primary: "p1"), lease("s2", .mac, primary: "gone"),
+                lease("s3", .mac, primary: "p1", state: .returning)]
+    #expect(PrimaryPlan.slots(of: "p1", held).map(\.id).sorted() == ["s1", "s3"])
+    #expect(PrimaryPlan.orphans(held).map(\.id) == ["s2"])
+    // A primary whose settings changed is kept while a slot of its is held.
+    #expect(PrimaryPlan.step(PrimaryMacSettings(config: "xcode_27_0"), lendsMacOS: true, restartPending: false, held: held) == .check("p1"))
+}
+
+@Test func aSlotUsersScriptsMakeAndDeleteIt() {
+    let make = SlotUser.makeScript(lease: "ab12", password: "pw", keychainPassword: "kc")
+    #expect(make.contains("sysadminctl -addUser \"$user\""))
+    #expect(make.contains("user=oss-ab12"))
+    #expect(make.contains("security unlock-keychain -p 'kc' '/Users/oss-ab12/Library/Keychains/login.keychain-db'"))
+    let delete = SlotUser.deleteScript(lease: "ab12")
+    #expect(delete.contains("sysadminctl -deleteUser \"$user\""))
+    #expect(delete.contains("rm -rf \"/Users/$user\""))
+    #expect(SlotSecrets.keychainPassword("ab12", key: "/nonexistent") == SlotSecrets.keychainPassword("ab12", key: "/nonexistent"))
+    #expect(SlotSecrets.keychainPassword("ab12", key: "/nonexistent") != SlotSecrets.keychainPassword("cd34", key: "/nonexistent"))
+}

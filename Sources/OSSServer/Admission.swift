@@ -63,6 +63,8 @@ struct LeasePolicy: Sendable, Equatable {
         .linux: LeaseSize(cpus: 6, memoryBytes: 8 << 30),
         .windows: LeaseSize(cpus: 6, memoryBytes: 8 << 30),
         .container: LeaseSize(cpus: ContainerDefaults.cpus, memoryBytes: ContainerDefaults.memoryBytes),
+        // A slot's memory is its primary's, held already.
+        .mac: LeaseSize(cpus: 0, memoryBytes: 0),
     ]
 
     /// The budget where server.json gives none: the Mac's memory less what
@@ -97,6 +99,8 @@ struct LeasePolicy: Sendable, Equatable {
             let count = held.filter { $0.platform == demand.platform }.count
             if count >= cap { return .cap(demand.platform, held: count, cap: cap) }
         }
+        // What takes nothing of the budget (a slot) needs no room in it.
+        guard demand.size.memoryBytes > 0 else { return nil }
         let used = held.reduce(Int64(0)) { $0 + $1.size.memoryBytes }
         if used + outside + demand.size.memoryBytes > memoryBytes {
             return .memory(used: used, outside: outside, needs: demand.size.memoryBytes, budget: memoryBytes)
@@ -114,7 +118,10 @@ struct LeasePolicy: Sendable, Equatable {
     func capacity(_ platform: Platform, held: [LeaseDemand], typical: LeaseSize, outside: Int64 = 0) -> Capacity {
         let mine = held.filter { $0.platform == platform }
         let free = memoryBytes - outside - held.reduce(Int64(0)) { $0 + $1.size.memoryBytes }
-        let more = typical.memoryBytes > 0 && typical.cpus <= maxCPUs ? Int(max(0, free) / typical.memoryBytes) : 0
+        // A type that takes nothing of the budget (a slot: its primary's memory) is
+        // limited by its cap alone.
+        let more = typical.memoryBytes == 0 ? max(0, (caps[platform] ?? 0) - mine.count)
+            : typical.cpus <= maxCPUs ? Int(max(0, free) / typical.memoryBytes) : 0
         var limit = mine.count + more
         if let cap = caps[platform] { limit = min(limit, cap) }
         return Capacity(platform: platform, limit: limit, leased: mine.count, cap: caps[platform],
@@ -362,6 +369,8 @@ extension ServerConfig {
         for (name, cap) in limits {
             if let platform = Platform(rawValue: name) { caps[platform] = max(0, cap) }
         }
+        // Slots, as many as the primary lends (without one, leaseSlot lends none).
+        if let slots = primary?.macos?.slots { caps[.mac] = slots }
         let memory = budget?.memoryGB.map { Int64(max(0, $0) * Double(1 << 30)) } ?? LeasePolicy.defaultMemory(memoryBytes)
         var estimates = LeasePolicy.defaultEstimates
         for (name, size) in sizes {

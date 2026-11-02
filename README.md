@@ -505,8 +505,22 @@ when it starts, at its own size, and holds it as a lease of its own (kind
 `primary`, holder `primary@oss`): its memory is the budget's, and it is one
 of the two macOS VMs Apple allows. It is checked every minute, and released
 and made again when it stops answering three times running or server.json's
-settings change; `release` refuses it (409, `primary`). Its slots (`mac`
-leases: a user of their own on it, and `oss machine xctest` there) come next.
+settings change; `release` refuses it (409, `primary`).
+
+Its slots are `mac` leases, as many at once as `slots` (its type's cap;
+they take nothing of the budget, the primary's memory being held already):
+
+```sh
+oss machine lease mac --wait     # a slot: a user of its own on the primary, in about a second
+oss machine release <id>         # its user deleted, with its files
+```
+
+A slot is a macOS user on the primary (`oss-<id>`), made at lease with an
+empty home and a login keychain of its own (its password the server's,
+unlocked; a user that never logs in has none otherwise), and deleted at
+release. It is reached through the API alone: no SSH or VNC of its own.
+`busy` while the primary is being made. `oss machine xctest` on a slot
+comes next.
 
 ### Self-hosted CI
 

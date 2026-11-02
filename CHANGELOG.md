@@ -8,7 +8,13 @@
   a lease of kind `primary` (holder `primary@oss`, its memory the budget's,
   one of macOS's two), checked every minute and made again when it stops
   answering or its settings change; the API won't release it. OS Monitor
-  shows it as Primary. Its slots, `mac` leases, come next.
+  shows it as Primary.
+- **Slots: `mac` leases** (API 17): a user of its own on the primary
+  (`oss-<id>`, an empty home and an unlocked login keychain whose password
+  the server derives), made in about a second and deleted at release; as
+  many at once as `primary.macos.slots` (the type's cap), taking nothing of
+  the budget. Released with their primary; a primary isn't replaced for new
+  settings while a slot of its is held.
 - **A CI runner keeps room for its job's VM**: runners that build hold
   their container (16 GB) while their jobs wait for a macOS VM, and four
   started at once held the memory their jobs' VMs needed, so none could

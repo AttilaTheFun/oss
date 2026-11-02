@@ -8,6 +8,10 @@ public enum Platform: String, Codable, CaseIterable, Sendable {
     /// on that Mac until API 9, to one anywhere since (but its mounts,
     /// which share the Mac's folders).
     case container
+    /// A slot on the server's primary macOS VM (API 17, docs/primary-vms.md):
+    /// a user of its own there, for tests and tools that need a Mac but not
+    /// a whole VM; reached through the API alone.
+    case mac
 
     public var isVM: Bool { self == .macos || self == .linux || self == .windows }
 }
@@ -378,6 +382,9 @@ public struct Lease: Codable, Sendable {
     public var build: String?
     /// The process building, whose life the place lasts.
     public var buildPID: Int32?
+    /// A slot's primary (API 17; a `mac` lease's): the lease of the primary
+    /// macOS VM it is a user on.
+    public var primary: String?
 
     public init(id: String, platform: Platform, config: String, name: String, holder: String, state: LeaseState,
                 created: Date, expires: Date, error: String? = nil, kind: LeaseKind? = nil, label: String? = nil, link: URL? = nil) {

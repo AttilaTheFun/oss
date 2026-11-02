@@ -1,5 +1,8 @@
 import Foundation
 import OSSClient
+#if canImport(CryptoKit)
+import CryptoKit
+#endif
 
 // The primary VMs (docs/primary-vms.md): the owner (2026-10-31, 2026-11-01,
 // 2026-11-02) wants the host Mac to run no tests or simulators of its own,
@@ -86,6 +89,9 @@ enum PrimaryPlan {
         }
         guard let lease else { return restartPending ? .none : .make }
         if lease.state == .creating { return .wait }
+        // Replaced for new settings only once no slot of its is held: a
+        // test running in one isn't ended for it.
+        if slots(of: lease.id, held).contains(where: { $0.state != .returning && $0.state != .failed }) { return .check(lease.id) }
         if lease.config != settings.config {
             return .release(lease.id, because: "its base is now \(settings.config), not \(lease.config)")
         }
@@ -93,5 +99,86 @@ enum PrimaryPlan {
             return .release(lease.id, because: "its size is now \(settings.cpus) CPUs and \(settings.memoryGigabytes) GB")
         }
         return .check(lease.id)
+    }
+}
+
+extension PrimaryPlan {
+    /// The slots (`mac` leases) on a primary.
+    static func slots(of primary: String, _ held: [Lease]) -> [Lease] {
+        held.filter { $0.platform == .mac && $0.primary == primary }
+    }
+
+    /// Slots whose primary is gone or going: released with it.
+    static func orphans(_ held: [Lease]) -> [Lease] {
+        let primaries = Set(held.filter { $0.kind == .primary && $0.state != .returning && $0.state != .failed }.map(\.id))
+        return held.filter { $0.platform == .mac && $0.state != .returning && $0.state != .failed && !primaries.contains($0.primary ?? "") }
+    }
+}
+
+/// A slot's user on the primary (docs/primary-vms.md): `oss-<lease>`, made
+/// at lease with a home and a login keychain of its own (a user that never
+/// logs in has none, and tests that keep a token need one), deleted with its
+/// files at release. Its scripts run on the primary as its guest user, who
+/// has sudo, through Guest.run: read from standard input, so the passwords
+/// in them are on no command line of the server's.
+enum SlotUser {
+    static func name(_ lease: String) -> String { "oss-\(lease)" }
+
+    static func keychain(_ lease: String) -> String { "/Users/\(name(lease))/Library/Keychains/login.keychain-db" }
+
+    /// The user made, its home, its keychain made, its default and unlocked
+    /// (no locking on sleep or idle). `password` is the user's own (it never
+    /// logs in), `keychainPassword` the server's for its keychain.
+    static func makeScript(lease: String, password: String, keychainPassword: String) -> String {
+        let user = name(lease)
+        return """
+            set -euo pipefail
+            user=\(user)
+            if ! id "$user" >/dev/null 2>&1; then
+                sudo sysadminctl -addUser "$user" -fullName "OS Server slot \(lease)" -password '\(password)' -home "/Users/$user" >/dev/null 2>&1
+            fi
+            sudo createhomedir -c -u "$user" >/dev/null
+            sudo -u "$user" -H mkdir -p "/Users/$user/Library/Keychains"
+            if [ ! -f '\(keychain(lease))' ]; then
+                sudo -u "$user" -H security create-keychain -p '\(keychainPassword)' '\(keychain(lease))'
+            fi
+            sudo -u "$user" -H security list-keychains -d user -s '\(keychain(lease))'
+            sudo -u "$user" -H security default-keychain -d user -s '\(keychain(lease))'
+            sudo -u "$user" -H security unlock-keychain -p '\(keychainPassword)' '\(keychain(lease))'
+            sudo -u "$user" -H security set-keychain-settings '\(keychain(lease))'
+            id "$user"
+            """
+    }
+
+    /// The user's processes ended, the user deleted, its home with it.
+    static func deleteScript(lease: String) -> String {
+        let user = name(lease)
+        return """
+            user=\(user)
+            sudo pkill -9 -u "$user" 2>/dev/null || true
+            if id "$user" >/dev/null 2>&1; then
+                sudo sysadminctl -deleteUser "$user" >/dev/null 2>&1 || sudo dscl . -delete "/Users/$user" || true
+            fi
+            sudo rm -rf "/Users/$user"
+            """
+    }
+}
+
+/// A slot's keychain password: derived from the server's management key and
+/// the lease (so it is kept nowhere, and shown to no one), the same each
+/// time it's asked, to unlock the keychain before a run.
+enum SlotSecrets {
+    static func keychainPassword(_ lease: String, key: String) -> String {
+        let secret = FileManager.default.contents(atPath: key) ?? Data(key.utf8)
+        #if canImport(CryptoKit)
+        let mac = HMAC<SHA256>.authenticationCode(for: Data("oss slot keychain \(lease)".utf8), using: SymmetricKey(data: secret))
+        return mac.map { String(format: "%02x", $0) }.joined()
+        #else
+        // FNV-1a over the key and the lease: steady (a hashValue isn't from
+        // one process to the next). No slot runs off a Mac.
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in secret + Data("oss slot keychain \(lease)".utf8) { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        return String(hash, radix: 16)
+        #endif
     }
 }

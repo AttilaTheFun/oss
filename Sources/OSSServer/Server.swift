@@ -268,7 +268,7 @@ actor MachineManager {
             }
             #endif
             return admission.policy.estimate(platform)
-        case .ios, .android:
+        case .ios, .android, .mac:
             return admission.policy.estimate(platform)
         }
     }
@@ -323,6 +323,8 @@ actor MachineManager {
         if request.platform != .ios, request.device != nil || request.runtime != nil {
             throw APIError(error: "a device type and runtime are for an iOS lease", code: "noDevice")
         }
+        // A slot: a user on the primary macOS VM, not a machine of its own.
+        if request.platform == .mac { return try leaseSlot(request, origin: origin) }
         let config = request.config ?? self.config.defaultConfig(request.platform)
         if let layer = request.build { return try leaseForBuild(request, layer: layer, config: config, local: local, origin: origin) }
         // Simulators that couldn't be listed are no answer about the base.
@@ -429,6 +431,10 @@ actor MachineManager {
     /// stops answering or isn't as server.json says (the next call makes it
     /// again). Called every minute.
     func keepPrimary() async {
+        // Slots whose primary is gone go too.
+        for slot in PrimaryPlan.orphans(Array(leases.values)) {
+            await release(slot.id, reason: "its primary macOS VM is gone")
+        }
         let settings = config.primary?.macos
         switch PrimaryPlan.step(settings, lendsMacOS: config.lends(.macos), restartPending: pendingRestart != nil,
                                 held: Array(leases.values)) {
@@ -493,6 +499,61 @@ actor MachineManager {
         return lease
     }
 
+    /// A slot on the primary macOS VM (a `mac` lease): admitted against
+    /// the slots the primary lends (its type's cap; its memory is the
+    /// primary's), then its user made there. Refused while there is no
+    /// primary ready (`busy` while one is being made, which `--wait` waits
+    /// through).
+    private func leaseSlot(_ request: LeaseRequest, origin: LeaseOrigin) throws -> Lease {
+        guard config.primary?.macos != nil, config.lends(.macos) else {
+            throw APIError(error: "this server keeps no primary macOS VM, so it lends no mac slots", code: "noPrimary")
+        }
+        guard let primary = PrimaryPlan.macos(Array(leases.values)), primary.state == .ready, primary.guestAddress != nil else {
+            throw APIError(error: "the primary macOS VM isn't ready yet: no mac slot until it is", code: "busy")
+        }
+        let size = try admit(request, config: primary.config)
+        let id = Random.hex(4)
+        let minutes = min(max(request.minutes ?? self.config.defaultMinutes, 1), self.config.maxMinutes)
+        var lease = Lease(id: id, platform: .mac, config: primary.config, name: SlotUser.name(id), holder: request.holder ?? "unknown",
+                          state: .creating, created: Date(), expires: Date().addingTimeInterval(TimeInterval(minutes * 60)))
+        lease.size = size
+        lease.primary = primary.id
+        lease.take(origin)
+        leases[id] = lease
+        save()
+        log("lease \(id): a slot on primary \(primary.id) (user \(SlotUser.name(id))) for \(lease.holder) (\(origin.kind.rawValue)), \(minutes) min")
+        Task {
+            do {
+                try await self.createSlot(id)
+            } catch {
+                log("lease \(id): failed: \(error)")
+                self.leases[id]?.error = "\(error)"
+                await self.release(id, reason: "failed")
+            }
+        }
+        return lease
+    }
+
+    /// The primary a slot is on, as a guest reached over SSH.
+    private func primaryGuest(of slot: Lease) -> Guest? {
+        guard let primary = slot.primary.flatMap({ leases[$0] }), let address = primary.guestAddress else { return nil }
+        return Guest(platform: .macos, address: address, user: config.guestUser, key: config.managementKey)
+    }
+
+    /// A slot's user made on its primary, with its home and keychain.
+    private func createSlot(_ id: String) async throws {
+        guard let lease = leases[id], let guest = primaryGuest(of: lease) else { throw APIError(error: "its primary macOS VM is gone") }
+        let script = SlotUser.makeScript(lease: id, password: Random.hex(16), keychainPassword: SlotSecrets.keychainPassword(id, key: config.managementKey))
+        let made = try await guest.run(script, timeout: 180)
+        guard made.ok else { throw APIError(error: "its user wasn't made on the primary: \(made.error.suffix(400))") }
+        guard leases[id]?.state == .creating else { _ = try? await guest.run(SlotUser.deleteScript(lease: id), timeout: 120); return }
+        leases[id]?.guestAddress = guest.address
+        leases[id]?.sshUser = SlotUser.name(id)
+        leases[id]?.state = .ready
+        save()
+        log("lease \(id): slot user \(SlotUser.name(id)) made on primary \(lease.primary ?? "?")")
+    }
+
     private func create(_ id: String, from base: Base, holderKey: String?, simulator: Simulators.Choice?) async {
         guard let lease = leases[id] else { return }
         do {
@@ -501,6 +562,7 @@ actor MachineManager {
             case .ios: try await createSimulator(id, lease: lease, base: base, choice: simulator)
             case .android: try await createEmulator(id, lease: lease, base: base)
             case .container: try await createContainer(id, lease: lease)
+            case .mac: try await createSlot(id)
             }
         } catch {
             log("lease \(id): failed: \(error)")
@@ -963,6 +1025,18 @@ actor MachineManager {
             if !leases.values.contains(where: { $0.platform == .android && $0.id != id }) { await Emulators.stopADB() }
         case .container:
             await containers?.stop(name: lease.name, spec: lease.container)
+        case .mac:
+            // Its user deleted on its primary, with its files (gone already if the primary is).
+            if let guest = primaryGuest(of: lease) {
+                let deleted = try? await guest.run(SlotUser.deleteScript(lease: id), timeout: 120)
+                if deleted?.ok != true { log("lease \(id): deleting slot user \(SlotUser.name(id)) failed: \(deleted?.error.suffix(300) ?? "no answer")") }
+            }
+        }
+        // A primary's slots go with it.
+        if lease.kind == .primary {
+            for slot in PrimaryPlan.slots(of: id, Array(leases.values)) where slot.state != .returning && slot.state != .failed {
+                await release(slot.id, reason: "its primary was released")
+            }
         }
         try? FileManager.default.removeItem(atPath: "\(Paths.uploads)/\(id)")
         if leases[id]?.error != nil {
@@ -1109,6 +1183,7 @@ actor MachineManager {
             #else
             throw APIError(error: "VM input needs a Mac server")
             #endif
+        case .mac: throw APIError(error: "a slot has no screen of its own: run tests with oss machine xctest")
         case .container: throw APIError(error: "a container has no screen: run commands in it with exec")
         }
     }
@@ -1155,6 +1230,7 @@ actor MachineManager {
         case .ios: return lease.udid.map { "\(NSHomeDirectory())/Library/Developer/CoreSimulator/Devices/\($0)" }
         case .android: return "\(config.androidAVDHome)/\(lease.name).avd"
         case .container: return containers?.directory(name: lease.name)
+        case .mac: return nil
         }
     }
 
@@ -1207,6 +1283,7 @@ actor MachineManager {
             guard let data = FileManager.default.contents(atPath: path) else { throw APIError(error: "no screenshot") }
             return data
         case .container: throw APIError(error: "a container has no screen")
+        case .mac: throw APIError(error: "a slot has no screen of its own")
         }
     }
 
@@ -1292,6 +1369,10 @@ actor MachineManager {
                 leases[lease.id] = lease
                 await reforwardContainer(lease.id)
                 lease = leases[lease.id] ?? lease
+            case .mac:
+                // A slot's user is on its primary's disk: kept, and released
+                // with it (keepPrimary's sweep) if its primary didn't come back.
+                break
             }
             leases[lease.id] = lease
             log("lease \(lease.id): recovered")
