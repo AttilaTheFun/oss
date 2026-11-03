@@ -477,8 +477,8 @@ actor MachineManager {
                 let lease = try await leasePrimaryMac(settings)
                 primaryTrouble = nil
                 primaryMisses = 0
-                log("primary: lease \(lease.id), macOS \(settings.config), \(settings.cpus) CPUs and \(settings.memoryGigabytes) GB, "
-                    + "\(settings.slots) slots")
+                log("primary: lease \(lease.id), macOS \(settings.config), \(settings.cpus) CPUs and \(settings.vmGigabytes) GB, "
+                    + "\(settings.slots) slots" + (settings.simulators > 0 ? ", \(settings.simulators) simulators" : ""))
             } catch {
                 // Said once until it changes: a busy budget is tried again each minute.
                 let said = "\(error)"
