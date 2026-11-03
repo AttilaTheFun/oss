@@ -438,6 +438,9 @@ actor MachineManager {
     /// none and would make a second primary beside the one being recovered
     /// (it did, on 2026-11-03's restart).
     private var recovered = false
+    /// The primary's setup (PrimaryMacSettings.setup) last run there, by
+    /// primary: a slot is lent once the current one has.
+    private var primarySetUp: [String: String] = [:]
 
     /// The primary macOS VM kept (PrimaryPlan.step): made where server.json
     /// has one and none is held, checked once it is ready, released when it
@@ -476,6 +479,7 @@ actor MachineManager {
             let guest = Guest(platform: .macos, address: address, user: config.guestUser, key: config.managementKey)
             if await guest.reachable() {
                 primaryMisses = 0
+                await setUpPrimary(id, guest: guest, settings: settings)
                 return
             }
             primaryMisses += 1
@@ -485,6 +489,30 @@ actor MachineManager {
                 await release(id, reason: "the primary VM stopped answering; made again")
             }
         }
+    }
+
+    /// The primary's setup run there, if it has one it hasn't run: said in
+    /// the log, tried again each minute while it fails.
+    private func setUpPrimary(_ id: String, guest: Guest, settings: PrimaryMacSettings?) async {
+        guard let script = settings?.setupScript, primarySetUp[id] != script else { return }
+        log("primary: lease \(id): its setup (\(settings?.setup.count ?? 0) lines)")
+        do {
+            let ran = try await guest.run(script, timeout: 3600)
+            guard ran.ok else {
+                log("primary: lease \(id): its setup failed: \(ran.error.suffix(400))")
+                return
+            }
+            primarySetUp[id] = script
+            log("primary: lease \(id): set up")
+        } catch {
+            log("primary: lease \(id): its setup failed: \(error)")
+        }
+    }
+
+    /// Whether `primary` has run its current setup (or has none).
+    private func primaryIsSetUp(_ primary: String) -> Bool {
+        guard let script = config.primary?.macos?.setupScript else { return true }
+        return primarySetUp[primary] == script
     }
 
     /// The primary macOS VM's lease: a clone of its base at its own size
@@ -524,6 +552,9 @@ actor MachineManager {
         }
         guard let primary = PrimaryPlan.macos(Array(leases.values)), primary.state == .ready, primary.guestAddress != nil else {
             throw APIError(error: "the primary macOS VM isn't ready yet: no mac slot until it is", code: "busy")
+        }
+        guard primaryIsSetUp(primary.id) else {
+            throw APIError(error: "the primary macOS VM is being set up (server.json's primary.macos.setup): no mac slot until it is", code: "busy")
         }
         let size = try admit(request, config: primary.config)
         let id = Random.hex(4)
