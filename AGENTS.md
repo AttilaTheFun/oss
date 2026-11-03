@@ -192,7 +192,24 @@ SSH, VNC and adb too. With no `client.json` it tries `127.0.0.1` only.
   container's network down with it (README.md, "The containers' network
   has one owner").
   A restart keeps the leases, starts again from its disk any machine
-  whose process is gone, and deletes clones nobody holds.
+  whose process is gone, and deletes clones nobody holds (but never one a
+  lease it can't read names, and none when `leases.json` can't be read at
+  all: SavedRecords.swift).
+- **Roll forward, never back.** A build older than the state it finds
+  can misread it: on 2026-11-02 a rollback to 5017d71 read `leases.json`
+  (holding a slot, platform `mac`, it didn't know) as empty and deleted an
+  agent's container, ending its session, and the primary VM. Builds since
+  then keep what they can't read, but one before them doesn't: undo a bad
+  change by reverting it on main and installing that build, never an
+  older one. If a rollback can't be avoided, copy `State/` aside first and
+  install no build older than the one that wrote it without moving
+  `leases.json` aside (its machines are then deleted: ask their holders
+  first). An agent's session container is a lease like any other.
+- **New values reach only the clients that read them.** A client decodes
+  each enum strictly: a platform, kind or state it doesn't know fails the
+  whole answer (Visor 0.43's `visor machine` said "no server answered"
+  when status listed `mac`). Gate each new value on the client's
+  `oss-api` level, as `visible()` does for containers (6) and slots (17).
 - Still ask before restarting or quitting OS Server while others hold
   leases: their machines go on, but the API and forwarded ports are gone
   until it's back.

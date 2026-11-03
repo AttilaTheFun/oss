@@ -78,23 +78,27 @@ extension Lease {
 }
 
 /// The leases as the server keeps them across its restarts
-/// (`State/leases.json`).
+/// (`State/leases.json`), read record by record (SavedRecords): a later
+/// build's lease is kept as it was written.
 enum LeaseFile {
-    static func write(_ leases: [Lease], to path: String) {
+    static func write(_ leases: [Lease], unread: [[String: Any]] = [], to path: String) {
         Paths.ensure((path as NSString).deletingLastPathComponent)
-        if let data = try? JSONEncoder.oss.encode(leases) {
+        if let data = SavedRecords<Lease>.encode(leases, unread: unread) {
             FileManager.default.createFile(atPath: path, contents: data, attributes: [.posixPermissions: 0o600])
         }
     }
 
     /// What was written; a lease saved before kinds (a server before API 8)
     /// gets the one its holder implies.
-    static func read(_ path: String) -> [Lease] {
-        let saved = FileManager.default.contents(atPath: path).flatMap { try? JSONDecoder.oss.decode([Lease].self, from: $0) } ?? []
-        return saved.map { lease in
+    static func readAll(_ path: String) -> SavedRecords<Lease> {
+        var saved = SavedRecords<Lease>.read(path, label: "leases")
+        saved.records = saved.records.map { lease in
             var lease = lease
             if lease.kind == nil { lease.kind = LeaseOrigin.kind(holder: lease.holder, platform: lease.platform) }
             return lease
         }
+        return saved
     }
+
+    static func read(_ path: String) -> [Lease] { readAll(path).records }
 }

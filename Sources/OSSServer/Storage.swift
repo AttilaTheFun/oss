@@ -75,6 +75,12 @@ actor StorageStore {
     nonisolated let config: StorageConfig
     private let statePath: String
     private var leases: [String: StorageLease]
+    /// Leases a later build saved that this one can't read (SavedRecords):
+    /// written back as they are, their objects kept.
+    private var unread: [[String: Any]] = []
+    /// The state file couldn't be read: nothing is deleted for want of a
+    /// lease while this server runs.
+    private var holdDeletes = false
     private var reading: [String: Int] = [:]
 
     init(directory: String = ServedFiles.directory, incoming: String = "\(Paths.files)/incoming",
@@ -89,19 +95,18 @@ actor StorageStore {
         for name in (try? FileManager.default.contentsOfDirectory(atPath: incoming)) ?? [] {
             try? FileManager.default.removeItem(atPath: "\(incoming)/\(name)")
         }
-        leases = Self.load(statePath: statePath, directory: directory)
+        let saved = Self.load(statePath: statePath, directory: directory)
+        leases = saved.records.reduce(into: [:]) { $0[$1.id] = $1 }
+        unread = saved.unread
+        holdDeletes = saved.unreadable
     }
 
     /// The saved leases. The first time (no file yet: a server from before
     /// storage), every file in the folder is a served one: one without an
     /// entry (none should be) is given one, so the sweep keeps it.
-    private static func load(statePath: String, directory: String) -> [String: StorageLease] {
-        if let data = FileManager.default.contents(atPath: statePath) {
-            guard let saved = try? JSONDecoder.oss.decode([StorageLease].self, from: data) else {
-                log("storage: \(statePath) is unreadable; starting with no leases")
-                return [:]
-            }
-            return saved.reduce(into: [:]) { $0[$1.id] = $1 }
+    private static func load(statePath: String, directory: String) -> SavedRecords<StorageLease> {
+        if FileManager.default.fileExists(atPath: statePath) {
+            return SavedRecords<StorageLease>.read(statePath, label: "storage")
         }
         for name in (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
         where ServedFiles.isHash(name) && !ServedFiles.isServed(name, in: directory) {
@@ -112,17 +117,17 @@ actor StorageStore {
             log("storage: \(name) was served before storage came; served still")
         }
         save([], to: statePath)
-        return [:]
+        return SavedRecords()
     }
 
-    private static func save(_ leases: [StorageLease], to path: String) {
+    private static func save(_ leases: [StorageLease], unread: [[String: Any]] = [], to path: String) {
         Paths.ensure((path as NSString).deletingLastPathComponent)
-        guard let data = try? JSONEncoder.oss.encode(leases.sorted { $0.created < $1.created }) else { return }
+        guard let data = SavedRecords<StorageLease>.encode(leases.sorted { $0.created < $1.created }, unread: unread) else { return }
         try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
         chmod(path, 0o600)
     }
 
-    private func save() { Self.save(Array(leases.values), to: statePath) }
+    private func save() { Self.save(Array(leases.values), unread: unread, to: statePath) }
 
     // MARK: Objects
 
@@ -301,8 +306,9 @@ actor StorageStore {
             log("storage: lease \(lease.id) (\(lease.holder)) expired")
         }
         if !expired.isEmpty { save() }
-        let held = Set(leases.values.map(\.sha256))
+        let held = Set(leases.values.map(\.sha256)).union(unread.compactMap { $0["sha256"] as? String })
         var deleted = 0
+        guard !holdDeletes else { return (expired.count, 0) }
         for name in (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
         where ServedFiles.isHash(name) && !held.contains(name) && reading[name] == nil && !isServed(name) {
             guard (try? FileManager.default.removeItem(atPath: path(name))) != nil else { continue }
