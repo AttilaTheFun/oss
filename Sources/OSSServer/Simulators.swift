@@ -16,8 +16,8 @@ enum Simulators {
         var runtime: String?
     }
 
-    static func devices() async throws -> [Device] {
-        let result = try await Shell.run("/usr/bin/xcrun", ["simctl", "list", "devices", "-j"], timeout: 60)
+    static func devices(on host: SimulatorHost = .local) async throws -> [Device] {
+        let result = try await host.simctl(["list", "devices", "-j"], timeout: 60)
         guard result.ok else { throw ShellError(description: "simctl list: \(result.error)") }
         struct List: Decodable { var devices: [String: [Device]] }
         let list = try JSONDecoder().decode(List.self, from: Data(result.output.utf8))
@@ -50,16 +50,16 @@ enum Simulators {
         var runtime: Runtime
     }
 
-    static func deviceTypes() async throws -> [DeviceType] {
+    static func deviceTypes(on host: SimulatorHost = .local) async throws -> [DeviceType] {
         struct List: Decodable { var devicetypes: [DeviceType] }
-        let listed = try await simctl(["list", "devicetypes", "-j"], timeout: 60)
+        let listed = try await host.simctl(["list", "devicetypes", "-j"], timeout: 60)
         guard listed.ok else { throw ShellError(description: "simctl list devicetypes: \(listed.error)") }
         return try JSONDecoder().decode(List.self, from: Data(listed.output.utf8)).devicetypes
     }
 
-    static func runtimes() async throws -> [Runtime] {
+    static func runtimes(on host: SimulatorHost = .local) async throws -> [Runtime] {
         struct List: Decodable { var runtimes: [Runtime] }
-        let listed = try await simctl(["list", "runtimes", "-j"], timeout: 60)
+        let listed = try await host.simctl(["list", "runtimes", "-j"], timeout: 60)
         guard listed.ok else { throw ShellError(description: "simctl list runtimes: \(listed.error)") }
         return try JSONDecoder().decode(List.self, from: Data(listed.output.utf8)).runtimes
     }
@@ -186,10 +186,10 @@ enum Simulators {
 
     /// A device's type and runtime by name, from simctl's lists: what a
     /// clone of a base is.
-    static func describe(udid: String) async -> (device: String?, runtime: String?) {
-        guard let device = try? await devices().first(where: { $0.udid == udid }) else { return (nil, nil) }
-        let type = (try? await deviceTypes())?.first { $0.identifier == device.deviceTypeIdentifier }
-        let runtime = (try? await runtimes())?.first { $0.identifier == device.runtime }
+    static func describe(udid: String, on host: SimulatorHost = .local) async -> (device: String?, runtime: String?) {
+        guard let device = try? await devices(on: host).first(where: { $0.udid == udid }) else { return (nil, nil) }
+        let type = (try? await deviceTypes(on: host))?.first { $0.identifier == device.deviceTypeIdentifier }
+        let runtime = (try? await runtimes(on: host))?.first { $0.identifier == device.runtime }
         return (type?.name, runtime?.name)
     }
 
@@ -208,8 +208,8 @@ enum Simulators {
         }
     }
 
-    static func simctl(_ arguments: [String], timeout: TimeInterval = 300) async throws -> ProcessResult {
-        try await Shell.run("/usr/bin/xcrun", ["simctl"] + arguments, timeout: timeout)
+    static func simctl(_ arguments: [String], timeout: TimeInterval = 300, on host: SimulatorHost = .local) async throws -> ProcessResult {
+        try await host.simctl(arguments, timeout: timeout)
     }
 
     /// A clone of the base, booted: its UDID.
@@ -233,13 +233,16 @@ enum Simulators {
     /// with its UDID in OSS_UDID, then (after a script) shut down and
     /// booted again, as a clone of the base boots. Its UDID; nothing is left
     /// of it when this fails.
-    static func create(name: String, choice: Choice, config: String) async throws -> String {
-        let made = try await simctl(["create", name, choice.deviceType.identifier, choice.runtime.identifier])
+    ///
+    /// On the primary (`host`), a config's script isn't run: it is a script
+    /// of the server's Mac, and the primary's simulators have no bases.
+    static func create(name: String, choice: Choice, config: String, on host: SimulatorHost = .local) async throws -> String {
+        let made = try await simctl(["create", name, choice.deviceType.identifier, choice.runtime.identifier], on: host)
         let udid = made.output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard made.ok, !udid.isEmpty else { throw APIError(error: "simctl create: \(made.error)") }
         do {
-            try await bootReady(udid)
-            if let script = setupScript(config: config) {
+            try await bootReady(udid, on: host)
+            if !host.isPrimary, let script = setupScript(config: config) {
                 guard FileManager.default.fileExists(atPath: script) else {
                     throw APIError(error: "\(script), which \(config)'s base was built with, is gone: build the base again "
                                         + "(oss image build ios \(config) …)")
@@ -256,16 +259,16 @@ enum Simulators {
             }
             return udid
         } catch {
-            await release(udid: udid)
+            await release(udid: udid, on: host)
             throw error
         }
     }
 
-    private static func bootReady(_ udid: String) async throws {
-        let boot = try await simctl(["boot", udid])
+    static func bootReady(_ udid: String, on host: SimulatorHost = .local) async throws {
+        let boot = try await simctl(["boot", udid], on: host)
         guard boot.ok else { throw APIError(error: "simctl boot: \(boot.error)") }
         // A new device's first boot sets it up: longer than a clone's.
-        let ready = try await simctl(["bootstatus", udid, "-b"], timeout: 900)
+        let ready = try await simctl(["bootstatus", udid, "-b"], timeout: 900, on: host)
         guard ready.ok else { throw APIError(error: "simctl bootstatus: \(ready.error)") }
     }
 
@@ -282,9 +285,9 @@ enum Simulators {
         return setup.script
     }
 
-    static func release(udid: String) async {
-        _ = try? await simctl(["shutdown", udid], timeout: 120)
-        _ = try? await simctl(["delete", udid], timeout: 120)
+    static func release(udid: String, on host: SimulatorHost = .local) async {
+        _ = try? await simctl(["shutdown", udid], timeout: 120, on: host)
+        _ = try? await simctl(["delete", udid], timeout: 120, on: host)
     }
 
     /// What a holder may run against its own simulator: the device's UDID
@@ -299,11 +302,17 @@ enum Simulators {
     /// (`oss machine simctl <id> status_bar clear` gives the live one back).
     /// An iPad's status bar shows the date beside the time: 9:41 on a fixed
     /// day (a Mac's simctl before it took a date gets 9:41 alone).
-    static func holdStatusBarStill(udid: String) async {
-        let rest = ["--dataNetwork", "wifi", "--wifiMode", "active", "--wifiBars", "3", "--cellularMode", "active", "--cellularBars", "4",
-                    "--operatorName", "", "--batteryState", "charged", "--batteryLevel", "100"]
-        if let dated = try? await simctl(["status_bar", udid, "override", "--time", stillTime] + rest, timeout: 60), dated.ok { return }
-        _ = try? await simctl(["status_bar", udid, "override", "--time", "9:41"] + rest, timeout: 60)
+    /// On the primary as here: its clock's time zone is the server's
+    /// (Guest.setTimeZone, when it was handed over), so 9:41 there is 9:41.
+    static func holdStatusBarStill(udid: String, on host: SimulatorHost = .local) async {
+        if let dated = try? await simctl(statusBarOverride(udid: udid, time: stillTime), timeout: 60, on: host), dated.ok { return }
+        _ = try? await simctl(statusBarOverride(udid: udid, time: "9:41"), timeout: 60, on: host)
+    }
+
+    /// simctl's arguments for the still status bar at `time`.
+    static func statusBarOverride(udid: String, time: String) -> [String] {
+        ["status_bar", udid, "override", "--time", time, "--dataNetwork", "wifi", "--wifiMode", "active", "--wifiBars", "3",
+         "--cellularMode", "active", "--cellularBars", "4", "--operatorName", "", "--batteryState", "charged", "--batteryLevel", "100"]
     }
 
     /// 9:41 on 9 January 2007 in this Mac's time zone (a simulator's), as
@@ -319,32 +328,69 @@ enum Simulators {
         return formatter.string(from: date)
     }
 
-    static func run(_ arguments: [String], udid: String) async throws -> ProcessResult {
+    static func run(_ arguments: [String], udid: String, on host: SimulatorHost = .local) async throws -> ProcessResult {
+        try await simctl(try holderArguments(arguments, udid: udid), on: host)
+    }
+
+    /// A holder's simctl arguments against its own simulator: its command
+    /// one of `allowed`, the UDID in place of `booted` or after the command.
+    static func holderArguments(_ arguments: [String], udid: String) throws -> [String] {
         guard let command = arguments.first, allowed.contains(command) else {
             throw APIError(error: "simctl \(arguments.first ?? ""): not allowed (allowed: \(allowed.sorted().joined(separator: ", ")))")
         }
         var rest = Array(arguments.dropFirst())
         if let booted = rest.firstIndex(of: "booted") { rest[booted] = udid } else { rest.insert(udid, at: 0) }
-        return try await simctl([command] + rest)
+        return [command] + rest
     }
 
     /// A device's screen scale (pixels a point), from its device type's
     /// profile: what turns a screenshot's pixels into the points input takes.
-    static func screenScale(udid: String) async throws -> Double {
-        guard let type = try await devices().first(where: { $0.udid == udid })?.deviceTypeIdentifier else {
+    /// Its `profile.plist`'s `mainScreenScale` where it has one, else its
+    /// `capabilities.plist`'s main screen's (Xcode 27's types have only that:
+    /// an iPad's 2, not the 3 taken where neither says). Kept by UDID: a
+    /// device's scale never changes.
+    static func screenScale(udid: String, on host: SimulatorHost = .local) async throws -> Double {
+        if let known = scales.withLock({ $0[udid] }) { return known }
+        guard let type = try await devices(on: host).first(where: { $0.udid == udid })?.deviceTypeIdentifier else {
             throw APIError(error: "no simulator \(udid)")
         }
         struct Types: Decodable { var devicetypes: [DeviceType] }
         struct DeviceType: Decodable { var identifier: String; var bundlePath: String? }
-        let listed = try await simctl(["list", "devicetypes", "-j"], timeout: 60)
+        let listed = try await host.simctl(["list", "devicetypes", "-j"], timeout: 60)
         let types = try JSONDecoder().decode(Types.self, from: Data(listed.output.utf8)).devicetypes
-        guard let bundle = types.first(where: { $0.identifier == type })?.bundlePath,
-              let profile = NSDictionary(contentsOfFile: "\(bundle)/Contents/Resources/profile.plist"),
-              let scale = (profile["mainScreenScale"] as? NSNumber)?.doubleValue, scale > 0 else { return 3 }
+        guard let bundle = types.first(where: { $0.identifier == type })?.bundlePath else { return 3 }
+        var scale: Double?
+        if host.isPrimary {
+            let read = try await host.run("/bin/sh", ["-c", scaleScript, "sh", bundle], timeout: 60)
+            scale = Double(read.output.trimmingCharacters(in: .whitespacesAndNewlines))
+        } else {
+            let profile = NSDictionary(contentsOfFile: "\(bundle)/Contents/Resources/profile.plist")
+            let capabilities = NSDictionary(contentsOfFile: "\(bundle)/Contents/Resources/capabilities.plist")
+            let screen = (capabilities?["capabilities"] as? NSDictionary)?["ScreenDimensionsCapability"] as? NSDictionary
+            scale = ((profile?["mainScreenScale"] ?? screen?["main-screen-scale"]) as? NSNumber)?.doubleValue
+        }
+        guard let scale, scale > 0 else { return 3 }
+        scales.withLock { $0[udid] = scale }
         return scale
     }
 
-    static func screenshot(udid: String) async throws -> Data {
+    private static let scales = Locked<[String: Double]>([:])
+
+    /// The scale read on the primary, as `screenScale` reads it here: its
+    /// device type's bundle is `$1`.
+    static let scaleScript = """
+        plutil -extract mainScreenScale raw -o - "$1/Contents/Resources/profile.plist" 2>/dev/null \\
+          || plutil -extract capabilities.ScreenDimensionsCapability.main-screen-scale raw -o - "$1/Contents/Resources/capabilities.plist"
+        """
+
+    static func screenshot(udid: String, on host: SimulatorHost = .local) async throws -> Data {
+        if host.isPrimary {
+            // Written on the primary, its bytes back on SSH's standard output (simctl's notes on its error).
+            let path = "/tmp/oss-sim-\(Random.hex(4)).png"
+            let result = try await host.run("/bin/sh", ["-c", screenshotScript, "sh", udid, path], timeout: 60)
+            guard result.ok, !result.data.isEmpty else { throw APIError(error: "simctl io screenshot: \(result.error)") }
+            return result.data
+        }
         let path = NSTemporaryDirectory() + "oss-sim-\(Random.hex(4)).png"
         defer { try? FileManager.default.removeItem(atPath: path) }
         // The corners and the Dynamic Island masked black: a fresh simulator
@@ -356,6 +402,13 @@ enum Simulators {
         }
         return data
     }
+
+    /// A screenshot on the primary (`$1` the UDID, `$2` a file of its
+    /// /tmp): masked as here, written there, its bytes on standard output,
+    /// the file deleted.
+    static let screenshotScript = """
+        /usr/bin/xcrun simctl io "$1" screenshot --mask=black "$2" 1>&2 && cat "$2"; s=$?; rm -f "$2"; exit $s
+        """
 
     /// A base made: a new simulator of that device type and runtime, booted
     /// once (its first boot's setup done), `script` run with its UDID in
@@ -392,5 +445,174 @@ enum Simulators {
         }
         _ = try await simctl(["shutdown", udid])
         log("\(name) is ready")
+    }
+}
+
+/// A value behind a lock, read and changed from any thread.
+final class Locked<Value>: @unchecked Sendable {
+    private var value: Value
+    private let lock = NSLock()
+
+    init(_ value: Value) { self.value = value }
+
+    func withLock<T>(_ body: (inout Value) throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(&value)
+    }
+}
+
+/// Where a lease's simulator runs (docs/primary-vms.md, "iOS: simulators in
+/// the primary"): the server's Mac, or the primary macOS VM, as its guest
+/// user (`runner`, an administrator, whose GUI session is logged in) over
+/// SSH. simctl needs no GUI session there: create, boot (headless), install,
+/// launch, `io screenshot`, `io recordVideo`, status_bar and AXe's input all
+/// run from SSH's (checked on an xcode_27_2 clone, 2026-11-03).
+struct SimulatorHost: Sendable {
+    /// The primary; nil: this Mac.
+    var guest: Guest?
+
+    static let local = SimulatorHost(guest: nil)
+
+    var isPrimary: Bool { guest != nil }
+
+    /// The primary's command line for a program and its arguments: each a
+    /// single-quoted word (SlotCommand.quote), read by the guest user's
+    /// login shell as given.
+    static func remoteLine(_ program: String, _ arguments: [String]) -> String {
+        SlotCommand.words([program] + arguments)
+    }
+
+    /// A program run to its end: here, or on the primary by SSH (its
+    /// output, error and status SSH's, which are the program's).
+    func run(_ program: String, _ arguments: [String], input: Data? = nil, timeout: TimeInterval) async throws -> ProcessResult {
+        guard let guest else { return try await Shell.run(program, arguments, input: input, timeout: timeout) }
+        return try await Shell.run("/usr/bin/ssh", guest.sshArguments(Self.remoteLine(program, arguments)), input: input, timeout: timeout)
+    }
+
+    func simctl(_ arguments: [String], timeout: TimeInterval = 300) async throws -> ProcessResult {
+        try await run("/usr/bin/xcrun", ["simctl"] + arguments, timeout: timeout)
+    }
+}
+
+/// The primary's simulators: what an `ios` lease is there, and the files
+/// and tools it takes there.
+enum PrimarySimulators {
+    /// Where a lease's files are on the primary (its uploads, installs and
+    /// test runs), the guest user's: deleted with the simulator.
+    static func folder(_ lease: String) -> String { "/Users/Shared/oss-ios/\(lease)" }
+
+    /// The device type and runtime of a lease that asks for neither: the
+    /// newest iOS runtime that runs `device` (server.json's
+    /// `primary.macos.simulatorDevice`, the server's own base's type until
+    /// now), else the newest; and that device, else that runtime's first
+    /// iPhone. Asked for (`device`, `runtime`), as on this Mac
+    /// (Simulators.pick), with the defaults standing in for the base's.
+    static func choose(device: String?, runtime: String?, preferred: String, types: [Simulators.DeviceType],
+                       runtimes: [Simulators.Runtime]) throws -> Simulators.Choice {
+        let ios = runtimes.filter { $0.isAvailable != false && ($0.platform == "iOS" || $0.identifier.contains(".SimRuntime.iOS-")) }
+        let preferredType = types.first { $0.name == preferred || $0.identifier == preferred }
+        // Newest first: by version, then the one that runs the most types (Xcode 27.2's
+        // runtime of one device type beside its version's own).
+        func newer(_ a: Simulators.Runtime, _ b: Simulators.Runtime) -> Bool {
+            let (va, vb) = (versionParts(a.version), versionParts(b.version))
+            if va != vb { return va.lexicographicallyPrecedes(vb) == false }
+            return (a.supportedDeviceTypes?.count ?? .max) > (b.supportedDeviceTypes?.count ?? .max)
+        }
+        let newest = ios.sorted(by: newer)
+        let baseRuntime = (preferredType.flatMap { type in newest.first { Simulators.runs(type, on: $0) } } ?? newest.first)
+        let baseType = preferredType.flatMap { type in baseRuntime.map { Simulators.runs(type, on: $0) } == true ? type : nil }
+            ?? baseRuntime.flatMap { runtime in types.first { $0.productFamily == "iPhone" && Simulators.runs($0, on: runtime) } }
+        return try Simulators.pick(device: device, runtime: runtime, baseType: baseType?.identifier, baseRuntime: baseRuntime?.identifier,
+                                   types: types, runtimes: runtimes)
+    }
+
+    private static func versionParts(_ version: String?) -> [Int] {
+        (version ?? "").split(separator: ".").map { Int($0) ?? 0 }
+    }
+
+    /// A holder's `@name` arguments (its uploads on the server's Mac) as
+    /// the primary has them: under the lease's folder there, each one's
+    /// path. Arguments that aren't `@name` are as given. A name that climbs
+    /// out (`..`) or is absolute is refused: only the lease's own uploads go.
+    static func remoteArguments(_ arguments: [String], lease: String) throws -> (arguments: [String], files: [String]) {
+        var files: [String] = []
+        let mapped = try arguments.map { argument -> String in
+            guard argument.hasPrefix("@"), argument.count > 1 else { return argument }
+            let name = String(argument.dropFirst())
+            guard !name.hasPrefix("/"), !name.split(separator: "/").contains("..") else {
+                throw APIError(error: "\(argument): a file of the lease's uploads, by its name")
+            }
+            if !files.contains(name) { files.append(name) }
+            return "\(folder(lease))/files/\(name)"
+        }
+        return (mapped, files)
+    }
+
+    /// The command line that unpacks a tarball (on standard input) into a
+    /// folder on the primary, made first: the files of a command, an app to
+    /// install, a test run's folder.
+    static func untarLine(into directory: String) -> String {
+        "mkdir -p \(SlotCommand.quote(directory)) && tar -xzf - -C \(SlotCommand.quote(directory))"
+    }
+
+    /// Files and folders of this Mac's `directory` sent into the primary's
+    /// `remote` (tar over SSH, made there first).
+    static func send(_ names: [String], from directory: String, to remote: String, guest: Guest, timeout: TimeInterval = 1800) async throws {
+        guard !names.isEmpty else { return }
+        let sent = try await Shell.run("/bin/bash", ["-c", "set -o pipefail; cd \"$1\" && tar -cz -- \"${@:3:$2}\" | /usr/bin/ssh \"${@:$(($2 + 3))}\"",
+                                                     "bash", directory, String(names.count)] + names
+                                        + guest.sshArguments(untarLine(into: remote)), timeout: timeout)
+        guard sent.ok else { throw APIError(error: "copying to the primary: \(sent.error.suffix(300))") }
+    }
+
+    /// The lease's folder and simulator gone from the primary: what release
+    /// and a sweep run there.
+    static func deleteLine(lease: String, udid: String?) -> String {
+        var lines: [String] = []
+        if let udid {
+            let quoted = SlotCommand.quote(udid)
+            lines += ["/usr/bin/xcrun simctl shutdown \(quoted) >/dev/null 2>&1", "/usr/bin/xcrun simctl delete \(quoted) >/dev/null 2>&1"]
+        }
+        lines.append("rm -rf \(SlotCommand.quote(folder(lease)))")
+        return lines.joined(separator: "; ") + "; exit 0"
+    }
+
+    /// The primary's simulators no lease holds: named as a lease's
+    /// (`oss-lease-ios-…`), but not one of `held`'s names.
+    static func strays(_ devices: [Simulators.Device], held names: Set<String>) -> [Simulators.Device] {
+        devices.filter { $0.name.hasPrefix("oss-lease-ios-") && !names.contains($0.name) }
+    }
+
+    // MARK: AXe on the primary
+
+    /// Where AXe is on the primary: the server's own copy (OS Server.app's
+    /// Helpers/axe, its frameworks beside it), sent there at its first use
+    /// and again when the server's changes, kept in the guest user's home.
+    static let axeFolder = ".oss/axe"
+
+    /// The primary's AXe is this one (its executable's size and time here):
+    /// written beside it there, and checked before each input.
+    static func axeStamp(_ executable: String) -> String? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: executable),
+              let size = (attributes[.size] as? NSNumber)?.int64Value,
+              let date = attributes[.modificationDate] as? Date else { return nil }
+        return "\(size)-\(Int(date.timeIntervalSince1970))"
+    }
+
+    /// AXe's own folder on this Mac (Helpers/axe: the executable and its Frameworks).
+    static func axeDirectory(_ executable: String) -> String {
+        URL(fileURLWithPath: executable).resolvingSymlinksInPath().deletingLastPathComponent().path
+    }
+
+    /// The command line that says whether the primary's AXe is `stamp`'s.
+    static func axeCheckLine(stamp: String) -> String {
+        "test \"$(cat \(axeFolder)/stamp 2>/dev/null)\" = \(SlotCommand.quote(stamp)) && test -x \(axeFolder)/axe"
+    }
+
+    /// The command line that takes AXe's folder (a tarball on standard
+    /// input) in place of the last, its stamp written last.
+    static func axeInstallLine(stamp: String) -> String {
+        "rm -rf \(axeFolder) && mkdir -p \(axeFolder) && tar -xzf - -C \(axeFolder) && echo \(SlotCommand.quote(stamp)) > \(axeFolder)/stamp"
     }
 }

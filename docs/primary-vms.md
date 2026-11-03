@@ -155,22 +155,48 @@ that session's screen:
   the app run by `exec --gui`, its windows pictured by `screenshot
   --window`.
 
-### iOS: simulators in the primary
+### iOS: simulators in the primary (opt-in)
 
-`ios` leases move from the server's Mac into the primary: the same lease,
-verbs and grants (`simctl`, `install`, `xctest`, `screenshot`, `tap`), a
-simulator of the primary's own Xcode, run by its guest user, booted
-headless. The server's Mac then runs no simulators (the owner,
-2026-10-31: no tests or simulators on the host).
+`ios` leases move from the server's Mac into the primary where
+server.json's `primary.macos.simulators` is above 0 (0, the default,
+keeps the Mac's): the same lease, verbs, grants and MCP tools (`simctl`,
+`install`, `xctest` plain and `--ui`, `screenshot`, `tap`/`swipe`/`type`/
+`key`, `record`), a simulator of the primary's own Xcode, run by its guest
+user (`runner`) over SSH, booted headless: simctl needs no GUI session
+there for create, boot, install, launch, `io screenshot`, `io
+recordVideo`, status_bar or AXe's input (checked on an `xcode_27_2` clone,
+2026-11-03).
 
-- **Screenshot**: `xcrun simctl io <udid> screenshot --mask=black`, with
-  the status bar held still as now (OS Server 0.7's override, applied in
-  the primary).
-- **Recording**: `xcrun simctl io <udid> recordVideo --codec=h264`, ended by
-  SIGINT, the file brought back.
-- **Room**: a simulator takes about 2 GB, and the primary's memory is the
-  budget's: the primary grows to 32 GB with `primary.macos.simulators` (4
-  at once by default) beside its slots. Still one of the two macOS VMs.
+- **Room**: at most `simulators` at once (the `ios` cap), taking nothing
+  of the budget: the primary grows by 2 GB a simulator (24 + 4 × 2 = 32
+  GB). Still one of the two macOS VMs. A primary whose size or base no
+  longer matches server.json lends nothing new (slots or simulators) and
+  is replaced once what lives in it has ended.
+- **A lease**: a new simulator there, `oss-lease-ios-<id>`, of the device
+  asked for or `primary.macos.simulatorDevice` (`iPhone 17 Pro`, the
+  server's own base's type until now) on the newest runtime that runs it;
+  about 45 s (no bases to clone). Its files (uploads a command names, apps
+  to install, test runs) are copied into `/Users/Shared/oss-ios/<id>` there
+  by tar over SSH; it and its folder are deleted at release.
+- **Screenshot**: `xcrun simctl io <udid> screenshot --mask=black` there,
+  its bytes back over SSH, with the status bar held still as on the Mac
+  (the primary's clock is in the server's time zone).
+- **Recording**: `xcrun simctl io <udid> recordVideo --codec=h264` there,
+  ended by `pkill -INT` matching its file, the file brought back.
+- **Input**: AXe, OS Server.app's own copy, sent to the primary's
+  `~/.oss/axe` at its first use (and again when the server's changes).
+- **xctest**: the run's folder made ready on the server's Mac (its
+  .xctestrun naming the primary's Xcode and folder), copied there, a UI
+  test's runner made there from the primary's Xcode, `xcodebuild
+  test-without-building` there against the lease's simulator, the result
+  bundle copied back for JUnit.
+- **Restarts**: an `ios` lease in the primary is kept, and released with
+  the primary if it didn't come back; one shut down (the primary started
+  again from its disk) is booted again; simulators there named as a lease's
+  that no lease holds are deleted, each minute's check.
+- Leases already on the Mac when it is turned on stay there until they
+  end. Once every server's simulators are in the primary, the Mac's path
+  (its bases, `oss image build ios`) can go.
 
 ### Android: emulators on the server's Mac until the Linux primary
 
@@ -194,8 +220,10 @@ recordings.
 
 ## Then
 
-1. Screenshots and recordings on every lease that shows something (above).
-2. iOS leases move into the primary (above).
+1. Screenshots and recordings on every lease that shows something: done
+   (API 19, #97).
+2. iOS leases move into the primary: done, opt-in (above); the host's
+   simulators go once it is on everywhere.
 3. The Linux primary (Linux apps, Android emulators) and the Windows one,
    with the Mac Studio.
 4. CI's `ci` kind is refused whole GUI VMs: done in practice for oss,

@@ -158,12 +158,19 @@ actor MachineManager {
         let own: [Base] = []
         #endif
         let utm = !config.useUTM ? [] : knownVMBases.filter { base in !own.contains { $0.platform == base.platform && $0.config == base.config } }
-        let simulators = config.lends(.ios) ? await Simulators.bases() : []
+        let simulators = !config.lends(.ios) ? [] : simulatorsInPrimary ? [primarySimulatorBase] : await Simulators.bases()
         let emulators = config.lends(.android) ? Emulators.bases(config) : []
         let all = own + utm + simulators + emulators + containerBases
         knownBases = all.filter { $0.config != "base" && config.lends($0.platform) }
             .sorted { ($0.platform.rawValue, $0.config) < ($1.platform.rawValue, $1.config) }
     }
+
+    /// New `ios` leases' simulators are the primary's (PrimaryPlan.simulatorsInPrimary).
+    private var simulatorsInPrimary: Bool { PrimaryPlan.simulatorsInPrimary(config.primary?.macos, lendsMacOS: config.lends(.macos)) }
+
+    /// The primary's simulators have no bases: one config, the server's
+    /// default for iOS, made fresh each lease of its device type and runtime.
+    private var primarySimulatorBase: Base { Base(platform: .ios, config: config.defaultConfig(.ios)) }
 
     /// Containers have one base, Linux on this Mac's CPU: what they run is
     /// the image each lease names.
@@ -173,7 +180,9 @@ actor MachineManager {
 
     private func findBase(_ platform: Platform, _ config: String) async -> Base? {
         switch platform {
-        case .ios: return await Simulators.bases().first { $0.config == config }
+        case .ios:
+            if simulatorsInPrimary { return primarySimulatorBase.config == config ? primarySimulatorBase : nil }
+            return await Simulators.bases().first { $0.config == config }
         case .android: return Emulators.bases(self.config).first { $0.config == config }
         case .container: return containerBases.first { $0.config == config }
         default:
@@ -339,6 +348,8 @@ actor MachineManager {
         if request.platform == .mac { return try leaseSlot(request, origin: origin) }
         let config = request.config ?? self.config.defaultConfig(request.platform)
         if let layer = request.build { return try leaseForBuild(request, layer: layer, config: config, local: local, origin: origin) }
+        // A simulator in the primary macOS VM, not on this Mac.
+        if request.platform == .ios, simulatorsInPrimary { return try await leasePrimarySimulator(request, config: config, origin: origin) }
         // Simulators that couldn't be listed are no answer about the base.
         if request.platform == .ios, case .failure(let error) = await Simulators.inventory() {
             log("an ios lease refused: simctl couldn't list the simulators: \(error)")
@@ -483,6 +494,9 @@ actor MachineManager {
             if await guest.reachable() {
                 primaryMisses = 0
                 await setUpPrimary(id, guest: guest, settings: settings)
+                if (settings?.simulators ?? 0) > 0 || PrimaryPlan.tenants(of: id, Array(leases.values)).contains(where: { $0.platform == .ios }) {
+                    await keepPrimarySimulators(id, guest: guest)
+                }
                 return
             }
             primaryMisses += 1
@@ -537,7 +551,7 @@ actor MachineManager {
         lease.sshUser = config.guestUser
         lease.size = size
         lease.kind = .primary
-        lease.label = "Primary macOS VM: \(settings.slots) slots"
+        lease.label = settings.label
         leases[id] = lease
         save()
         Task { await self.create(id, from: base, holderKey: nil, simulator: nil) }
@@ -558,6 +572,9 @@ actor MachineManager {
         }
         guard primaryIsSetUp(primary.id) else {
             throw APIError(error: "the primary macOS VM is being set up (server.json's primary.macos.setup): no mac slot until it is", code: "busy")
+        }
+        if let settings = config.primary?.macos, let why = PrimaryPlan.outdated(primary, settings) {
+            throw APIError(error: "the primary macOS VM is being replaced (\(why)): no mac slot until its new one is ready", code: "busy")
         }
         let size = try admit(request, config: primary.config)
         let id = Random.hex(4)
@@ -580,6 +597,132 @@ actor MachineManager {
             }
         }
         return lease
+    }
+
+    /// An `ios` lease whose simulator is the primary's (docs/primary-vms.md,
+    /// "iOS: simulators in the primary"): its device type and runtime chosen
+    /// from the primary's Xcode (one it hasn't got refused before anything's
+    /// made), admitted against `primary.macos.simulators` (the type's cap;
+    /// its memory is the primary's), then made there. Refused while there
+    /// is no primary ready (`busy`, which `--wait` waits through).
+    private func leasePrimarySimulator(_ request: LeaseRequest, config: String, origin: LeaseOrigin) async throws -> Lease {
+        guard let settings = self.config.primary?.macos else { throw APIError(error: "this server keeps no primary macOS VM", code: "noPrimary") }
+        guard config == primarySimulatorBase.config else {
+            throw APIError(error: "no ios base \(config): the primary's simulators have one config, \(primarySimulatorBase.config) "
+                                + "(another device type is --device, another runtime --runtime)")
+        }
+        func readyPrimary() throws -> (Lease, Guest) {
+            guard let primary = PrimaryPlan.macos(Array(leases.values)), primary.state == .ready, let guest = primaryGuest(of: primary.id) else {
+                throw APIError(error: "the primary macOS VM isn't ready yet: no ios lease until it is", code: "busy")
+            }
+            guard primaryIsSetUp(primary.id) else {
+                throw APIError(error: "the primary macOS VM is being set up (server.json's primary.macos.setup): no ios lease until it is", code: "busy")
+            }
+            if let why = PrimaryPlan.outdated(primary, settings) {
+                throw APIError(error: "the primary macOS VM is being replaced (\(why)): no ios lease until its new one is ready", code: "busy")
+            }
+            return (primary, guest)
+        }
+        let (_, guest) = try readyPrimary()
+        let host = SimulatorHost(guest: guest)
+        let choice: Simulators.Choice
+        do {
+            choice = try PrimarySimulators.choose(device: request.device, runtime: request.runtime, preferred: settings.simulatorDevice,
+                                                  types: try await Simulators.deviceTypes(on: host), runtimes: try await Simulators.runtimes(on: host))
+        } catch let error as APIError {
+            throw error
+        } catch {
+            throw APIError(error: "the primary's simulators couldn't be listed (\(error)): no ios lease until simctl answers there", code: "noInventory")
+        }
+        // The primary again (it may have gone while simctl answered); from here nothing awaits until the lease is in `leases`.
+        let (primary, _) = try readyPrimary()
+        let size = try admit(request, config: config)
+        let id = Random.hex(4)
+        let minutes = min(max(request.minutes ?? self.config.defaultMinutes, 1), self.config.maxMinutes)
+        var lease = Lease(id: id, platform: .ios, config: config, name: "oss-lease-ios-\(id)", holder: request.holder ?? "unknown",
+                          state: .creating, created: Date(), expires: Date().addingTimeInterval(TimeInterval(minutes * 60)))
+        lease.size = size
+        lease.primary = primary.id
+        lease.device = choice.deviceType.name
+        lease.runtime = choice.runtime.name
+        lease.take(origin)
+        leases[id] = lease
+        save()
+        log("lease \(id): \(choice.deviceType.name) on \(choice.runtime.name) in primary \(primary.id) for \(lease.holder) "
+            + "(\(origin.kind.rawValue)), \(minutes) min")
+        Task {
+            do {
+                try await self.createPrimarySimulator(id, choice: choice)
+            } catch {
+                log("lease \(id): failed: \(error)")
+                self.leases[id]?.error = "\(error)"
+                await self.release(id, reason: "failed")
+            }
+        }
+        return lease
+    }
+
+    /// A lease's simulator made in its primary: created and booted there
+    /// (headless, as its guest user), its status bar held still.
+    private func createPrimarySimulator(_ id: String, choice: Simulators.Choice) async throws {
+        guard let lease = leases[id], let guest = primaryGuest(of: lease) else { throw APIError(error: "its primary macOS VM is gone") }
+        let host = SimulatorHost(guest: guest)
+        let udid = try await Simulators.create(name: lease.name, choice: choice, config: lease.config, on: host)
+        leases[id]?.udid = udid
+        // Released meanwhile: release found no UDID, so its simulator goes here.
+        guard leases[id]?.state == .creating else {
+            _ = try? await host.run("/bin/sh", ["-c", PrimarySimulators.deleteLine(lease: id, udid: udid)], timeout: 180)
+            return
+        }
+        await Simulators.holdStatusBarStill(udid: udid, on: host)
+        leases[id]?.state = .ready
+        save()
+        log("lease \(id): simulator \(udid) booted in primary \(lease.primary ?? "?")")
+    }
+
+    /// Where a lease's simulator is: this Mac, or (one with a primary) its
+    /// primary, while that is there.
+    func simulatorHost(of lease: Lease) throws -> SimulatorHost {
+        guard lease.primary != nil else { return .local }
+        guard let guest = primaryGuest(of: lease) else {
+            throw APIError(error: "lease \(lease.id)'s primary macOS VM is gone (or not ready)", code: "notReady")
+        }
+        return SimulatorHost(guest: guest)
+    }
+
+    /// The primary a lease is in (a slot's, or a simulator's), as a guest reached over SSH.
+    func primaryGuest(ofLease id: String) -> Guest? { leases[id].flatMap { primaryGuest(of: $0) } }
+
+    /// A primary, by its lease, as a guest reached over SSH.
+    private func primaryGuest(of primary: String) -> Guest? {
+        guard let lease = leases[primary], let address = lease.guestAddress else { return nil }
+        return Guest(platform: .macos, address: address, user: config.guestUser, key: config.managementKey)
+    }
+
+    /// The primary's simulators kept as its leases have them (each check):
+    /// those no lease holds deleted, with their folders; those held but
+    /// shut down (the primary started again from its disk) booted again,
+    /// their status bars held still.
+    private func keepPrimarySimulators(_ id: String, guest: Guest) async {
+        let host = SimulatorHost(guest: guest)
+        guard let devices = try? await Simulators.devices(on: host) else { return }
+        let held = PrimaryPlan.tenants(of: id, Array(leases.values)).filter { $0.platform == .ios && $0.state != .failed }
+        let unread = Set(unreadLeases.compactMap { $0["name"] as? String })
+        for device in PrimarySimulators.strays(devices, held: Set(held.map(\.name)).union(unread)) {
+            log("primary: deleting simulator \(device.name): no lease holds it")
+            let lease = String(device.name.dropFirst("oss-lease-ios-".count))
+            _ = try? await host.run("/bin/sh", ["-c", PrimarySimulators.deleteLine(lease: lease, udid: device.udid)], timeout: 180)
+        }
+        for lease in held where lease.state == .ready {
+            guard let device = devices.first(where: { $0.udid == lease.udid }), device.state == "Shutdown" else { continue }
+            log("lease \(lease.id): its simulator was shut down (its primary started again); booting it")
+            do {
+                try await Simulators.bootReady(device.udid, on: host)
+                await Simulators.holdStatusBarStill(udid: device.udid, on: host)
+            } catch {
+                log("lease \(lease.id): booting its simulator again failed: \(error)")
+            }
+        }
     }
 
     /// The primary a slot is on, as a guest reached over SSH.
@@ -1076,7 +1219,16 @@ actor MachineManager {
         case .ios:
             // Its tests stopped first (their simulator is going), their files deleted.
             await xctests.forget(id)
-            if let udid = lease.udid { await Simulators.release(udid: udid) }
+            if lease.primary != nil {
+                // In its primary: its simulator and folder there (gone already if the primary is).
+                if let guest = primaryGuest(of: lease) {
+                    let deleted = try? await SimulatorHost(guest: guest).run("/bin/sh", ["-c", PrimarySimulators.deleteLine(lease: id, udid: lease.udid)],
+                                                                            timeout: 180)
+                    if deleted?.ok != true { log("lease \(id): deleting its simulator in the primary failed: \(deleted?.error.suffix(300) ?? "no answer")") }
+                }
+            } else if let udid = lease.udid {
+                await Simulators.release(udid: udid)
+            }
         case .android:
             await Emulators.release(name: lease.name, port: lease.consolePort, pid: lease.emulatorPID)
             // The last emulator gone: oss's adb server too (the next lease starts it again).
@@ -1092,10 +1244,10 @@ actor MachineManager {
                 if deleted?.ok != true { log("lease \(id): deleting slot user \(SlotUser.name(id)) failed: \(deleted?.error.suffix(300) ?? "no answer")") }
             }
         }
-        // A primary's slots go with it.
+        // A primary's slots and simulators go with it.
         if lease.kind == .primary {
-            for slot in PrimaryPlan.slots(of: id, Array(leases.values)) where slot.state != .returning && slot.state != .failed {
-                await release(slot.id, reason: "its primary was released")
+            for tenant in PrimaryPlan.tenants(of: id, Array(leases.values)) where tenant.state != .returning && tenant.state != .failed {
+                await release(tenant.id, reason: "its primary was released")
             }
         }
         try? FileManager.default.removeItem(atPath: "\(Paths.uploads)/\(id)")
@@ -1232,7 +1384,7 @@ actor MachineManager {
         try MachineInput.check(request)
         switch lease.platform {
         case .android: try await MachineInput.android(request, port: lease.consolePort ?? 0)
-        case .ios: try await MachineInput.simulator(request, udid: lease.udid ?? "")
+        case .ios: try await MachineInput.simulator(request, udid: lease.udid ?? "", on: try simulatorHost(of: lease))
         case .macos, .linux, .windows:
             #if canImport(CommonCrypto)
             // The guest's VNC directly, as screenshots: macOS's Screen Sharing, or QEMU's on loopback.
@@ -1287,7 +1439,10 @@ actor MachineManager {
             }
             #endif
             return "\(NSHomeDirectory())/Library/Containers/com.utmapp.UTM/Data/Documents/\(lease.name).utm"
-        case .ios: return lease.udid.map { "\(NSHomeDirectory())/Library/Developer/CoreSimulator/Devices/\($0)" }
+        case .ios:
+            // One in the primary is on the primary's disk.
+            guard lease.primary == nil else { return nil }
+            return lease.udid.map { "\(NSHomeDirectory())/Library/Developer/CoreSimulator/Devices/\($0)" }
         case .android: return "\(config.androidAVDHome)/\(lease.name).avd"
         case .container: return containers?.directory(name: lease.name)
         case .mac: return nil
@@ -1304,6 +1459,15 @@ actor MachineManager {
         }
         let result: ProcessResult
         switch lease.platform {
+        case .ios where lease.primary != nil:
+            // In the primary: the files it names (`@name`) copied into its folder there first.
+            let host = try simulatorHost(of: lease)
+            let (remote, files) = try PrimarySimulators.remoteArguments(arguments, lease: id)
+            let checked = try Simulators.holderArguments(remote, udid: lease.udid ?? "")
+            if let guest = host.guest {
+                try await PrimarySimulators.send(files, from: "\(Paths.uploads)/\(id)", to: "\(PrimarySimulators.folder(id))/files", guest: guest)
+            }
+            result = try await Simulators.simctl(checked, on: host)
         case .ios: result = try await Simulators.run(resolved, udid: lease.udid ?? "")
         case .android: result = try await Emulators.run(resolved, port: lease.consolePort ?? 0)
         default: throw APIError(error: "\(lease.platform.rawValue) leases take \(lease.platform == .container ? "exec" : "SSH"), not device commands")
@@ -1336,7 +1500,7 @@ actor MachineManager {
             throw APIError(error: "--window is a Mac slot's (an app's window on its primary): a \(lease.platform.rawValue) lease's picture is its whole screen")
         }
         switch lease.platform {
-        case .ios: return try await Simulators.screenshot(udid: lease.udid ?? "")
+        case .ios: return try await Simulators.screenshot(udid: lease.udid ?? "", on: try simulatorHost(of: lease))
         case .android: return try await Emulators.screenshot(port: lease.consolePort ?? 0)
         case .macos, .linux, .windows, .mac:
             #if canImport(CommonCrypto)
@@ -1414,7 +1578,7 @@ actor MachineManager {
         do {
             switch lease.platform {
             case .ios:
-                recorder = try await SimulatorRecorder.start(udid: lease.udid ?? "", folder: folder)
+                recorder = try await SimulatorRecorder.start(udid: lease.udid ?? "", folder: folder, on: try simulatorHost(of: lease))
             case .android:
                 recorder = try await EmulatorRecorder.start(config: config, port: lease.consolePort ?? 0, lease: id, folder: folder)
             default:
@@ -1532,7 +1696,11 @@ actor MachineManager {
                 }
                 lease.guestAddress = address
             case .ios:
-                guard simulators.contains(where: { $0.udid == lease.udid && $0.state == "Booted" }) else { continue }
+                // One in a primary is on its disk: kept, and released with it (keepPrimary's
+                // sweep) if its primary didn't come back; booted again there if it is shut down.
+                if lease.primary == nil {
+                    guard simulators.contains(where: { $0.udid == lease.udid && $0.state == "Booted" }) else { continue }
+                }
             case .android:
                 guard let pid = lease.emulatorPID, kill(pid, 0) == 0, let console = lease.consolePort, let adb = lease.adbPort,
                       let forwarder = try? Forwarder(port: adb, target: "127.0.0.1", targetPort: console + 1) else { continue }

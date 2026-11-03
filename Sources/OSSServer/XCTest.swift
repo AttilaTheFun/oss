@@ -409,7 +409,12 @@ enum XCTestFolder {
     }
 
     /// `tests` and `host`: the archives (zips), as the store keeps them.
-    static func prepare(tests: String, host: String?, ui: Bool, in folder: String, developerDirectory: String) async throws -> Prepared {
+    /// `primary`: the run is a simulator's in the primary, where its folder
+    /// will be `primary.folder` and its Xcode is `developerDirectory`: its
+    /// .xctestrun names them, and a UI test's runner is made there
+    /// (PrimaryXCTest.runnerScript), from that Xcode, not here.
+    static func prepare(tests: String, host: String?, ui: Bool, in folder: String, developerDirectory: String,
+                        primary: (folder: String, testingFramework: Bool)? = nil) async throws -> Prepared {
         guard host != nil || !ui else { throw APIError(error: "a UI test needs its host: the app it drives (an .ipa or a zipped .app)") }
         let manager = FileManager.default
         try manager.createDirectory(atPath: folder, withIntermediateDirectories: true)
@@ -425,10 +430,11 @@ enum XCTestFolder {
         let executable = info?["CFBundleExecutable"] as? String ?? bundle
         try? manager.setAttributes([.modificationDate: Date()], ofItemAtPath: "\(folder)/\(bundle).xctest/\(executable)")
         let layout = XCTestRunFile.Layout(bundle: bundle, host: hostName, ui: ui)
-        if ui { try XCTRunnerApp.assemble(bundle: bundle, in: folder, developerDirectory: developerDirectory) }
-        let testing = manager.fileExists(atPath: "\(developerDirectory)/Platforms/\(XCTestRunFile.platform)/Developer/Library/Frameworks/Testing.framework")
+        if ui, primary == nil { try XCTRunnerApp.assemble(bundle: bundle, in: folder, developerDirectory: developerDirectory) }
+        let testing = primary?.testingFramework
+            ?? manager.fileExists(atPath: "\(developerDirectory)/Platforms/\(XCTestRunFile.platform)/Developer/Library/Frameworks/Testing.framework")
         let xctestrun = "\(folder)/tests.xctestrun"
-        try XCTestRunFile.data(layout, developerDirectory: developerDirectory, folder: folder, testingFramework: testing)
+        try XCTestRunFile.data(layout, developerDirectory: developerDirectory, folder: primary?.folder ?? folder, testingFramework: testing)
             .write(to: URL(fileURLWithPath: xctestrun))
         return Prepared(layout: layout, xctestrun: xctestrun, resultBundle: "\(folder)/result.xcresult")
     }

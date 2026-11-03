@@ -172,6 +172,19 @@ enum ScreenMedia {
         ["simctl", "io", udid, "recordVideo", "--codec=h264", "--mask=black", "--force", path]
     }
 
+    /// Where a simulator in the primary records: a file of its own in the
+    /// primary's /tmp, named by the recording.
+    static func primaryRecordingPath(_ name: String) -> String { "/tmp/oss-recording-\(name).mp4" }
+
+    /// pkill's pattern for that recording's simctl (its path, which no
+    /// other command line has; a regular expression: its dots escaped).
+    static func primaryRecordingPattern(_ path: String) -> String {
+        "recordVideo.*" + path.replacingOccurrences(of: ".", with: "\\.")
+    }
+
+    /// A file of the primary's (`$1`) on standard output, then deleted.
+    static let fetchAndDeleteScript = #"cat -- "$1"; s=$?; rm -f -- "$1"; exit $s"#
+
     // MARK: Joining parts
 
     /// What a recording's parts become: none recorded, one that is the
@@ -338,22 +351,38 @@ final class BackgroundProcess: @unchecked Sendable {
 }
 
 /// A simulator's screen, recorded by `simctl io recordVideo` into a file
-/// of the server's until SIGINT.
+/// of the server's until SIGINT; a simulator in the primary's, into a file
+/// of the primary's /tmp (simctl over SSH, ended by `pkill -INT` there),
+/// brought back when it ends.
 final class SimulatorRecorder: ScreenRecorder, @unchecked Sendable {
     private let recording: BackgroundProcess
     private let path: String
+    private let host: SimulatorHost
+    /// Its file on the primary, where it records there.
+    private let remotePath: String?
 
-    private init(recording: BackgroundProcess, path: String) {
+    private init(recording: BackgroundProcess, path: String, host: SimulatorHost, remotePath: String?) {
         self.recording = recording
         self.path = path
+        self.host = host
+        self.remotePath = remotePath
     }
 
     /// Begun: answers once simctl says it is recording (or within ten
     /// seconds); its failing to start, thrown.
-    static func start(udid: String, folder: String) async throws -> SimulatorRecorder {
+    static func start(udid: String, folder: String, on host: SimulatorHost = .local) async throws -> SimulatorRecorder {
         Paths.ensure(folder)
         let path = "\(folder)/simulator.mp4"
-        let process = try BackgroundProcess("/usr/bin/xcrun", ScreenMedia.simulatorRecord(udid: udid, path: path))
+        let process: BackgroundProcess
+        var remotePath: String?
+        if let guest = host.guest {
+            let remote = ScreenMedia.primaryRecordingPath(Random.hex(6))
+            remotePath = remote
+            process = try BackgroundProcess("/usr/bin/ssh", guest.sshArguments(SimulatorHost.remoteLine("/usr/bin/xcrun",
+                                                                                                         ScreenMedia.simulatorRecord(udid: udid, path: remote))))
+        } else {
+            process = try BackgroundProcess("/usr/bin/xcrun", ScreenMedia.simulatorRecord(udid: udid, path: path))
+        }
         for _ in 0..<100 {
             if !process.isRunning {
                 throw APIError(error: "simctl io recordVideo ended at once: \(process.error.trimmingCharacters(in: .whitespacesAndNewlines))")
@@ -361,10 +390,29 @@ final class SimulatorRecorder: ScreenRecorder, @unchecked Sendable {
             if process.error.contains("Recording started") { break }
             try? await Task.sleep(for: .milliseconds(100))
         }
-        return SimulatorRecorder(recording: process, path: path)
+        return SimulatorRecorder(recording: process, path: path, host: host, remotePath: remotePath)
     }
 
     func stop() async throws -> String {
+        if let remotePath {
+            // SSH's SIGINT reaches no remote command without a terminal: simctl's own, there.
+            _ = try? await host.run("/usr/bin/pkill", ["-INT", "-f", ScreenMedia.primaryRecordingPattern(remotePath)], timeout: 60)
+            if await recording.exited(within: 30) == nil {
+                _ = try? await host.run("/usr/bin/pkill", ["-KILL", "-f", ScreenMedia.primaryRecordingPattern(remotePath)], timeout: 60)
+                recording.terminate()
+                _ = await recording.exited(within: 5)
+            }
+            // Straight into its file here (an hour's is gigabytes: not through memory).
+            let fetched = try await Shell.run("/bin/bash", ["-c", "/usr/bin/ssh \"${@:2}\" > \"$1\"", "bash", path]
+                                               + (host.guest?.sshArguments(SimulatorHost.remoteLine("/bin/sh", ["-c", ScreenMedia.fetchAndDeleteScript, "sh", remotePath])) ?? []),
+                                              timeout: 1800)
+            let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0
+            guard fetched.ok, size > 0 else {
+                throw APIError(error: "the simulator's recording made no file on the primary: "
+                                    + "\(recording.error.trimmingCharacters(in: .whitespacesAndNewlines)) \(fetched.error.suffix(300))")
+            }
+            return path
+        }
         recording.interrupt()
         if await recording.exited(within: 30) == nil {
             recording.terminate()
@@ -378,6 +426,10 @@ final class SimulatorRecorder: ScreenRecorder, @unchecked Sendable {
     }
 
     func discard() async {
+        if let remotePath {
+            _ = try? await host.run("/usr/bin/pkill", ["-KILL", "-f", ScreenMedia.primaryRecordingPattern(remotePath)], timeout: 60)
+            _ = try? await host.run("/bin/rm", ["-f", remotePath], timeout: 60)
+        }
         recording.terminate()
         _ = await recording.exited(within: 5)
         try? FileManager.default.removeItem(atPath: path)

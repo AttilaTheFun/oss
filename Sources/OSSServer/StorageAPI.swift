@@ -336,8 +336,9 @@ extension Server {
             let body = try JSONDecoder.oss.decode(InstallRequest.self, from: request.body)
             var asker: String?
             if case .grant(let claims) = access { asker = claims.holder }
-            return .json(try await Installs.install(on: try await api.machines.ready(parts[2]), object: body.object, holder: asker,
-                                                    storage: api.storage))
+            let lease = try await api.machines.ready(parts[2])
+            return .json(try await Installs.install(on: lease, object: body.object, holder: asker, storage: api.storage,
+                                                    host: try await api.machines.simulatorHost(of: lease)))
         default:
             return nil
         }
@@ -347,10 +348,13 @@ extension Server {
 /// An app installed on an iOS lease's simulator from the store: an .ipa
 /// (its `Payload/<name>.app`) or a zipped .app (`ditto -c -k --keepParent`),
 /// one the lease's holder has a lease on, unpacked beside the lease's
-/// uploads and installed with simctl.
+/// uploads and installed with simctl; on a simulator in the primary, the
+/// app is copied into the lease's folder there first.
 enum Installs {
-    /// `holder`: a grant's, which installs on its own lease only.
-    static func install(on lease: Lease, object: String, holder: String?, storage: StorageStore) async throws -> InstallResult {
+    /// `holder`: a grant's, which installs on its own lease only. `host`:
+    /// where the lease's simulator is.
+    static func install(on lease: Lease, object: String, holder: String?, storage: StorageStore,
+                        host: SimulatorHost = .local) async throws -> InstallResult {
         if let holder, holder != lease.holder { throw APIError(error: "no lease \(lease.id) of \(holder)'s", code: "notFound") }
         guard lease.platform == .ios else { throw APIError(error: "install is for an iOS lease (a simulator); an emulator takes adb install") }
         let hash = try await storage.resolve(object, holder: lease.holder)
@@ -359,7 +363,7 @@ enum Installs {
         }
         let directory = "\(Paths.uploads)/\(lease.id)/install-\(Random.hex(4))"
         do {
-            let (app, bundleIdentifier) = try await installApp(from: archive, in: directory, udid: udid)
+            let (app, bundleIdentifier) = try await installApp(from: archive, in: directory, udid: udid, lease: lease.id, host: host)
             try? FileManager.default.removeItem(atPath: directory)
             await storage.close(hash)
             log("lease \(lease.id): installed \(app) from the store (\(hash.prefix(12))…)")
@@ -371,7 +375,8 @@ enum Installs {
         }
     }
 
-    private static func installApp(from archive: String, in directory: String, udid: String) async throws -> (String, String?) {
+    private static func installApp(from archive: String, in directory: String, udid: String, lease: String,
+                                   host: SimulatorHost) async throws -> (String, String?) {
         // Both are zips: "PK\3\4".
         let handle = FileHandle(forReadingAtPath: archive)
         let magic = try? handle?.read(upToCount: 4)
@@ -386,7 +391,16 @@ enum Installs {
         guard apps.count == 1, let app = apps.first else {
             throw APIError(error: apps.isEmpty ? "no .app in it (an .ipa's Payload/, or a zipped .app)" : "more than one .app in it")
         }
-        let result = try await Simulators.simctl(["install", udid, app], timeout: 600)
+        var installed = app
+        if let guest = host.guest {
+            // On the primary: the app copied into the lease's folder there, installed, and deleted.
+            let remote = "\(PrimarySimulators.folder(lease))/\((directory as NSString).lastPathComponent)"
+            try await PrimarySimulators.send([(app as NSString).lastPathComponent], from: (app as NSString).deletingLastPathComponent,
+                                             to: remote, guest: guest)
+            installed = "\(remote)/\((app as NSString).lastPathComponent)"
+        }
+        let result = try await Simulators.simctl(["install", udid, installed], timeout: 600, on: host)
+        if host.isPrimary { _ = try? await host.run("/bin/rm", ["-rf", (installed as NSString).deletingLastPathComponent], timeout: 120) }
         guard result.ok else { throw APIError(error: "simctl install: \(result.error.trimmingCharacters(in: .whitespacesAndNewlines))") }
         let info = NSDictionary(contentsOfFile: "\(app)/Info.plist")
         return ((app as NSString).lastPathComponent, info?["CFBundleIdentifier"] as? String)

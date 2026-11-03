@@ -196,3 +196,154 @@ enum MacXCTest {
             """, timeout: 60)
     }
 }
+
+// iOS tests on a simulator in the primary (docs/primary-vms.md, "iOS:
+// simulators in the primary"): the run's folder made ready here as a
+// simulator's on this Mac is, its .xctestrun naming the primary's Xcode and
+// its folder there; copied into the lease's folder on the primary (tar over
+// SSH), a UI test's runner made there from the primary's own Xcode (its
+// XCTest frameworks are the ones its simulators run), xcodebuild run there
+// as its guest user against the lease's simulator, its output streamed
+// back, its result bundle copied back for JUnit and `…/result`, and its
+// folder there deleted.
+enum PrimaryXCTest {
+    /// What a run needs to know of the primary's Xcode first.
+    struct Xcode: Sendable, Equatable {
+        var developerDirectory: String
+        /// Whether its simulator platform has Swift Testing's framework.
+        var testingFramework: Bool
+    }
+
+    /// The primary's developer folder, then `testing` if its simulator
+    /// platform has Testing.framework.
+    static let xcodeScript = """
+        d=$(/usr/bin/xcode-select -p) || exit 1
+        echo "$d"
+        if [ -d "$d/Platforms/iPhoneSimulator.platform/Developer/Library/Frameworks/Testing.framework" ]; then echo testing; fi
+        """
+
+    static func parseXcode(_ output: String) -> Xcode? {
+        let lines = output.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard let first = lines.first, first.hasPrefix("/") else { return nil }
+        return Xcode(developerDirectory: first, testingFramework: lines.dropFirst().contains("testing"))
+    }
+
+    static func xcode(_ guest: Guest) async throws -> Xcode {
+        let read = try await Shell.run("/usr/bin/ssh", guest.sshArguments(SimulatorHost.remoteLine("/bin/sh", ["-c", xcodeScript])), timeout: 60)
+        guard read.ok, let xcode = parseXcode(read.output) else {
+            throw APIError(error: "the primary's Xcode couldn't be read: \(read.error.suffix(300))")
+        }
+        return xcode
+    }
+
+    /// A run's folder on the primary.
+    static func folder(lease: String, run: String) -> String { "\(PrimarySimulators.folder(lease))/xctest-\(run)" }
+
+    /// A UI test's runner made in the run's folder on the primary, from its
+    /// Xcode's XCTRunner.app, as XCTRunnerApp.assemble makes one here (and
+    /// rules_apple's runner on a Mac): `$1` the folder, `$2` the bundle's
+    /// name, `$3` the runner's bundle identifier.
+    static let runnerScript = #"""
+        set -euo pipefail
+        dir=$1; bundle=$2; id=$3
+        developer="$(/usr/bin/xcode-select -p)/Platforms/iPhoneSimulator.platform/Developer"
+        library="$developer/Library"
+        agent="$library/Xcode/Agents/XCTRunner.app"
+        [ -d "$agent" ] || { echo "oss: the primary's Xcode has no XCTRunner.app for a UI test" >&2; exit 1; }
+        runner="$dir/$bundle-Runner.app"
+        rm -rf "$runner"
+        cp -R "$agent" "$runner"
+        chmod -R u+w "$runner" "$dir/$bundle.xctest"
+        mkdir -p "$runner/PlugIns"
+        mv "$dir/$bundle.xctest" "$runner/PlugIns/$bundle.xctest"
+        mkdir -p "$runner/PlugIns/$bundle.xctest/Frameworks"
+        plutil -convert xml1 "$runner/Info.plist"
+        sed -i '' -e 's/$(WRAPPEDPRODUCTNAME)/XCTRunner/g' -e 's/WRAPPEDPRODUCTNAME/XCTRunner/g' \
+            -e "s/\$(WRAPPEDPRODUCTBUNDLEIDENTIFIER)/$id/g" -e "s/WRAPPEDPRODUCTBUNDLEIDENTIFIER/$id/g" "$runner/Info.plist"
+        plutil -convert binary1 "$runner/Info.plist"
+        mkdir -p "$runner/Frameworks"
+        copy() {
+            if [ -e "$1" ]; then cp -R "$1" "$runner/Frameworks/"
+            elif [ "$2" = required ]; then echo "oss: the primary's Xcode has no $1 for a UI test's runner" >&2; exit 1; fi
+        }
+        copy "$library/Frameworks/XCTest.framework" required
+        copy "$library/PrivateFrameworks/XCTestCore.framework" required
+        copy "$library/PrivateFrameworks/XCTAutomationSupport.framework" required
+        copy "$library/PrivateFrameworks/XCUnit.framework" optional
+        copy "$developer/usr/lib/libXCTestSwiftSupport.dylib" required
+        copy "$developer/usr/lib/libXCTestBundleInject.dylib" required
+        copy "$library/PrivateFrameworks/XCTestSupport.framework" optional
+        copy "$library/Frameworks/Testing.framework" optional
+        if [ -e "$library/Frameworks/XCUIAutomation.framework" ]; then
+            copy "$library/Frameworks/XCUIAutomation.framework" required
+        else
+            copy "$library/PrivateFrameworks/XCUIAutomation.framework" required
+        fi
+        chmod -R u+w "$runner"
+        """#
+
+    /// The run's files on the primary: its .xctestrun and result bundle
+    /// there (`prepared`'s, moved into `remote`).
+    static func remote(_ prepared: XCTestFolder.Prepared, folder remote: String) -> XCTestFolder.Prepared {
+        XCTestFolder.Prepared(layout: prepared.layout, xctestrun: "\(remote)/tests.xctestrun", resultBundle: "\(remote)/result.xcresult")
+    }
+
+    /// xcodebuild's command line on the primary for the run (its
+    /// arguments XCTestFolder.arguments', the folder the primary's).
+    static func xcodebuildLine(_ prepared: XCTestFolder.Prepared, udid: String, folder remote: String, onlyTesting: [String]) -> String {
+        SimulatorHost.remoteLine("/usr/bin/xcrun", ["xcodebuild"] + XCTestFolder.arguments(self.remote(prepared, folder: remote), udid: udid,
+                                                                                          folder: remote, onlyTesting: onlyTesting))
+    }
+
+    /// The run on the primary: its folder copied there (a UI test's runner
+    /// made there), xcodebuild run with its output to `output` as it comes,
+    /// its result bundle copied back into `folder`, its folder there
+    /// deleted. The task cancelled (its client gone) or `output` answering
+    /// false stops xcodebuild there too. Its exit status.
+    static func run(folder: String, prepared: XCTestFolder.Prepared, lease: String, run: String, udid: String, guest: Guest,
+                    onlyTesting: [String], output: @escaping @Sendable (Data) async -> Bool) async throws -> Int32 {
+        let remote = self.folder(lease: lease, run: run)
+        defer {
+            Task { _ = try? await Shell.run("/usr/bin/ssh", guest.sshArguments(SimulatorHost.remoteLine("/bin/rm", ["-rf", remote])), timeout: 300) }
+        }
+        let sent = try await Shell.run("/bin/bash", ["-c", "set -o pipefail; tar -cz -C \"$1\" . | /usr/bin/ssh \"${@:2}\"", "bash", folder]
+                                        + guest.sshArguments(PrimarySimulators.untarLine(into: remote)), timeout: 1800)
+        guard sent.ok else { throw APIError(error: "copying the run to the primary: \(sent.error.suffix(300))") }
+        let layout = prepared.layout
+        if layout.ui {
+            let made = try await Shell.run("/usr/bin/ssh", guest.sshArguments(SimulatorHost.remoteLine(
+                "/bin/bash", ["-c", runnerScript, "bash", remote, layout.bundle, XCTRunnerApp.bundleIdentifier(layout.bundle)])), timeout: 600)
+            guard made.ok else { throw APIError(error: "the UI test's runner wasn't made on the primary: \(made.error.suffix(400))") }
+        }
+        let status: Int32
+        do {
+            status = try await StreamedProcess.run("/usr/bin/ssh", guest.sshArguments(xcodebuildLine(prepared, udid: udid, folder: remote,
+                                                                                                     onlyTesting: onlyTesting)), output: output)
+        } catch {
+            await stop(remote, guest: guest)
+            throw error
+        }
+        if Task.isCancelled {
+            await stop(remote, guest: guest)
+            return status
+        }
+        let fetched = try await Shell.run("/bin/bash", ["-c", "set -o pipefail; /usr/bin/ssh \"${@:2}\" | tar -xz -C \"$1\"", "bash", folder]
+                                           + guest.sshArguments("cd \(SlotCommand.quote(remote)) && tar -cz result.xcresult"), timeout: 1800)
+        if !fetched.ok { _ = await output(Data("oss: no result bundle came back from the primary: \(fetched.error.suffix(300))\n".utf8)) }
+        return status
+    }
+
+    /// The run's xcodebuild on the primary stopped (found by its folder's
+    /// .xctestrun on its command line): SIGINT, then SIGKILL ten seconds on.
+    static func stop(_ remote: String, guest: Guest) async {
+        _ = try? await Shell.run("/usr/bin/ssh", guest.sshArguments(SimulatorHost.remoteLine("/bin/sh", ["-c", stopScript, "sh",
+                                                                                                         "\(remote)/tests.xctestrun"])),
+                                 timeout: 60)
+    }
+
+    static let stopScript = """
+        pkill -INT -f -- "$1" || true
+        for i in 1 2 3 4 5 6 7 8 9 10; do pgrep -f -- "$1" >/dev/null || exit 0; sleep 1; done
+        pkill -KILL -f -- "$1" || true
+        """
+}

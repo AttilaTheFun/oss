@@ -72,11 +72,20 @@ enum MachineInput {
         "right": 79, "left": 80, "down": 81, "up": 82, "pageup": 75, "pagedown": 78,
     ]
 
-    static func simulator(_ request: InputRequest, udid: String) async throws {
-        guard let axe else {
+    /// `host`: where the simulator is. On the primary, AXe is the server's
+    /// own copy, sent there at its first use (PrimarySimulators.axeFolder).
+    static func simulator(_ request: InputRequest, udid: String, on host: SimulatorHost = .local) async throws {
+        guard let local = axe else {
             throw APIError(error: "simulator input needs AXe on the server's Mac: brew install cameroncooke/axe/axe (or axePath in server.json)")
         }
-        let scale = try await Simulators.screenScale(udid: udid)
+        let axe: String
+        if let guest = host.guest {
+            try await axeOnPrimary(local, guest: guest)
+            axe = "\(PrimarySimulators.axeFolder)/axe"
+        } else {
+            axe = local
+        }
+        let scale = try await Simulators.screenScale(udid: udid, on: host)
         func pt(_ value: Double?) -> String { String(format: "%.1f", (value ?? 0) / scale) }
         let arguments: [String]
         switch request.action {
@@ -106,7 +115,7 @@ enum MachineInput {
         // goes through.
         var attempt = 1
         while true {
-            let result = try await Shell.run(axe, arguments + ["--udid", udid], timeout: 60)
+            let result = try await host.run(axe, arguments + ["--udid", udid], timeout: 60)
             if result.ok { return }
             let words = "\(result.error)\(result.output)"
             guard attempt < 3, words.contains("remote automation session") else {
@@ -115,6 +124,20 @@ enum MachineInput {
             attempt += 1
             try await Task.sleep(for: .seconds(2))
         }
+    }
+
+    /// The server's AXe on the primary, as it is here: sent (its folder,
+    /// the executable and its frameworks, tar over SSH) when the primary
+    /// has none or another.
+    static func axeOnPrimary(_ executable: String, guest: Guest) async throws {
+        guard let stamp = PrimarySimulators.axeStamp(executable) else { throw APIError(error: "AXe at \(executable) can't be read") }
+        let have = try await Shell.run("/usr/bin/ssh", guest.sshArguments(PrimarySimulators.axeCheckLine(stamp: stamp)), timeout: 60)
+        if have.ok { return }
+        let directory = PrimarySimulators.axeDirectory(executable)
+        let sent = try await Shell.run("/bin/bash", ["-c", "set -o pipefail; tar -cz -C \"$1\" . | /usr/bin/ssh \"${@:2}\"", "bash", directory]
+                                        + guest.sshArguments(PrimarySimulators.axeInstallLine(stamp: stamp)), timeout: 600)
+        guard sent.ok else { throw APIError(error: "AXe wasn't copied to the primary: \(sent.error.suffix(300))") }
+        log("primary: AXe \(stamp) copied there for simulator input")
     }
 
     // MARK: VMs (VNC)

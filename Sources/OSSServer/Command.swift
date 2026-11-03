@@ -243,10 +243,11 @@ func describe(_ lease: Lease, _ client: OSSClient) -> String {
         lines.append("  vnc:  \(env["OSS_VNC"]!)  password \(lease.vncPassword ?? "")")
     case .ios:
         let kind = [lease.device, lease.runtime].compactMap { $0 }.joined(separator: ", ")
-        lines.append("  simulator \(lease.udid ?? "")\(kind.isEmpty ? "" : " (\(kind))") on \(client.host)")
+        lines.append("  simulator \(lease.udid ?? "")\(kind.isEmpty ? "" : " (\(kind))") "
+                     + (lease.primary.map { "in primary \($0) of \(client.host)" } ?? "on \(client.host)"))
         lines.append("  oss machine simctl \(lease.id) install ./My.app | launch <bundle id> | openurl <url> | ...")
         lines.append("  oss machine xctest \(lease.id) --tests=<Tests.zip> [--host=<App.ipa>] [--ui]")
-        if client.host == "127.0.0.1" { lines.append("  (on this Mac: xcrun simctl … \(lease.udid ?? ""))") }
+        if client.host == "127.0.0.1", lease.primary == nil { lines.append("  (on this Mac: xcrun simctl … \(lease.udid ?? ""))") }
     case .android:
         lines.append("  adb connect \(env["OSS_ADB"]!)   (then adb -s \(env["OSS_ADB"]!) …)")
         lines.append("  or: oss machine adb \(lease.id) install ./app.apk | shell … | logcat -d")

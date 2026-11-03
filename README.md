@@ -34,7 +34,7 @@ server's HTTP API, which programs can call too: Swift ones through the
 | `macos` | OS Server's own VM (Apple Virtualization) | ~15 s | SSH and VNC (Screen Sharing), forwarded |
 | `linux` | a UTM VM (QEMU) | ~30 s | SSH and VNC (QEMU's), forwarded |
 | `windows` | a UTM VM (QEMU) | ~40 s | SSH (PowerShell) and VNC (QEMU's), forwarded |
-| `ios` | a simulator on the server's Mac | ~7 s | `oss machine simctl` (install, launch, openurl, …), screenshots, `oss machine xctest` |
+| `ios` | a simulator on the server's Mac, or in the primary macOS VM (`primary.macos.simulators`) | ~7 s (~45 s in the primary) | `oss machine simctl` (install, launch, openurl, …), screenshots, `oss machine xctest` |
 | `android` | an emulator on the server's Mac | ~6 s | `adb connect <server>:<port>`, or `oss machine adb` |
 
 What it lends is limited two ways (Limits, below): a count cap for a type
@@ -108,7 +108,11 @@ Input goes in by the platform's own means: `adb input` on an emulator,
 VNC's pointer and key events on a VM, and on a simulator
 [AXe](https://github.com/cameroncooke/AXe) (idb's HID client: `simctl` has
 no input), which the server's Mac needs for it (`brew install
-cameroncooke/axe/axe`).
+cameroncooke/axe/axe`; OS Server.app has its own, which it also copies to
+the primary for the simulators there). Taps and swipes are in the
+screenshot's pixels, divided by the device's scale (its device type's
+`mainScreenScale`, else, as in Xcode 27's, its capabilities' main screen's:
+an iPad's 2).
 
 A lease names its platform and, optionally, a **config**: which base it's
 cloned from. oss makes vanilla bases (below); a server can have as many
@@ -500,7 +504,7 @@ it built on a slot of the primary (docs/primary-vms.md). Since API 17,
 server.json's `primary` keeps one:
 
 ```json
-"primary": {"macos": {"config": "xcode_27_2", "cpus": 8, "memoryGigabytes": 24, "slots": 4}}
+"primary": {"macos": {"config": "xcode_27_2", "cpus": 8, "memoryGigabytes": 24, "slots": 4, "simulators": 0}}
 ```
 
 (`{"macos": {}}` takes those defaults.) OS Server clones it from its base
@@ -527,7 +531,32 @@ A slot is a macOS user on the primary (`oss-<id>`), made at lease with an
 empty home and a login keychain of its own (its password the server's,
 unlocked; a user that never logs in has none otherwise), and deleted at
 release. It is reached through the API alone: no SSH or VNC of its own.
-`busy` while the primary is being made.
+`busy` while the primary is being made (or replaced for new settings: a
+primary due for replacement lends nothing new, so what lives in it drains).
+
+**iOS simulators in the primary** (`"simulators": 4`, 0 by default): `ios`
+leases' simulators run in the primary instead of on the server's Mac, the
+same lease and verbs (`simctl`, `install`, `xctest` plain and `--ui`,
+`screenshot`, `tap`/`swipe`/`type`/`key`, `record`), grants and MCP tools.
+At most `simulators` at once (the `ios` cap; they take nothing of the
+budget): the primary's memory grows by 2 GB for each (24 + 4 × 2 = 32 GB),
+so turning them on replaces the primary once nothing lives in it. Each
+lease is a new simulator there (`oss-lease-ios-<id>`, the guest user's,
+booted headless; no bases, so about 45 s rather than a clone's 7 s) of
+`simulatorDevice` (`"iPhone 17 Pro"` by default) on the newest runtime the
+primary's Xcode has for it, or the `--device` and `--runtime` asked for,
+its status bar held still as on the Mac; deleted at release. One config,
+the server's default for `ios` (`iphone`); a base's `--script` isn't run
+there. Everything the Mac did with `xcrun simctl` goes over SSH to the
+primary: files a command names and apps to install are copied into the
+lease's folder there (`/Users/Shared/oss-ios/<id>`), screenshots and
+recordings come back from it, an xctest run's folder is copied there (a
+UI test's runner made from the primary's own Xcode) and its result bundle
+back. AXe, for input, is OS Server.app's own, copied to the primary
+(`~/.oss/axe`) at its first use. Leases already on the Mac stay there until
+they end; a restart keeps the primary's (released with it if it didn't
+come back, booted again if it was restarted from its disk), and simulators
+there that no lease holds are deleted.
 
 **Mac tests on a slot**, as `oss machine xctest` runs iOS tests on a
 simulator: rules_apple's `macos_unit_test` bundles, built on Linux
@@ -915,7 +944,7 @@ containers, which it couldn't read.
 | `GET /v1/status` | bases, capacity, leases; from API 14 the limits: `budget` (`memoryBytes`, the budget; `leasedMemoryBytes`, what the leases take; `outsideMemoryBytes`, what isn't theirs; `hostLimitBytes`, the Mac's memory less its reserve; `leasedCPUs`, the leases' CPUs together, shared out; `maxCPUs`, one machine's at most; `waiting`, the line oldest first, each one's `platform`, `config`, `holder`, `size`, `since` and `reason`, its last refusal), and `host`, the Mac by whom (`leases`, each lease's `memoryLimitBytes` as given, `memoryBytes` as used, `cpuPercent`, `diskBytes`; `server`, OS Server itself; `otherVMs`, by `owner` with `machines`, `memoryBytes`, `cpuPercent`, `diskBytes`; `rest` and `restTop`, everything else and its apps using the most; `disk`, the volume's `totalBytes` and `freeBytes`; `outsideMemoryBytes`); and each type's `capacity` its `cap` (absent: none), `used` and `size` (a lease of its default config), and `limit` how many may be held now (its cap, or fewer where the budget has room for fewer more), which a client before API 14 compares `leased` with as before; each lease's `size` (`cpus`, `memoryBytes`) |
 | `GET /v1/doctor` | whether the server can drive UTM, simulators and emulators |
 | `GET /v1/keys`, `POST /v1/keys` `{"application"}`, `DELETE /v1/keys/<application>` | the applications with keys (`application`, `created`; never a key); a new key for one, replacing its old one (`{"application", "key"}`, shown this once, kept as its SHA-256); its key taken away. On the server's own Mac and as `user` only (API 12) |
-| `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?, "container"?, "kind"?, "label"?, "link"?, "labels"?, "device"?, "runtime"?, "waitTicket"?, "build"?}` | a lease (state `creating`; poll it until `ready`), if its type's cap and the budget have room (Limits, above): else 409 `busy` naming the full limit, or `tooBig` for one with more memory than the whole budget or more CPUs than `maxCPUs`. `waitTicket` (API 14), the same on every try, keeps a lease waited for in line while it asks again within 45 seconds. `build` (API 14), a layer's name: a place for `oss image build`'s VM, admitted as its platform's lease of its base's (`config`'s) size, with no machine, kind `build`, ready at once, from the server's Mac only; `buildPID`, the building process, which it lasts as long as. A container's `container` is a `ContainerSpec` (`image`, `cpus`, `memoryBytes`, `diskBytes`, `mounts`, `volumes`, `rosetta`, `environment`, `workingDirectory`, `command`); `minutes: 0` holds it until released; only a client on the server's Mac gets one. `kind` is `ci`, `session`, `agent`, `manual` or (API 14) `build` (one a server doesn't know reads as `manual`; without one, the holder's: a `visor:` holder's container `session`, its other machines `agent`, anyone else's `manual`); `label` is kept to one line of at most 200 characters; `link` must be http or https (400 otherwise); `labels` (API 12), at most 32 names (letters, digits, `. _ - /`, at most 100) and one-line values, kept with the lease. An iOS lease's `device` (a device type's name or identifier) and `runtime` (an iOS runtime's name, version or identifier), any case (API 11): its simulator made of them, the config's base's for the one not given; one the server's Xcode hasn't got, or a type the runtime doesn't run, is 400 `noDevice`, naming the close ones; while simctl can't list the server's simulators (Xcode mid-update, CoreSimulator waiting on its first launch), an iOS lease is 400 `noInventory`, saying why, not `no ios base` |
+| `POST /v1/machines` `{"platform", "config"?, "minutes"?, "holder"?, "sshPublicKey"?, "container"?, "kind"?, "label"?, "link"?, "labels"?, "device"?, "runtime"?, "waitTicket"?, "build"?}` | a lease (state `creating`; poll it until `ready`), if its type's cap and the budget have room (Limits, above): else 409 `busy` naming the full limit, or `tooBig` for one with more memory than the whole budget or more CPUs than `maxCPUs`. `waitTicket` (API 14), the same on every try, keeps a lease waited for in line while it asks again within 45 seconds. `build` (API 14), a layer's name: a place for `oss image build`'s VM, admitted as its platform's lease of its base's (`config`'s) size, with no machine, kind `build`, ready at once, from the server's Mac only; `buildPID`, the building process, which it lasts as long as. A container's `container` is a `ContainerSpec` (`image`, `cpus`, `memoryBytes`, `diskBytes`, `mounts`, `volumes`, `rosetta`, `environment`, `workingDirectory`, `command`); `minutes: 0` holds it until released; only a client on the server's Mac gets one. `kind` is `ci`, `session`, `agent`, `manual` or (API 14) `build` (one a server doesn't know reads as `manual`; without one, the holder's: a `visor:` holder's container `session`, its other machines `agent`, anyone else's `manual`); `label` is kept to one line of at most 200 characters; `link` must be http or https (400 otherwise); `labels` (API 12), at most 32 names (letters, digits, `. _ - /`, at most 100) and one-line values, kept with the lease. An iOS lease's `device` (a device type's name or identifier) and `runtime` (an iOS runtime's name, version or identifier), any case (API 11): its simulator made of them, the config's base's for the one not given; one the server's Xcode hasn't got, or a type the runtime doesn't run, is 400 `noDevice`, naming the close ones; while simctl can't list the server's simulators (Xcode mid-update, CoreSimulator waiting on its first launch), an iOS lease is 400 `noInventory`, saying why, not `no ios base`. Where server.json's `primary.macos.simulators` is above 0, an iOS lease's simulator is the primary macOS VM's (the lease's `primary` names it, as a slot's does): the types and runtimes are the primary's Xcode's, the config only the server's default for `ios`, and it is 409 `busy` while the primary is being made, set up or replaced |
 | `GET /v1/machines`, `GET /v1/machines/<id>` | leases (each with its `kind`, `label`, `link` and `labels`; an iOS lease's `device` and `runtime`, by name); one lease: ports, VNC password, UDID, adb port…; a container's forwarded ports (`ports`: `{"port", "host", "hostPort"}`, `host` the server as the asker reached it) |
 | `POST /v1/machines/<id>/renew` `{"minutes"?}` | its time set again |
 | `DELETE /v1/machines/<id>` | released |
