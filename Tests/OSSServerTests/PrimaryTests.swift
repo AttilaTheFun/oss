@@ -120,3 +120,36 @@ import OSSClient
     #expect(budget.visible { $0 != .mac }.waiting.map(\.holder) == ["b"])
     #expect(budget.visible { _ in true }.waiting.count == 2)
 }
+
+/// Two primaries (a restart's keepPrimary once made one beside the primary
+/// it was recovering): one is kept, one with slots first, else the oldest;
+/// the other released, never one with a slot held.
+@Test func aSecondPrimaryIsReleased() {
+    func primary(_ id: String, created: TimeInterval) -> Lease {
+        var lease = Lease(id: id, platform: .macos, config: "xcode_27_2", name: "oss-primary-macos-\(id)", holder: PrimaryPlan.holder,
+                          state: .ready, created: Date(timeIntervalSince1970: created), expires: .distantFuture)
+        lease.kind = .primary
+        lease.size = PrimaryMacSettings().size
+        return lease
+    }
+    func slot(_ id: String, on primary: String) -> Lease {
+        var lease = Lease(id: id, platform: .mac, config: "xcode_27_2", name: id, holder: "h", state: .ready, created: Date(), expires: .distantFuture)
+        lease.primary = primary
+        return lease
+    }
+    let older = primary("p1", created: 100), newer = primary("p2", created: 200)
+    let settings = PrimaryMacSettings()
+    // The oldest kept, whatever the order held.
+    for held in [[older, newer], [newer, older]] {
+        #expect(PrimaryPlan.macos(held)?.id == "p1")
+        #expect(PrimaryPlan.step(settings, lendsMacOS: true, restartPending: false, held: held)
+                == .release("p2", because: "a second primary macOS VM: p1 is kept"))
+    }
+    // The one with slots kept, though newer; with no primary wanted, the extra goes first too.
+    let withSlot = [older, newer, slot("s1", on: "p2")]
+    #expect(PrimaryPlan.macos(withSlot)?.id == "p2")
+    #expect(PrimaryPlan.step(nil, lendsMacOS: true, restartPending: false, held: withSlot)
+            == .release("p1", because: "a second primary macOS VM: p2 is kept"))
+    // Both with slots: neither released for it.
+    #expect(PrimaryPlan.extras([older, newer, slot("s1", on: "p1"), slot("s2", on: "p2")]).isEmpty)
+}
