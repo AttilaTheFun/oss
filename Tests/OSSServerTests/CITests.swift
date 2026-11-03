@@ -609,6 +609,15 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     job.branch = "main"
     job.name = "linux"
     #expect(!repository.populates(job))
+    // A list: each of them, on main.
+    let listed = try JSONDecoder().decode(CISettings.self, from: Data("""
+        {"repositories": ["owner/visor"], "populate": {"owner/visor": ["container", "blue-web"]}}
+        """.utf8))
+    let visor = try #require(CIPlan.make(settings: listed, app: CIAppConfig(appId: 1), containerCapacity: 4).0?.repositories.first)
+    for name in ["container", "blue-web"] {
+        #expect(visor.populates(CIJob(id: 2, repository: "owner/visor", name: name, runID: 9, branch: "main", labels: [], queued: Date())))
+    }
+    #expect(!visor.populates(CIJob(id: 3, repository: "owner/visor", name: "test", runID: 9, branch: "main", labels: [], queued: Date())))
     // Its password: good while its runner's lease is open, and no other grant's.
     let grants = GrantKey(key: Data(repeating: 7, count: 32)), live = JobGrants()
     let password = grants.issueCacheWrite(holder: "populate-9@ci", runner: "ab12", live: live)

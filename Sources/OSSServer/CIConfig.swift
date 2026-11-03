@@ -29,10 +29,11 @@ struct CISettings: Codable, Sendable, Equatable {
     /// Bazel build wants more than a job that only leases machines), by
     /// repository: `{"owner/name": {"cpus": 6, "memoryGigabytes": 16}}`.
     var sizes: [String: RunnerSize] = [:]
-    /// A repository's job that fills the Bazel cache, on main alone:
-    /// `{"owner/name": "populate"}` (the job's name). Its container writes
-    /// the cache; every other job's reads it.
-    var populate: [String: String] = [:]
+    /// A repository's jobs that fill the Bazel cache, on main alone:
+    /// `{"owner/name": "populate"}` (a job's name) or a list of them
+    /// (`["container", "web"]`: separate trees). Their containers write the
+    /// cache; every other job's reads it.
+    var populate: [String: [String]] = [:]
     /// Seconds between two looks at a repository's queued jobs.
     var pollSeconds: Int?
     /// Minutes a runner waits for a job before it's given up (GitHub gave
@@ -54,7 +55,7 @@ struct CISettings: Codable, Sendable, Equatable {
         cpus = try c.decodeIfPresent(Int.self, forKey: .cpus)
         memoryGigabytes = try c.decodeIfPresent(Int.self, forKey: .memoryGigabytes)
         sizes = try c.decodeIfPresent([String: RunnerSize].self, forKey: .sizes) ?? [:]
-        populate = try c.decodeIfPresent([String: String].self, forKey: .populate) ?? [:]
+        populate = try c.decodeIfPresent([String: PopulateJobs].self, forKey: .populate)?.mapValues(\.names) ?? [:]
         pollSeconds = try c.decodeIfPresent(Int.self, forKey: .pollSeconds)
         unclaimedMinutes = try c.decodeIfPresent(Int.self, forKey: .unclaimedMinutes)
         serverURL = try c.decodeIfPresent(String.self, forKey: .serverURL)
@@ -168,11 +169,11 @@ struct CIPlan: Sendable, Equatable {
         /// Its jobs' containers, where it has a size of its own.
         var cpus: Int?
         var memoryGigabytes: Int?
-        /// Its job (by name) that writes the Bazel cache, on main.
-        var populate: String?
+        /// Its jobs (by name) that write the Bazel cache, on main.
+        var populate: [String] = []
 
-        /// Whether `job` is the one that fills the cache: its name, on main.
-        func populates(_ job: CIJob) -> Bool { populate != nil && job.name == populate && job.branch == "main" }
+        /// Whether `job` is one that fills the cache: one of their names, on main.
+        func populates(_ job: CIJob) -> Bool { populate.contains(job.name) && job.branch == "main" }
     }
 
     var appID: Int
@@ -202,7 +203,7 @@ struct CIPlan: Sendable, Equatable {
         var seen = Set<String>()
         let repositories = allowed.filter { seen.insert($0.lowercased()).inserted }.map { name in
             let size = settings.sizes[name] ?? settings.sizes.first { $0.key.lowercased() == name.lowercased() }?.value
-            let populate = settings.populate[name] ?? settings.populate.first { $0.key.lowercased() == name.lowercased() }?.value
+            let populate = settings.populate[name] ?? settings.populate.first { $0.key.lowercased() == name.lowercased() }?.value ?? []
             return Repository(name: name, label: settings.label(name), cpus: size?.cpus.map { max(1, $0) },
                               memoryGigabytes: size?.memoryGigabytes.map { max(1, $0) }, populate: populate)
         }
@@ -253,4 +254,14 @@ enum CINames {
     /// server before it left running.
     static let runnerLabel = "oss.ci.runner"
     static let holderLabel = "oss.ci.holder"
+}
+
+/// `ci.populate`'s value: a job's name, or a list of them.
+struct PopulateJobs: Decodable {
+    var names: [String]
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let one = try? c.decode(String.self) { names = [one] } else { names = try c.decode([String].self) }
+    }
 }

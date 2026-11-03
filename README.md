@@ -616,10 +616,11 @@ repositories server.json names, beside any runner they have already.
    Each job's container reads the server's Bazel cache (~/.bazelrc and
    ~/.netrc, as a VM lease's), so a job builds there warm: clone (the
    checkout) and build in the job's container, and lease a machine only to
-   run what it built. Only `populate`'s job writes it (`{"owner/name":
-   "populate"}`, the job's name, on main alone: the post-merge job that
-   fills it), with a cache-write grant good while its runner lasts in
-   place of the write token, which never leaves the server's Mac.
+   run what it built. Only `populate`'s jobs write it (`{"owner/name":
+   "populate"}`, a job's name, or a list of them for separate trees,
+   `{"owner/name": ["container", "web"]}`; on main alone: the post-merge
+   jobs that fill it), with a cache-write grant good while its runner lasts
+   in place of the write token, which never leaves the server's Mac.
 4. OS Server started again. Its log says `ci: running GitHub Actions jobs
    for …`, or why CI is off; `oss ci list` too.
 
