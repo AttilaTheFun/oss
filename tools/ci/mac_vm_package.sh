@@ -1,6 +1,8 @@
 #!/bin/bash
-# The Mac apps CI publishes, built in a macOS VM leased from OS Server
-# (tools/ci/mac_vm.sh), unsigned for Applications Server to sign:
+# The Mac apps CI publishes, built on a slot of OS Server's primary macOS
+# VM (tools/ci/mac_vm.sh's mac_slot_lease; QEMU there from server.json's
+# primary.macos.setup), or with MAC_CI=vm in a macOS VM of the run's own,
+# unsigned for Applications Server to sign:
 #   OS-Server.zip   OS Server.app (App/build.sh --zip, ad hoc signed in the
 #                   VM, its nested code each with its own entitlements:
 #                   oss and oss-machine Virtualization's, QEMU the
@@ -30,6 +32,7 @@ mac_vm_start oss-ci
 mac_vm_steps << 'STEPS'
     package)
         cd oss || exit
+        # A VM's own Homebrew installs it; a slot's primary has it from its setup.
         command -v qemu-system-aarch64 > /dev/null || brew install --quiet qemu > ~/ci/brew.log 2>&1 || { tail -30 ~/ci/brew.log; exit 1; }
         OSS_APP_BUILD="$1" App/build.sh --zip > ~/ci/app.log 2>&1 || { tail -60 ~/ci/app.log; exit 1; }
         tail -1 ~/ci/app.log
@@ -57,8 +60,13 @@ mac_vm_steps << 'STEPS'
         ;;
 STEPS
 
-echo "::group::A macOS VM (xcode_27_2)"
-mac_vm_lease
+if [ "${MAC_CI:-slot}" = vm ]; then
+    echo "::group::A macOS VM (xcode_27_2)"
+    mac_vm_lease
+else
+    echo "::group::A slot of the primary macOS VM"
+    mac_slot_lease
+fi
 mac_vm_copy_tree
 echo "::endgroup::"
 
@@ -70,8 +78,14 @@ echo "::group::OS Monitor's icon, in the dark appearance; OS Server's entitlemen
 run in_vm icons || { echo "::error::OS Monitor's icon has no dark appearance"; exit 1; }
 echo "::endgroup::"
 
-# scp makes the folder (one already here would get it inside).
-run "$OSS" machine download "$lease" --identity="$work/key" ci/packages "$work/packages"
+if [ -n "$slot" ]; then
+    # A slot gives a file at a time.
+    mkdir -p "$work/packages"
+    for zip in OS-Server.zip OS-Monitor.zip; do run "$OSS" machine download "$lease" "ci/packages/$zip" "$work/packages/$zip" > /dev/null; done
+else
+    # scp makes the folder (one already here would get it inside).
+    run "$OSS" machine download "$lease" --identity="$work/key" ci/packages "$work/packages"
+fi
 mac_vm_release
 mkdir -p "$out"
 rm -f "$out"/*
