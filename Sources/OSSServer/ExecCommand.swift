@@ -1,10 +1,11 @@
 import Foundation
 import OSSClient
 
-/// `oss machine exec <id> [--tty] [--env=K=V]… [--env-file=F] [--workdir=DIR] -- command…`
+/// `oss machine exec <id> [--tty] [--gui] [--env=K=V]… [--env-file=F] [--workdir=DIR] -- command…`
 /// (or `--socket=PATH` for `<id>`: the lease's exec socket, no server asked;
 /// or `--url=GRANT`: a `machine.exec` grant's URL, no token): a command in a
-/// container lease, this process's standard streams its own, its exit
+/// container lease (or a Mac slot, through the server: on its primary as
+/// its user; `--gui` in the primary's GUI session), this process's standard streams its own, its exit
 /// status this one's. On the server's Mac it goes to the container directly
 /// (its exec socket), so it outlives the server's restarts; from anywhere
 /// else, through the server (`POST /v1/machines/<id>/exec`). TERM, INT, HUP,
@@ -38,7 +39,8 @@ enum ExecCommand {
         }
         let size = tty ? terminalSize() : nil
         let request = ExecRequest(arguments: arguments.rest, tty: tty, columns: size?.columns, rows: size?.rows,
-                                  environment: environment, workingDirectory: arguments.options["workdir"])
+                                  environment: environment, workingDirectory: arguments.options["workdir"],
+                                  gui: arguments.flags.contains("gui") ? true : nil)
 
         let (input, continuation) = AsyncStream<ExecFrame>.makeStream()
         let restore = tty && isatty(STDIN_FILENO) != 0 ? rawMode() : nil

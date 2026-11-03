@@ -545,6 +545,35 @@ the primary (the others wait, saying so), with that user's keychain.
 `--only-testing` on a slot takes letters, digits and `_ / ( ) . -` alone; a
 slot runs no UI tests (`--ui`, XCTRunner's, are iOS's).
 
+**Commands and files on a slot** (API 18), through the routes, grants and
+MCP tools a container's take: for a Mac tool or app that needs a Mac but
+not a whole VM.
+
+```sh
+oss machine upload <id> bazel-bin/app/App.zip App.zip    # into the slot's home (or /tmp); ~/… and absolute paths there too
+oss machine exec <id> -- ditto -x -k App.zip .           # as the slot's user, in its home, under bash -l
+oss machine exec <id> --workdir=/tmp --env=LANG=C -- ./tool --flag "two words"
+oss machine exec <id> --gui -- open -W App.app           # in the primary's GUI session, one at a time
+oss machine download <id> out/report.json report.json
+```
+
+A command runs on the primary over SSH as the slot's user (`sudo -u
+oss-<id> -H`), in its home or `--workdir` (under its home or /tmp), in a
+login bash with the request's environment over its profile's. Its
+arguments are the program and its arguments: each goes to the primary as
+one quoted word and reaches the program as given, never as a script's
+text. Its stdin, stdout, stderr and exit status are a container's command's
+(127 for a program not found, 126 for a directory it can't enter, 128 + n
+for a signal); it runs in a process group of its own, which a signal for
+it reaches (`oss machine exec`'s TERM, INT, HUP, QUIT, USR1 and USR2) and
+which, if its client goes, gets TERM, then KILL ten seconds on. No `--tty`
+yet. `--gui` (`ExecRequest.gui`) runs it as the primary's console user in
+its session (`launchctl asuser`), taking turns with `xctest --gui` runs; it
+runs in the slot's home unless `--workdir` says otherwise, but what it
+writes is the console user's. Files go as a container's do (written beside
+their path, moved into place once all of it has come), as the slot's user,
+to and from its home or /tmp; `..` is refused.
+
 ### Self-hosted CI
 
 ```yaml
@@ -901,11 +930,11 @@ containers, which it couldn't read.
 | `GET /v1/storage/leases` | the holder's leases (`id`, `holder`, `sha256`, `size`, `name`, `created`, `expires`) |
 | `POST /v1/storage/leases/<id>/renew?ttl=…` | its time set again: `ttl` from now |
 | `DELETE /v1/storage/leases/<id>` | released; its object goes at the next sweep unless another lease holds it |
-| `POST /v1/grants` `{"verb", "lease"?, "object"?, "ttl"?, "name"?, "objectTTL"?}` | 201 `{"verb", "url", "path", "expires"}`: a grant in the holder's name, where the plain API would let it: `storage.put` (with the `name` and `objectTTL` its lease gets), `storage.get` (an object it holds, by sha256 or name), `machine.install` (an iOS lease it holds); from API 8 `machine.exec`, `machine.upload` and `machine.download` (a container lease it holds); from API 10 `machine.xctest` (an iOS lease it holds: its tests run, and their results read). `ttl` 5m unless given, at most 15m. `url` is the server as the asker reached it; `path` is the same for another address. Only with the API's token |
+| `POST /v1/grants` `{"verb", "lease"?, "object"?, "ttl"?, "name"?, "objectTTL"?}` | 201 `{"verb", "url", "path", "expires"}`: a grant in the holder's name, where the plain API would let it: `storage.put` (with the `name` and `objectTTL` its lease gets), `storage.get` (an object it holds, by sha256 or name), `machine.install` (an iOS lease it holds); from API 8 `machine.exec`, `machine.upload` and `machine.download` (a container lease it holds; from API 18 a Mac slot too); from API 10 `machine.xctest` (an iOS lease it holds: its tests run, and their results read). `ttl` 5m unless given, at most 15m. `url` is the server as the asker reached it; `path` is the same for another address. Only with the API's token |
 | `POST /v1/machines/<id>/install` `{"object"}` | an .ipa or a zipped .app the lease's holder holds (by sha256 or name) installed on its simulator: `{"object", "app", "bundleIdentifier"}` |
-| `POST /v1/machines/<id>/exec` (`Connection: Upgrade`, `Upgrade: oss-exec`; body an `ExecRequest`, with its `Content-Length`) | a command in a container lease, from anywhere (API 8): `101 Switching Protocols`, then the exec socket's frames both ways (below), the server starting the command with the request and relaying the rest; a refusal is an answer as any other (404 another holder's lease, 409 `notReady`, 426 `upgrade` without the upgrade). The token with `OSS-Holder`, or a `machine.exec` grant |
-| `PUT /v1/machines/<id>/files?path=…&mode=…` (raw body) | a file put in a container lease (API 9), streamed: at `path` (relative to its working directory, `~/` its home), its folders made, written beside it and moved into place once all of it has come; `mode` octal (else the container's umask's). 201 `{"path", "size"}`, the path absolute. The token with `OSS-Holder`, or a `machine.upload` grant |
-| `GET /v1/machines/<id>/files?path=…` | a container lease's file, streamed (its length first); 404 `noFile` if there's none. The token with `OSS-Holder`, or a `machine.download` grant |
+| `POST /v1/machines/<id>/exec` (`Connection: Upgrade`, `Upgrade: oss-exec`; body an `ExecRequest`, with its `Content-Length`) | a command in a container lease, from anywhere (API 8), or a Mac slot (API 18: on its primary as its user, `ExecRequest.gui` in its GUI session, no `tty`): `101 Switching Protocols`, then the exec socket's frames both ways (below), the server starting the command with the request and relaying the rest; a refusal is an answer as any other (404 another holder's lease, 409 `notReady`, 426 `upgrade` without the upgrade). The token with `OSS-Holder`, or a `machine.exec` grant |
+| `PUT /v1/machines/<id>/files?path=…&mode=…` (raw body) | a file put in a container lease (API 9), or a Mac slot (API 18: `path` under its home or /tmp, relative ones its home's), streamed: at `path` (relative to its working directory, `~/` its home), its folders made, written beside it and moved into place once all of it has come; `mode` octal (else the container's umask's). 201 `{"path", "size"}`, the path absolute. The token with `OSS-Holder`, or a `machine.upload` grant |
+| `GET /v1/machines/<id>/files?path=…` | a container lease's (or Mac slot's, API 18) file, streamed (its length first); 404 `noFile` if there's none. The token with `OSS-Holder`, or a `machine.download` grant |
 | `POST /v1/machines/<id>/xctest` (`Connection: Upgrade`, `Upgrade: oss-exec`; body an `XCTestRequest` `{"tests", "host"?, "ui"?, "onlyTesting"?}`, with its `Content-Length`) | tests on an iOS lease's simulator (API 10): `tests` (the test bundle's zip) and `host` (an .ipa or a zipped .app) are objects the lease's holder holds, by sha256 or name; `ui` a UI test (it needs `host`); `onlyTesting` xcodebuild's `-only-testing`. Made ready first, so a refusal is an answer as any other (400 a bundle that isn't one, 404 an object the holder hasn't got, 409 `busy` while the lease runs another); then `101 Switching Protocols` with the run's id (`OSS-XCTest-Run`), then the exec socket's frames (below): `stdout` xcodebuild's output, `stderr` the server's own notes, last `exit` xcodebuild's status. The connection closing first ends the run (xcodebuild stopped). The token with `OSS-Holder`, or a `machine.xctest` grant |
 | `GET /v1/machines/<id>/xctest/<run>/junit`, `…/result` | a run's JUnit (XML, from its result bundle), or its result bundle zipped (`result.xcresult` inside; streamed); 409 `notReady` while it runs, 404 `noFile` if it made none; kept as long as the lease. The token with `OSS-Holder`, or the lease's `machine.xctest` grant |
 
@@ -961,8 +990,8 @@ from a `.netrc`).
 The machine commands are [Model Context
 Protocol](https://modelcontextprotocol.io) tools too: `oss_status`,
 `oss_lease`, `oss_container_lease`, `oss_renew`, `oss_release`, `oss_ssh`
-(a VM), `oss_exec`, `oss_upload` and `oss_download` (a container's small
-files), `oss_simctl`, `oss_adb`, `oss_install`, `oss_storage`,
+(a VM), `oss_exec`, `oss_upload` and `oss_download` (a container's or Mac
+slot's commands and small files), `oss_simctl`, `oss_adb`, `oss_install`, `oss_storage`,
 `oss_grant` (a URL for what is too big for a call), `oss_screenshot`,
 `oss_tap`, `oss_swipe`, `oss_type`, `oss_key` and `oss_usage`.
 

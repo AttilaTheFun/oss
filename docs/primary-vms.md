@@ -84,12 +84,34 @@ oss machine xctest <id> --tests=bazel-bin/app/AppTests.zip --host=bazel-bin/app/
   over SSH, 2026-11-02; visor's four Mac bundles are such). A session of
   each slot's own can come later if `--gui` runs queue.
 
-### Apps on a slot
+### Apps on a slot (done, API 18)
 
 `oss machine exec <mac lease> -- <command>` (as the slot's user) and
 `upload`/`download` to and from its home, with grants (`machine.exec`,
-`machine.upload`, `machine.download`) for containers: running a Mac app or
-tool that needs a Mac but not a whole VM.
+`machine.upload`, `machine.download`) as for containers: running a Mac app
+or tool that needs a Mac but not a whole VM. The same routes, frames and
+MCP tools as a container's (`POST /v1/machines/<id>/exec`, `PUT`/`GET
+…/files`; Sources/OSSServer/SlotAPI.swift):
+
+- **exec**: `/usr/bin/ssh` to the primary, whose command line is
+  `cd / && sudo -u oss-<id> -H /bin/bash -lc <wrapper> oss-exec <pid file>
+  <dir> [NAME=VALUE]… -- <program> [arguments]…; exit $?`, every word
+  single-quoted: the request's arguments, environment and directory reach
+  the wrapper as positional parameters, never as script text. The wrapper
+  exports the environment, enters the directory (the home, or one under
+  it or /tmp), writes its pid to `/tmp/oss-exec-<id>-<run>.pid` and execs
+  the program in a process group of its own (Perl's setpgrp). stdin,
+  stdout, stderr and the status are relayed as a container's.
+- **Signals**: a signal frame, or the client going (TERM, then KILL ten
+  seconds on), is `kill -s <SIG> -- -<pgid>` on the primary, as the
+  command's own user (`sudo -u`), so it reaches nothing else.
+- **`--gui`** (`ExecRequest.gui`): the same as the primary's console user
+  in its session (`sudo launchctl asuser $(id -u <console>) sudo -u
+  <console> -H …`), one at a time, sharing `xctest --gui`'s turn.
+- **No terminal** (`--tty`) yet: refused, saying so.
+- **Files**: ContainerAPI's own script (`/bin/sh -c`, written beside its
+  path and moved into place), over SSH as the slot's user; paths under its
+  home (relative, `~/…` or absolute) or /tmp, no `..`.
 
 ## Then
 

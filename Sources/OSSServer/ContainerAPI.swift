@@ -26,6 +26,9 @@ import Network
 ///
 /// Files go through the container's `/bin/sh` (`cat`, `wc`, `mv`, `chmod`,
 /// `mkdir`), as every image with a shell has them.
+///
+/// A Mac slot (`mac`, API 18) takes the same routes, its grants too: its
+/// commands and files run on its primary over SSH as its user (SlotAPI).
 enum ContainerAPI {
     /// The routes whose connection is handed over once their head has come.
     static func streams(_ method: String, _ parts: [String]) -> Bool {
@@ -42,10 +45,15 @@ enum ContainerAPI {
         }
         do {
             let lease = try await self.lease(parts[2], access: access, request: request, api: api)
-            switch (request.method, parts[3]) {
-            case ("POST", "exec"): try await exec(request, peer, lease: lease)
-            case ("PUT", "files"): try await upload(request, peer, lease: lease)
-            default: try await download(request, peer, lease: lease)
+            if request.method == "POST" {
+                if lease.platform == .mac { try await SlotAPI.exec(request, peer, lease: lease, api: api) } else { try await exec(request, peer, lease: lease) }
+                return
+            }
+            let commands = lease.platform == .mac ? try await SlotAPI.files(lease, api: api) : FileCommands.container(lease.execSocket ?? "")
+            if request.method == "PUT" {
+                try await upload(request, peer, lease: lease, commands: commands)
+            } else {
+                try await download(request, peer, lease: lease, commands: commands)
             }
         } catch let error as APIError {
             _ = await peer.send(Server.response(for: error))
@@ -54,17 +62,36 @@ enum ContainerAPI {
         }
     }
 
-    /// The container lease a request may use: its holder's
+    /// The container (or Mac slot) lease a request may use: its holder's
     /// (`Server.holdersLease`), ready.
     static func lease(_ id: String, access: Access, request: HTTPRequest, api: API) async throws -> Lease {
         let lease = try await Server.holdersLease(id, access: access, request: request, api: api,
                                                   what: "a container's exec and files are")
-        guard lease.platform == .container else {
-            throw APIError(error: "exec and files through the server are a container lease's: a VM takes SSH (oss machine ssh, upload, "
-                                + "download), a simulator simctl, an emulator adb")
+        guard lease.platform.takesExec else {
+            throw APIError(error: "exec and files through the server are a container lease's or a Mac slot's: a VM takes SSH (oss machine ssh, "
+                                + "upload, download), a simulator simctl, an emulator adb")
         }
-        guard lease.state == .ready, lease.execSocket != nil else { throw APIError(error: "lease \(id) isn't ready yet", code: "notReady") }
+        guard lease.state == .ready, lease.platform == .mac || lease.execSocket != nil else {
+            throw APIError(error: "lease \(id) isn't ready yet", code: "notReady")
+        }
         return lease
+    }
+
+    /// An exec's body, its `ExecRequest`, read; nil when the client went away.
+    static func execRequest(_ request: HTTPRequest, _ peer: CachePeer) async throws -> ExecRequest? {
+        guard request.header("upgrade")?.lowercased() == OSSExecProtocol.name else {
+            throw APIError(error: "an exec's connection is upgraded: Connection: Upgrade, Upgrade: \(OSSExecProtocol.name)", code: "upgrade")
+        }
+        guard let length = Int(request.header("content-length") ?? ""), length > 0, length <= 1 << 20 else {
+            throw APIError(error: "an exec's body is its ExecRequest (JSON), with its length", code: "length")
+        }
+        var body = Data()
+        guard try await peer.body(Int64(length), { body.append($0) }) else { return nil }   // the client went away
+        guard let exec = try? JSONDecoder().decode(ExecRequest.self, from: body), !exec.arguments.isEmpty else {
+            throw APIError(error: "an exec's body is an ExecRequest: {\"arguments\": [...], \"tty\"?, \"columns\"?, \"rows\"?, "
+                                + "\"environment\"?, \"workingDirectory\"?, \"gui\"?}")
+        }
+        return exec
     }
 
     // MARK: exec
@@ -73,18 +100,7 @@ enum ContainerAPI {
     /// relayed both ways as they come until the container closes (after the
     /// exit frame) or the client goes (which ends the command).
     static func exec(_ request: HTTPRequest, _ peer: CachePeer, lease: Lease) async throws {
-        guard request.header("upgrade")?.lowercased() == OSSExecProtocol.name else {
-            throw APIError(error: "an exec's connection is upgraded: Connection: Upgrade, Upgrade: \(OSSExecProtocol.name)", code: "upgrade")
-        }
-        guard let length = Int(request.header("content-length") ?? ""), length > 0, length <= 1 << 20 else {
-            throw APIError(error: "an exec's body is its ExecRequest (JSON), with its length", code: "length")
-        }
-        var body = Data()
-        guard try await peer.body(Int64(length), { body.append($0) }) else { return }   // the client went away
-        guard let exec = try? JSONDecoder().decode(ExecRequest.self, from: body), !exec.arguments.isEmpty else {
-            throw APIError(error: "an exec's body is an ExecRequest: {\"arguments\": [...], \"tty\"?, \"columns\"?, \"rows\"?, "
-                                + "\"environment\"?, \"workingDirectory\"?}")
-        }
+        guard let exec = try await execRequest(request, peer) else { return }
         // Its container, waited for while it starts again (the Mac restarted, its helper ended).
         let container: UnixStream
         do {
@@ -162,8 +178,8 @@ enum ContainerAPI {
     /// `PUT …/files?path=…[&mode=…]`: the body to the container as it comes,
     /// into a file beside the path's, moved into place once it has all come
     /// and the container has all of it.
-    static func upload(_ request: HTTPRequest, _ peer: CachePeer, lease: Lease) async throws {
-        let path = try path(request)
+    static func upload(_ request: HTTPRequest, _ peer: CachePeer, lease: Lease, commands: FileCommands) async throws {
+        let path = try commands.resolve(try path(request))
         let mode = request.query["mode"].flatMap { $0.isEmpty ? nil : $0 }
         if let mode, !(3...4).contains(mode.count) || !mode.allSatisfy({ ("0"..."7").contains($0) }) {
             throw APIError(error: "a file's mode is octal: 644, 755, 0600")
@@ -171,13 +187,12 @@ enum ContainerAPI {
         let chunked = request.header("transfer-encoding")?.lowercased().contains("chunked") == true
         let length = request.header("content-length").flatMap { Int64($0) }
         guard chunked || length != nil else { throw APIError(error: "a put's body has a length (or comes in chunks)", code: "length") }
-        let socket = lease.execSocket ?? ""
         let id = Random.hex(6)
-        let receiving = try await ContainerCommand.start(socket, files("receive", path, id))
+        let receiving = try await commands.start(files("receive", path, id), nil)
         if request.header("expect")?.lowercased() == "100-continue" {
             guard await peer.send(Data("HTTP/1.1 100 Continue\r\n\r\n".utf8)) else {
                 receiving.close()
-                await discard(socket, path, id)
+                await discard(commands, path, id)
                 return
             }
         }
@@ -197,7 +212,7 @@ enum ContainerAPI {
             // folder there): the receiving command is ended, its file removed.
             receiving.close()
             let ended = await receiving.finish()
-            await discard(socket, path, id)
+            await discard(commands, path, id)
             let message = ended.error.trimmingCharacters(in: .whitespacesAndNewlines)
             throw APIError(error: ended.status > 0 && !message.isEmpty ? message : "the upload was cut short")
         }
@@ -205,14 +220,14 @@ enum ContainerAPI {
         let received = await receiving.finish()
         let size = Int64(String(decoding: received.output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
         guard received.status == 0, size == counted.value else {
-            await discard(socket, path, id)
+            await discard(commands, path, id)
             let message = received.error.trimmingCharacters(in: .whitespacesAndNewlines)
             throw APIError(error: received.status != 0 && !message.isEmpty ? message
                            : "the container took \(size.map(String.init) ?? "none") of its \(counted.value) bytes")
         }
-        let committed = try await ContainerCommand.run(socket, files("commit", path, id, mode ?? ""))
+        let committed = try await commands.run(files("commit", path, id, mode ?? ""))
         guard committed.status == 0 else {
-            await discard(socket, path, id)
+            await discard(commands, path, id)
             throw APIError(error: "putting \(path) in place: \(committed.error.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
         let file = MachineFile(path: String(decoding: committed.output, as: UTF8.self), size: counted.value)
@@ -220,16 +235,15 @@ enum ContainerAPI {
         _ = await peer.send(.json(file, status: 201))
     }
 
-    private static func discard(_ socket: String, _ path: String, _ id: String) async {
-        _ = try? await ContainerCommand.run(socket, files("discard", path, id))
+    private static func discard(_ commands: FileCommands, _ path: String, _ id: String) async {
+        _ = try? await commands.run(files("discard", path, id))
     }
 
     /// `GET …/files?path=…`: its size first (its answer's length), then its
     /// bytes as the container reads them.
-    static func download(_ request: HTTPRequest, _ peer: CachePeer, lease: Lease) async throws {
-        let path = try path(request)
-        let socket = lease.execSocket ?? ""
-        let sized = try await ContainerCommand.run(socket, files("size", path))
+    static func download(_ request: HTTPRequest, _ peer: CachePeer, lease: Lease, commands: FileCommands) async throws {
+        let path = try commands.resolve(try path(request))
+        let sized = try await commands.run(files("size", path))
         let message = sized.error.trimmingCharacters(in: .whitespacesAndNewlines)
         guard sized.status == 0, let size = Int64(String(decoding: sized.output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)) else {
             throw APIError(error: message.isEmpty ? "\(path) can't be read (\(sized.status))" : message, code: sized.status == 2 ? "noFile" : nil)
@@ -239,7 +253,7 @@ enum ContainerAPI {
         // Past its head, a failure can only close the connection short of its
         // length; a file that grew meanwhile is sent as long as it was.
         let sent = Counter()
-        let reading = try? await ContainerCommand.start(socket, files("read", path), stdout: { data in
+        let reading = try? await commands.start(files("read", path), { data in
             let room = size - sent.value
             guard room > 0 else { return false }
             let part = data.count > room ? data.prefix(Int(room)) : data
@@ -286,10 +300,40 @@ final class Counter: @unchecked Sendable {
     var value: Int64 { lock.withLock { total } }
 }
 
+/// A command a lease's files go through: a container's (ContainerCommand),
+/// or one on a slot's primary (RemoteProcess).
+protocol MachineCommand: Sendable {
+    func write(_ frame: ExecFrame) async throws
+    /// Its status and what it wrote, once it has ended.
+    func finish() async -> ContainerCommand.Result
+    /// Ended (its connection or its program).
+    func close()
+}
+
+/// How a lease's file commands run: `start` (ContainerAPI's script's
+/// arguments, and what takes its stdout as it comes, if anything), and the
+/// request's path as the lease takes it.
+struct FileCommands: Sendable {
+    var start: @Sendable ([String], (@Sendable (Data) async -> Bool)?) async throws -> any MachineCommand
+    var resolve: @Sendable (String) throws -> String = { $0 }
+
+    /// Run with no input, to its end.
+    func run(_ arguments: [String]) async throws -> ContainerCommand.Result {
+        let command = try await start(arguments, nil)
+        try? await command.write(.closeStdin)
+        return await command.finish()
+    }
+
+    /// A container's, over its exec socket; paths as it takes them.
+    static func container(_ socket: String) -> FileCommands {
+        FileCommands(start: { arguments, stdout in try await ContainerCommand.start(socket, arguments, stdout: stdout) })
+    }
+}
+
 /// A command in a container, run by the server over its exec socket: its
 /// stdout kept (up to a megabyte) or handed to `stdout` as it comes, its
 /// stderr kept (up to 64 KB), its exit status.
-final class ContainerCommand: Sendable {
+final class ContainerCommand: MachineCommand {
     struct Result: Sendable {
         var status: Int32
         var output: Data
