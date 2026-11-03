@@ -113,13 +113,88 @@ MCP tools as a container's (`POST /v1/machines/<id>/exec`, `PUT`/`GET
   path and moved into place), over SSH as the slot's user; paths under its
   home (relative, `~/…` or absolute) or /tmp, no `..`.
 
+## Pictures and recordings (2026-11-03)
+
+The owner (2026-11-03): iOS, macOS and Android run in slots, and slots run
+tests and take screenshots and screen recordings. Windows and Ubuntu wait
+for their primaries, which wait for the Mac Studio's memory.
+
+Every lease that shows something gets the same three verbs, whatever is
+behind them:
+
+```sh
+oss machine screenshot <id> shot.png [--window=<app>]   # a PNG, now
+oss machine record <id> start [--window=<app>]          # a recording begins
+oss machine record <id> stop clip.mp4                   # it ends; an H.264 MP4 comes back
+```
+
+(`GET /v1/machines/<id>/screenshot`, `POST …/record` and `POST …/record/stop`;
+MCP `oss_screenshot`, `oss_record`; grants `machine.screenshot` and
+`machine.record` for CI's containers.) One recording at a time a lease; one
+left running ends with the lease, its file discarded.
+
+### macOS: a slot's GUI runs
+
+A slot's apps that draw run in the primary's console session (`exec
+--gui`, `xctest --gui`), one at a time on the primary. What is seen is
+that session's screen:
+
+- **Screenshot**: the server's own VNC capture of the primary (as a whole
+  VM lease's is: RFB, no permission asked in the guest), cropped to the
+  app's window when `--window` names it (its frame read in the session by
+  a small helper over CGWindowList: window bounds need no Screen Recording
+  permission). Only while the slot holds the GUI turn, so a picture is
+  never another slot's.
+- **Recording**: the same VNC frames at 30 per second, encoded on the
+  server's Mac (VideoToolbox's H.264), cropped as a screenshot is.
+- The proof's Mac part (isomer's tools/proof/proof.py) moves to a slot:
+  the app run by `exec --gui`, its windows pictured by `screenshot
+  --window`.
+
+### iOS: simulators in the primary
+
+`ios` leases move from the server's Mac into the primary: the same lease,
+verbs and grants (`simctl`, `install`, `xctest`, `screenshot`, `tap`), a
+simulator of the primary's own Xcode, run by its guest user, booted
+headless. The server's Mac then runs no simulators (the owner,
+2026-10-31: no tests or simulators on the host).
+
+- **Screenshot**: `xcrun simctl io <udid> screenshot --mask=black`, with
+  the status bar held still as now (OS Server 0.7's override, applied in
+  the primary).
+- **Recording**: `xcrun simctl io <udid> recordVideo --codec=h264`, ended by
+  SIGINT, the file brought back.
+- **Room**: a simulator takes about 2 GB, and the primary's memory is the
+  budget's: the primary grows to 32 GB with `primary.macos.simulators` (4
+  at once by default) beside its slots. Still one of the two macOS VMs.
+
+### Android: emulators on the server's Mac until the Linux primary
+
+The Android emulator needs the hypervisor, and macOS gives a macOS guest
+no nested virtualization (only Linux guests, on newer chips): so Android
+can't run in the Mac primary. Its emulators stay on the server's Mac,
+leased as now, with the same verbs as a slot's:
+
+- **Screenshot**: `adb exec-out screencap -p` (as now).
+- **Recording**: `adb shell screenrecord` (H.264, three minutes at most a
+  file: longer ones are recorded in parts and joined on the server's Mac).
+- They move into the Linux primary when it comes, the API unchanged.
+
+### Windows and Ubuntu
+
+Held until the Mac Studio (the owner, 2026-11-03: not enough memory now).
+Their primaries take the same shape: users of their own on one VM for
+slots, the console session for GUI runs, VNC for pictures and
+recordings.
+
 ## Then
 
-1. iOS leases move into the primary: its simulators, not the host's (the
-   same `ios` lease and verbs; the host's simulators go).
-2. The Linux primary (Linux apps, Android emulators) and the Windows one.
-3. CI's `ci` kind is refused whole GUI VMs; the repositories' mac_vm.sh
-   becomes a slot lease and `machine xctest`.
+1. Screenshots and recordings on every lease that shows something (above).
+2. iOS leases move into the primary (above).
+3. The Linux primary (Linux apps, Android emulators) and the Windows one,
+   with the Mac Studio.
+4. CI's `ci` kind is refused whole GUI VMs: done in practice for oss,
+   visor and reviews (their mac_vm.sh leases a slot); isomer's proof next.
 
 ## Order of work
 
