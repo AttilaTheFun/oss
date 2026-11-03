@@ -645,7 +645,9 @@ public enum OSSCommand {
                     printInstalled(try await client.install(lease.id, object: arguments.positional[3]))
                 case "xctest":
                     let lease = try await resolveLease(target, client)
-                    guard lease.platform == .ios else { fail("xctest is for an iOS lease (oss machine lease ios)") }
+                    guard lease.platform == .ios || lease.platform == .mac else {
+                        fail("xctest is for an iOS lease (oss machine lease ios) or a Mac slot (oss machine lease mac)")
+                    }
                     // In the holder's name: its files put in its storage, its lease's tests run.
                     let holder = arguments.options["holder"] ?? holderName()
                     exit(try await xctestCommand(arguments, put: { file in
