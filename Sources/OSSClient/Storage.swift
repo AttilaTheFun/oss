@@ -360,6 +360,22 @@ public struct OSSGrantClient: Sendable {
     /// `storage.get`: the object's bytes written to `file` as they come.
     public func get(to file: URL) async throws { _ = try await send("GET", responseFile: file) }
 
+    /// `machine.screenshot` (API 19): a PNG of the grant's lease's screen
+    /// (with `window`, a Mac slot's app's window alone).
+    public func screenshot(window: String? = nil) async throws -> Data {
+        try await send("GET", query: window.map { ["window": $0] } ?? [:]).body
+    }
+
+    /// `machine.record` (API 19): a recording of the grant's lease's screen begun.
+    public func startRecording(_ request: RecordRequest = RecordRequest()) async throws -> RecordingStarted {
+        try JSONDecoder.oss.decode(RecordingStarted.self, from: try await send("POST", body: try JSONEncoder.oss.encode(request)).body)
+    }
+
+    /// `machine.record`: the recording ended, its MP4 written to `file`.
+    public func stopRecording(to file: URL) async throws {
+        _ = try await send("POST", below: "stop", body: Data(), responseFile: file)
+    }
+
     /// `machine.install`: an object the lease's holder has a lease on
     /// installed on its simulator.
     public func install(object: String) async throws -> InstallResult {

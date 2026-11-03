@@ -148,12 +148,29 @@ enum MCPServer {
         tool("oss_grant", """
             A URL that does one thing for a few minutes, for files too big for a tool call: storage.put (PUT the file's bytes; \
             name it with `name`), storage.get (GET an object of yours), machine.upload / machine.download (a container's or Mac slot's \
-            file: add ?path=…), machine.install, machine.exec. A grant is a secret: don't put it anywhere else.
+            file: add ?path=…), machine.install, machine.exec, machine.screenshot (GET a PNG), machine.record (POST to start, POST \
+            …/record/stop for the MP4). A grant is a secret: don't put it anywhere else.
             """,
-             ["verb": ["type": "string", "enum": ["storage.put", "storage.get", "machine.upload", "machine.download", "machine.install", "machine.exec", "machine.xctest"]],
+             ["verb": ["type": "string", "enum": ["storage.put", "storage.get", "machine.upload", "machine.download", "machine.install", "machine.exec",
+                                                  "machine.xctest", "machine.screenshot", "machine.record"]],
               "lease": leaseID, "object": ["type": "string"], "name": ["type": "string"], "ttl": ["type": "string", "description": "how long the URL works: 5m unless asked, at most 15m"]],
              required: ["verb"]),
-        tool("oss_screenshot", "A picture of a leased machine's screen.", ["id": leaseID], required: ["id"]),
+        tool("oss_screenshot", """
+            A picture of a leased machine's screen. A Mac slot's is its primary's screen, taken only while the slot's \
+            oss_exec gui command is running there; `window` (a slot's) crops it to that app's frontmost window.
+            """,
+             ["id": leaseID, "window": ["type": "string", "description": "a Mac slot's: the app (its name or bundle identifier) whose window alone is pictured"]],
+             required: ["id"]),
+        tool("oss_record", """
+            Record a leased machine's screen: action start begins (one recording at a time a lease), action stop ends it \
+            and keeps its H.264 MP4 in your storage, answering the object and a storage.get URL for it. An emulator, a \
+            simulator or a VM; a Mac slot's primary screen only while the slot's oss_exec gui command runs (`window`: that \
+            app's window alone). A recording left running is discarded with its lease.
+            """,
+             ["id": leaseID, "action": ["type": "string", "enum": ["start", "stop"]],
+              "window": ["type": "string", "description": "start, a Mac slot's: the app (its name or bundle identifier) whose window alone is recorded"],
+              "name": ["type": "string", "description": "stop: the recording's name in storage (default <id>-recording.mp4)"]],
+             required: ["id", "action"]),
         tool("oss_tap", "Tap (click) a leased machine's screen at x, y: its screenshot's pixels.",
              ["id": leaseID, "x": ["type": "number"], "y": ["type": "number"]], required: ["id", "x", "y"]),
         tool("oss_swipe", "Swipe (drag) on a leased machine's screen from x, y to toX, toY, in its screenshot's pixels.",
@@ -313,8 +330,29 @@ enum MCPServer {
                 return text("\(grant.verb): \(grant.url.absoluteString)\nuntil \(iso(grant.expires))")
             case "oss_screenshot":
                 let held = try await lease()
-                let data = try await client.screenshot(held.id)
+                let data = try await client.screenshot(held.id, window: arguments["window"] as? String)
                 return ["content": [["type": "image", "data": data.base64EncodedString(), "mimeType": "image/png"]], "isError": false]
+            case "oss_record":
+                let held = try await lease()
+                switch arguments["action"] as? String {
+                case "start":
+                    let started = try await client.startRecording(held.id, RecordRequest(window: arguments["window"] as? String))
+                    return text("lease \(held.id): recording" + (started.window.map { " \($0)'s window" } ?? " its screen")
+                                + (started.width.map { " (\($0)×\(started.height ?? 0))" } ?? "") + "; oss_record stop ends it")
+                case "stop":
+                    let file = FileManager.default.temporaryDirectory.appendingPathComponent("oss-record-\(held.id)-\(UUID().uuidString.prefix(6)).mp4")
+                    defer { try? FileManager.default.removeItem(at: file) }
+                    try await client.stopRecording(held.id, to: file)
+                    let name = (arguments["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "\(held.id)-recording.mp4"
+                    let put = try await client.putObject(file: file, holder: context.holder, name: name)
+                    let grant = try await client.grant(GrantRequest(verb: "storage.get", object: put.object.sha256), holder: context.holder)
+                    return text("""
+                        recording kept in your storage: \(name), \(put.object.size) bytes, sha256 \(put.object.sha256) (until \(iso(put.lease.expires)))
+                        storage.get: \(grant.url.absoluteString) (until \(iso(grant.expires)))
+                        """)
+                default:
+                    throw Failure(description: "action is start or stop")
+                }
             case "oss_tap", "oss_swipe", "oss_type", "oss_key":
                 let held = try await lease()
                 let action: InputRequest.Action = ["oss_tap": .tap, "oss_swipe": .swipe, "oss_type": .type, "oss_key": .key][name]!

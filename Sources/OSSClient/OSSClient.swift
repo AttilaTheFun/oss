@@ -358,9 +358,21 @@ public struct OSSClient: Sendable {
         return try await json("POST", "/v1/machines/\(lease.id)/\(tool)", body: DeviceCommand(arguments: arguments))
     }
 
-    /// A PNG of a lease's screen.
-    public func screenshot(_ id: String) async throws -> Data {
-        try await send("GET", "/v1/machines/\(id)/screenshot").body
+    /// A PNG of a lease's screen; with `window` (a Mac slot's, API 19),
+    /// that app's frontmost window alone (its name or bundle identifier).
+    public func screenshot(_ id: String, window: String? = nil) async throws -> Data {
+        try await send("GET", "/v1/machines/\(id)/screenshot", query: window.map { ["window": $0] } ?? [:]).body
+    }
+
+    /// A recording of a lease's screen begun (API 19): one at a time a
+    /// lease, ended by `stopRecording`, discarded if the lease ends first.
+    public func startRecording(_ id: String, _ request: RecordRequest = RecordRequest()) async throws -> RecordingStarted {
+        try await json("POST", "/v1/machines/\(id)/record", body: request)
+    }
+
+    /// The lease's recording ended: its H.264 MP4 written to `file`.
+    public func stopRecording(_ id: String, to file: URL) async throws {
+        _ = try await send("POST", "/v1/machines/\(id)/record/stop", body: Data(), responseFile: file, timeout: Self.transferTimeout)
     }
 
     /// A tap, swipe, text or key on a lease's screen, in its screenshot's pixels.

@@ -39,7 +39,8 @@ enum JobGrantRoutes {
         switch (method, parts[1], parts.count) {
         case ("GET", "machines", 2), ("POST", "machines", 2): return true
         case ("GET", "machines", 3), ("DELETE", "machines", 3): return true
-        case ("POST", "machines", 4): return ["renew", "simctl", "adb", "input", "install", "exec", "xctest"].contains(parts[3])
+        case ("POST", "machines", 4): return ["renew", "simctl", "adb", "input", "install", "exec", "xctest", "record"].contains(parts[3])
+        case ("POST", "machines", 5): return parts[3] == "record" && parts[4] == "stop"
         case ("GET", "machines", 4): return ["screenshot", "files"].contains(parts[3])
         case ("PUT", "machines", 4): return parts[3] == "files"
         case ("PUT", "machines", 5): return parts[3] == "files"
@@ -74,8 +75,12 @@ struct GrantKey: Sendable {
     /// way by a verb of their own, as the store's do: a grant that puts
     /// files in reads none out. `machine.xctest` runs an iOS lease's tests
     /// and reads their results (a run's results are no use without it).
+    /// `machine.screenshot` takes a picture of a lease's screen,
+    /// `machine.record` starts and stops a recording of it (API 19).
     static let verbs = ["storage.put", "storage.get", "machine.install", "machine.exec", "machine.upload", "machine.download",
-                        "machine.xctest"]
+                        "machine.xctest", "machine.screenshot", "machine.record"]
+    /// The verbs whose lease is any that shows something (API 19).
+    static let screenVerbs = ["machine.screenshot", "machine.record"]
     /// The verbs whose lease is an iOS lease's.
     static let iosVerbs = ["machine.install", "machine.xctest"]
     /// The verbs whose lease is a container's, or a Mac slot's (API 18).
@@ -176,6 +181,11 @@ struct GrantKey: Sendable {
         if method == "PUT", parts.count == 4, parts[1] == "machines", parts[3] == "files" { return ("machine.upload", "machines/\(parts[2])") }
         if method == "GET", parts.count == 4, parts[1] == "machines", parts[3] == "files" { return ("machine.download", "machines/\(parts[2])") }
         if method == "POST", parts.count == 4, parts[1] == "machines", parts[3] == "xctest" { return ("machine.xctest", "machines/\(parts[2])") }
+        if method == "GET", parts.count == 4, parts[1] == "machines", parts[3] == "screenshot" { return ("machine.screenshot", "machines/\(parts[2])") }
+        if method == "POST", parts.count == 4, parts[1] == "machines", parts[3] == "record" { return ("machine.record", "machines/\(parts[2])") }
+        if method == "POST", parts.count == 5, parts[1] == "machines", parts[3] == "record", parts[4] == "stop" {
+            return ("machine.record", "machines/\(parts[2])")
+        }
         if method == "GET", parts.count == 6, parts[1] == "machines", parts[3] == "xctest", ["junit", "result"].contains(parts[5]) {
             return ("machine.xctest", "machines/\(parts[2])")
         }
@@ -232,6 +242,14 @@ struct GrantKey: Sendable {
             }
             claims.resource = "machines/\(id)"
             path = "/v1/machines/\(id)/" + (verb == "machine.exec" ? "exec" : "files")
+        case let verb where Self.screenVerbs.contains(verb):
+            guard let id = request.lease, !id.isEmpty else { throw APIError(error: "a \(verb) grant names its lease") }
+            guard let lease, lease.id == id, lease.holder == holder, lease.state == .creating || lease.state == .ready else {
+                throw APIError(error: "no lease \(id) of \(holder)'s", code: "notFound")
+            }
+            guard lease.platform != .container else { throw APIError(error: "\(verb) is for a lease with a screen: a container has none") }
+            claims.resource = "machines/\(id)"
+            path = "/v1/machines/\(id)/" + (verb == "machine.screenshot" ? "screenshot" : "record")
         default:
             throw APIError(error: "no verb \(request.verb) (there are \(Self.verbs.joined(separator: ", ")))")
         }

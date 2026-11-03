@@ -865,6 +865,39 @@ public struct Capabilities: Codable, Sendable {
     }
 }
 
+/// A recording of a lease's screen begun (API 19, `POST
+/// /v1/machines/<id>/record`): an emulator's (screenrecord), a simulator's
+/// (simctl recordVideo), a VM's or a Mac slot's (its VNC's frames, at up to
+/// 30 a second). `window` (a Mac slot's alone): its frontmost window of that
+/// app (its name or bundle identifier) and nothing else. One at a time a
+/// lease; `POST …/record/stop` ends it and answers its H.264 MP4.
+public struct RecordRequest: Codable, Sendable {
+    public var window: String?
+
+    public init(window: String? = nil) {
+        self.window = window
+    }
+}
+
+/// A recording under way (`POST /v1/machines/<id>/record`'s 202).
+public struct RecordingStarted: Codable, Sendable {
+    public var lease: String
+    public var started: Date
+    /// The app whose window it records, if it was asked for one.
+    public var window: String?
+    /// Its frames' size in pixels, where the server knows it (VNC's).
+    public var width: Int?
+    public var height: Int?
+
+    public init(lease: String, started: Date, window: String? = nil, width: Int? = nil, height: Int? = nil) {
+        self.lease = lease
+        self.started = started
+        self.window = window
+        self.width = width
+        self.height = height
+    }
+}
+
 /// A tap, a swipe, text typed or a key pressed on a lease's screen
 /// (`POST /v1/machines/<id>/input`). Positions are its screenshot's pixels.
 public struct InputRequest: Codable, Sendable {
@@ -1217,9 +1250,16 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 18
+    /// 19 from 0.14.0: a Mac slot's screenshot (its primary's screen,
+    /// while the slot holds the primary's GUI session), `?window=<app>` on a
+    /// screenshot (a slot's: that app's frontmost window alone), and
+    /// recordings of a lease's screen (`POST /v1/machines/<id>/record`
+    /// with a `RecordRequest`, `POST …/record/stop` answering the H.264
+    /// MP4; the `recordings` feature), with grants `machine.screenshot`
+    /// and `machine.record`.
+    public static let apiLevel = 19
     /// What every server does; one that keeps a Bazel cache adds `cache`.
-    public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
+    public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants", "recordings"]
 }
 
 extension JSONEncoder {
