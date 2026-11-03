@@ -32,12 +32,19 @@ struct PrimaryMacSettings: Codable, Equatable, Sendable {
     var memoryGigabytes = 24
     /// Slots (`mac` leases) at once.
     var slots = 4
+    /// What the primary needs that its base lacks, as shell lines run by
+    /// its guest user (an administrator: Homebrew's owner) once it's ready
+    /// and before it lends a slot, again after each of the server's starts
+    /// and whenever they change: so each must be safe to run again
+    /// (`command -v qemu-system-aarch64 || brew install qemu`).
+    var setup: [String] = []
 
-    init(config: String = "xcode_27_2", cpus: Int = 8, memoryGigabytes: Int = 24, slots: Int = 4) {
+    init(config: String = "xcode_27_2", cpus: Int = 8, memoryGigabytes: Int = 24, slots: Int = 4, setup: [String] = []) {
         self.config = config
         self.cpus = cpus
         self.memoryGigabytes = memoryGigabytes
         self.slots = slots
+        self.setup = setup
     }
 
     init(from decoder: Decoder) throws {
@@ -47,6 +54,15 @@ struct PrimaryMacSettings: Codable, Equatable, Sendable {
         cpus = max(1, try c.decodeIfPresent(Int.self, forKey: .cpus) ?? d.cpus)
         memoryGigabytes = max(4, try c.decodeIfPresent(Int.self, forKey: .memoryGigabytes) ?? d.memoryGigabytes)
         slots = max(0, try c.decodeIfPresent(Int.self, forKey: .slots) ?? d.slots)
+        setup = try c.decodeIfPresent([String].self, forKey: .setup) ?? []
+    }
+
+    /// The setup as one script for the guest's shell (Guest.run: on its
+    /// standard input), Homebrew on the PATH, stopping at the first line
+    /// that fails; nil when there is none.
+    var setupScript: String? {
+        guard !setup.isEmpty else { return nil }
+        return (["set -e", "export PATH=\"/opt/homebrew/bin:$PATH\" HOMEBREW_NO_AUTO_UPDATE=1"] + setup).joined(separator: "\n")
     }
 
     /// What it holds of the budget, and its VM's CPUs and memory.
