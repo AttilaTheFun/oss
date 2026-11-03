@@ -559,9 +559,10 @@ actor MachineManager {
     /// A slot's user made on its primary, with its home and keychain.
     private func createSlot(_ id: String) async throws {
         guard let lease = leases[id], let guest = primaryGuest(of: lease) else { throw APIError(error: "its primary macOS VM is gone") }
-        let script = SlotUser.makeScript(lease: id, password: Random.hex(16), keychainPassword: SlotSecrets.keychainPassword(id, key: config.managementKey))
+        let script = SlotUser.makeScript(lease: id, password: SlotSecrets.keychainPassword(id, key: config.managementKey))
         let made = try await guest.run(script, timeout: 180)
         guard made.ok else { throw APIError(error: "its user wasn't made on the primary: \(made.error.suffix(400))") }
+        if !made.error.isEmpty { log("lease \(id): \(made.error.suffix(400))") }
         guard leases[id]?.state == .creating else { _ = try? await guest.run(SlotUser.deleteScript(lease: id), timeout: 120); return }
         leases[id]?.guestAddress = guest.address
         leases[id]?.sshUser = SlotUser.name(id)

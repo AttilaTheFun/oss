@@ -95,10 +95,15 @@ import OSSClient
 }
 
 @Test func aSlotUsersScriptsMakeAndDeleteIt() {
-    let make = SlotUser.makeScript(lease: "ab12", password: "pw", keychainPassword: "kc")
-    #expect(make.contains("sysadminctl -addUser \"$user\""))
+    let make = SlotUser.makeScript(lease: "ab12", password: "kc")
+    #expect(make.contains("sysadminctl -addUser \"$user\" -fullName \"OS Server slot ab12\" -password 'kc'"))
     #expect(make.contains("user=oss-ab12"))
-    #expect(make.contains("security unlock-keychain -p 'kc' '/Users/oss-ab12/Library/Keychains/login.keychain-db'"))
+    // The login keychain sysadminctl made, unlocked with the same password; made again if it won't.
+    #expect(make.contains("as_user security unlock-keychain -p 'kc' '/Users/oss-ab12/Library/Keychains/login.keychain-db' 2>/dev/null || {"))
+    #expect(make.contains("as_user security create-keychain -p 'kc' '/Users/oss-ab12/Library/Keychains/login.keychain-db'"))
+    // In the user's bootstrap, and never failing the slot.
+    #expect(make.contains("as_user() { sudo launchctl asuser \"$uid\" sudo -u \"$user\" -H \"$@\"; }"))
+    #expect(make.contains("its keychain wasn't made; the slot has none"))
     let delete = SlotUser.deleteScript(lease: "ab12")
     #expect(delete.contains("sysadminctl -deleteUser \"$user\""))
     #expect(delete.contains("rm -rf \"/Users/$user\""))

@@ -127,10 +127,18 @@ enum SlotUser {
     static func keychain(_ lease: String) -> String { "/Users/\(name(lease))/Library/Keychains/login.keychain-db" }
 
     /// The user made, its home, its keychain made, its default and unlocked
-    /// (no locking on sleep or idle). `password` is the user's own (it never
-    /// logs in), `keychainPassword` the server's for its keychain.
-    static func makeScript(lease: String, password: String, keychainPassword: String) -> String {
+    /// (no locking on sleep or idle). `password` is the server's for the
+    /// slot: the user's own (it never logs in) and its keychain's, as
+    /// `sysadminctl -addUser` makes the user's login keychain with its
+    /// password. A keychain that won't unlock with it (one left by an
+    /// earlier user of the name) is made again. The keychain's commands run
+    /// in the user's own bootstrap (`launchctl asuser`), which securityd
+    /// wants of a user with no login session, and can't fail the slot: a
+    /// test that keeps no token needs none, and one that does says so; what
+    /// went wrong is in the script's standard error, for the server's log.
+    static func makeScript(lease: String, password: String) -> String {
         let user = name(lease)
+        let keychain = keychain(lease)
         return """
             set -euo pipefail
             user=\(user)
@@ -139,13 +147,20 @@ enum SlotUser {
             fi
             sudo createhomedir -c -u "$user" >/dev/null
             sudo -u "$user" -H mkdir -p "/Users/$user/Library/Keychains"
-            if [ ! -f '\(keychain(lease))' ]; then
-                sudo -u "$user" -H security create-keychain -p '\(keychainPassword)' '\(keychain(lease))'
-            fi
-            sudo -u "$user" -H security list-keychains -d user -s '\(keychain(lease))'
-            sudo -u "$user" -H security default-keychain -d user -s '\(keychain(lease))'
-            sudo -u "$user" -H security unlock-keychain -p '\(keychainPassword)' '\(keychain(lease))'
-            sudo -u "$user" -H security set-keychain-settings '\(keychain(lease))'
+            uid=$(id -u "$user")
+            as_user() { sudo launchctl asuser "$uid" sudo -u "$user" -H "$@"; }
+            # In a function, chained by &&: errexit is off in an if's condition.
+            make_keychain() {
+                as_user security unlock-keychain -p '\(password)' '\(keychain)' 2>/dev/null || {
+                    as_user rm -f '\(keychain)' &&
+                    as_user security create-keychain -p '\(password)' '\(keychain)' &&
+                    as_user security unlock-keychain -p '\(password)' '\(keychain)'
+                } || return 1
+                as_user security list-keychains -d user -s '\(keychain)' &&
+                as_user security default-keychain -d user -s '\(keychain)' &&
+                as_user security set-keychain-settings '\(keychain)'
+            }
+            make_keychain || echo "oss: slot \(lease): its keychain wasn't made; the slot has none" >&2
             id "$user"
             """
     }
