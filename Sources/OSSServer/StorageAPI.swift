@@ -87,10 +87,10 @@ extension Server {
     static func response(for error: APIError) -> HTTPResponse {
         let status: Int
         switch error.code {
-        case "busy", "notReady", "tooBig": status = 409
+        case "busy", "notReady", "tooBig", "noGUI": status = 409
         case "restarting": status = 503
         case "notLocal", "forbidden": status = 403
-        case "notFound", "noObject", "noFile", "noCI": status = 404
+        case "notFound", "noObject", "noFile", "noCI", "noWindow": status = 404
         case "quota": status = 413
         case "length": status = 411
         case "upgrade": status = 426

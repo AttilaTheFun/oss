@@ -90,7 +90,10 @@ oss machine simctl <id> install ./My.app       # iOS: local paths are uploaded f
 oss machine simctl <id> launch com.example.app
 oss machine xctest <id> --tests=Tests.zip      # iOS: rules_apple's tests on its simulator (below)
 oss machine adb <id> install ./app.apk         # Android (or: adb connect <host>:<adbPort>)
-oss machine screenshot <id> screen.png         # any lease
+oss machine screenshot <id> screen.png         # any lease (a Mac slot's: below)
+oss machine screenshot <slot> w.png --window=Storybook   # a slot's app's window, while its exec --gui runs
+oss machine record <id> start [--window=<app>] # a recording of its screen, one at a time a lease
+oss machine record <id> stop clip.mp4          # ended: its H.264 MP4
 oss machine tap <id> 120 480                   # any lease: in the screenshot's pixels
 oss machine swipe <id> 500 1600 500 400 --ms=400
 oss machine type <id> hello world              # into what has focus
@@ -918,7 +921,9 @@ containers, which it couldn't read.
 | `DELETE /v1/machines/<id>` | released |
 | `PUT /v1/machines/<id>/files/<name>` (raw body) | a file for its commands, as `@<name>` (a `.zip` is unpacked: an `.app`) |
 | `POST /v1/machines/<id>/simctl` or `/adb` `{"arguments": [...]}` | `simctl` against the simulator / `adb` against the emulator: `{"status", "output", "error"}` |
-| `GET /v1/machines/<id>/screenshot` | a PNG of its screen |
+| `GET /v1/machines/<id>/screenshot?window=…` | a PNG of its screen. A Mac slot's (API 19) is its primary's, taken from the primary's VNC only while the slot holds the primary's GUI session (its `exec` with `gui`, or `xctest --gui`, running): else 409 `noGUI`. `window` (a slot's alone; 400 on any other lease): that app's frontmost window (its name or bundle identifier), its frame read in the console session (CGWindowList's bounds, scaled to the framebuffer); 404 `noWindow`, naming the apps with windows, if it has none on the screen. With the token, a `machine.screenshot` grant (API 19) or a CI job's |
+| `POST /v1/machines/<id>/record` `{"window"?}` | a recording of its screen begun (API 19): 202 `{"lease", "started", "window"?, "width"?, "height"?}`. An emulator's by `adb shell screenrecord` (6 Mbit/s; in parts where screenrecord stops itself at three minutes, joined at the stop: ffmpeg's concat if the server's Mac has ffmpeg, else AVFoundation's, frames copied), a simulator's by `simctl io recordVideo --codec=h264 --mask=black`, a VM's or a Mac slot's from its VNC at up to 30 frames a second (AVFoundation's H.264, at most 4096 pixels a side), a slot's only while it holds the GUI session (409 `noGUI`; one that loses it ends, kept for its stop), cropped to `window`'s as a screenshot is. One at a time a lease (409 `busy`), at most an hour; one still running when its lease ends is discarded. A container: 400 |
+| `POST /v1/machines/<id>/record/stop` | the recording ended: its H.264 MP4 (`video/mp4`); 404 `notFound` if the lease isn't recording. With the token, the lease's `machine.record` grant, or a CI job's |
 | `POST /v1/machines/<id>/input` `{"action": "tap"\|"swipe"\|"type"\|"key", "x"?, "y"?, "toX"?, "toY"?, "milliseconds"?, "text"?, "key"?}` | a tap, swipe, text or key on its screen, in its screenshot's pixels |
 | `GET /v1/usage` | the server's CPU and memory, and each lease's (its processes on the Mac; 100% CPU is one core), against what it was given (and from API 8 its `kind`); from API 5 also OS Server's share (`ours`), everyone else's (`others`), the disk and OS Server's files on it (`disk`), and the other apps using the most (`topProcesses`) |
 | `GET /v1/usage/history` | the last day of the server's Mac, a sample a minute: CPU, memory and disk, OS Server's and everyone else's |
@@ -935,7 +940,7 @@ containers, which it couldn't read.
 | `GET /v1/storage/leases` | the holder's leases (`id`, `holder`, `sha256`, `size`, `name`, `created`, `expires`) |
 | `POST /v1/storage/leases/<id>/renew?ttl=…` | its time set again: `ttl` from now |
 | `DELETE /v1/storage/leases/<id>` | released; its object goes at the next sweep unless another lease holds it |
-| `POST /v1/grants` `{"verb", "lease"?, "object"?, "ttl"?, "name"?, "objectTTL"?}` | 201 `{"verb", "url", "path", "expires"}`: a grant in the holder's name, where the plain API would let it: `storage.put` (with the `name` and `objectTTL` its lease gets), `storage.get` (an object it holds, by sha256 or name), `machine.install` (an iOS lease it holds); from API 8 `machine.exec`, `machine.upload` and `machine.download` (a container lease it holds; from API 18 a Mac slot too); from API 10 `machine.xctest` (an iOS lease it holds: its tests run, and their results read). `ttl` 5m unless given, at most 15m. `url` is the server as the asker reached it; `path` is the same for another address. Only with the API's token |
+| `POST /v1/grants` `{"verb", "lease"?, "object"?, "ttl"?, "name"?, "objectTTL"?}` | 201 `{"verb", "url", "path", "expires"}`: a grant in the holder's name, where the plain API would let it: `storage.put` (with the `name` and `objectTTL` its lease gets), `storage.get` (an object it holds, by sha256 or name), `machine.install` (an iOS lease it holds); from API 8 `machine.exec`, `machine.upload` and `machine.download` (a container lease it holds; from API 18 a Mac slot too); from API 10 `machine.xctest` (an iOS lease it holds: its tests run, and their results read); from API 19 `machine.screenshot` and `machine.record` (a lease it holds with a screen: its picture; its recording started, and stopped at `…/record/stop`). `ttl` 5m unless given, at most 15m. `url` is the server as the asker reached it; `path` is the same for another address. Only with the API's token |
 | `POST /v1/machines/<id>/install` `{"object"}` | an .ipa or a zipped .app the lease's holder holds (by sha256 or name) installed on its simulator: `{"object", "app", "bundleIdentifier"}` |
 | `POST /v1/machines/<id>/exec` (`Connection: Upgrade`, `Upgrade: oss-exec`; body an `ExecRequest`, with its `Content-Length`) | a command in a container lease, from anywhere (API 8), or a Mac slot (API 18: on its primary as its user, `ExecRequest.gui` in its GUI session, no `tty`): `101 Switching Protocols`, then the exec socket's frames both ways (below), the server starting the command with the request and relaying the rest; a refusal is an answer as any other (404 another holder's lease, 409 `notReady`, 426 `upgrade` without the upgrade). The token with `OSS-Holder`, or a `machine.exec` grant |
 | `PUT /v1/machines/<id>/files?path=…&mode=…` (raw body) | a file put in a container lease (API 9), or a Mac slot (API 18: `path` under its home or /tmp, relative ones its home's), streamed: at `path` (relative to its working directory, `~/` its home), its folders made, written beside it and moved into place once all of it has come; `mode` octal (else the container's umask's). 201 `{"path", "size"}`, the path absolute. The token with `OSS-Holder`, or a `machine.upload` grant |
@@ -997,8 +1002,10 @@ Protocol](https://modelcontextprotocol.io) tools too: `oss_status`,
 `oss_lease`, `oss_container_lease`, `oss_renew`, `oss_release`, `oss_ssh`
 (a VM), `oss_exec`, `oss_upload` and `oss_download` (a container's or Mac
 slot's commands and small files), `oss_simctl`, `oss_adb`, `oss_install`, `oss_storage`,
-`oss_grant` (a URL for what is too big for a call), `oss_screenshot`,
-`oss_tap`, `oss_swipe`, `oss_type`, `oss_key` and `oss_usage`.
+`oss_grant` (a URL for what is too big for a call), `oss_screenshot`
+(`window` a slot's app's), `oss_record` (`action` start or stop: the MP4
+kept in the caller's storage, answered with its object and a
+`storage.get` URL), `oss_tap`, `oss_swipe`, `oss_type`, `oss_key` and `oss_usage`.
 
 - `oss mcp` serves them on stdio, as this computer's client.
 - The server serves them on a port of its own (API 12; `mcpPort` in

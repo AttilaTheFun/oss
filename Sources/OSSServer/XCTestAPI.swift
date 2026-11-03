@@ -144,11 +144,11 @@ enum XCTestAPI {
             let place = MacXCTest.Place(lease: lease.id, run: run, gui: gui, console: slot.console)
             // A GUI run waits for the primary's session (one at a time there).
             if gui {
-                let free = await runs.takeGUI(run)
+                let free = await runs.takeGUI(run, lease: lease.id)
                 if !free {
                     _ = await peer.send(ExecFrame.stderr(Data("oss: waiting for the primary's GUI session (another --gui run has it)\n".utf8)).encoded)
                     while true {
-                        if await runs.takeGUI(run) { break }
+                        if await runs.takeGUI(run, lease: lease.id) { break }
                         try await Task.sleep(for: .seconds(2))
                     }
                 }

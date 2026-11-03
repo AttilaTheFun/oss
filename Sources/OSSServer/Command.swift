@@ -54,6 +54,8 @@ let usage = """
       oss grant machine.exec | machine.upload | machine.download <id | container | mac> [--ttl=5m] [--json]
                                                             a container's or Mac slot's commands, files put in it, files
                                                             read from it
+      oss grant machine.screenshot | machine.record <id | platform> [--ttl=5m] [--json]
+                                                            a picture of its screen; a recording of it started and stopped
     What this Mac lends (on the server's Mac; the app's Settings › Components):
       oss component list                                    each component: installed, or not, or why not here
       oss component install <id> [--file=PATH]              macos, linux, windows (--file= its ISO), android, ios
@@ -70,7 +72,19 @@ let usage = """
                                                             JUnit fetched where asked
       oss machine xctest --url=GRANT --tests=<object> …     the same with a machine.xctest grant, no token (objects only)
       oss machine adb <id> <adb arguments…>                 Android: install ./app.apk, shell …, logcat -d …
-      oss machine screenshot <id> <file.png>                any lease
+      oss machine screenshot <id> <file.png> [--window=<app>]
+                                                            any lease with a screen; a Mac slot's is its primary's, only
+                                                            while its exec --gui command (or xctest --gui) runs there;
+                                                            --window (a slot's): that app's frontmost window alone (its
+                                                            name or bundle identifier)
+      oss machine record <id> start [--window=<app>]        a recording of its screen begun (one at a time a lease): an
+                                                            emulator's (screenrecord), a simulator's (recordVideo), a
+                                                            VM's or a Mac slot's (VNC's frames, 30 a second; a slot's
+                                                            only while it holds the GUI session, --window as above)
+      oss machine record <id> stop <out.mp4>                ended: its H.264 MP4 written to out.mp4 (a recording left
+                                                            running is discarded with its lease)
+      oss machine screenshot --url=GRANT <file.png> | record --url=GRANT start | stop <out.mp4>
+                                                            the same with a machine.screenshot or machine.record grant
       oss machine tap <id> <x> <y>                          any lease, in its screenshot's pixels
       oss machine swipe <id> <x> <y> <to x> <to y> [--ms=300]
       oss machine type <id> <text…>                         typed into what has focus
@@ -250,6 +264,12 @@ func describe(_ lease: Lease, _ client: OSSClient) -> String {
     lines.append("  screenshot: oss machine screenshot \(lease.id) screen.png")
     lines.append("  renew: oss machine renew \(lease.id)    release: oss machine release \(lease.id)")
     return lines.joined(separator: "\n")
+}
+
+func printRecording(_ started: RecordingStarted) {
+    print("lease \(started.lease): recording " + (started.window.map { "\($0)'s window" } ?? "its screen")
+          + (started.width.map { " (\($0)×\(started.height ?? 0))" } ?? "")
+          + "; oss machine record \(started.lease) stop <out.mp4> ends it")
 }
 
 func printInstalled(_ result: InstallResult) {
@@ -631,6 +651,26 @@ public enum OSSCommand {
                         try await client.exec(request, input: input, output: output)
                     })
                 }
+                if sub == "screenshot", let url = arguments.options["url"] {
+                    guard arguments.positional.count >= 3 else { fail("oss machine screenshot --url=GRANT <file.png> [--window=<app>]") }
+                    let data = try await OSSGrantClient.cli(url).screenshot(window: arguments.options["window"])
+                    try data.write(to: URL(fileURLWithPath: arguments.positional[2]))
+                    print(arguments.positional[2])
+                    exit(0)
+                }
+                if sub == "record", let url = arguments.options["url"] {
+                    let client = try await OSSGrantClient.cli(url)
+                    switch Array(arguments.positional.dropFirst(2)).first {
+                    case "start":
+                        printRecording(try await client.startRecording(RecordRequest(window: arguments.options["window"])))
+                    case "stop" where arguments.positional.count >= 4:
+                        try await client.stopRecording(to: URL(fileURLWithPath: arguments.positional[3]))
+                        print(arguments.positional[3])
+                    default:
+                        fail("oss machine record --url=GRANT start [--window=<app>] | stop <out.mp4>")
+                    }
+                    exit(0)
+                }
                 if sub == "upload" || sub == "download", let url = arguments.options["url"] {
                     guard arguments.positional.count >= 4 else {
                         fail("oss machine upload --url=GRANT <local> <remote> | download --url=GRANT <remote> <local>")
@@ -757,10 +797,23 @@ public enum OSSCommand {
                     if let identity = arguments.options["identity"] { scp += ["-i", identity] }
                     exit(try Shell.passthrough("/usr/bin/scp", scp + [from, to]))
                 case "screenshot":
-                    guard arguments.positional.count >= 4 else { fail("oss machine screenshot <id> <file.png>") }
+                    guard arguments.positional.count >= 4 else { fail("oss machine screenshot <id> <file.png> [--window=<app>]") }
                     let lease = try await resolveLease(target, client)
-                    try await client.screenshot(lease.id).write(to: URL(fileURLWithPath: arguments.positional[3]))
+                    try await client.screenshot(lease.id, window: arguments.options["window"]).write(to: URL(fileURLWithPath: arguments.positional[3]))
                     print(arguments.positional[3])
+                case "record":
+                    let usage = "oss machine record <id> start [--window=<app>] | oss machine record <id> stop <out.mp4>"
+                    guard arguments.positional.count >= 4 else { fail(usage) }
+                    let lease = try await resolveLease(target, client)
+                    switch arguments.positional[3] {
+                    case "start":
+                        printRecording(try await client.startRecording(lease.id, RecordRequest(window: arguments.options["window"])))
+                    case "stop" where arguments.positional.count >= 5:
+                        try await client.stopRecording(lease.id, to: URL(fileURLWithPath: arguments.positional[4]))
+                        print(arguments.positional[4])
+                    default:
+                        fail(usage)
+                    }
                 case "run":
                     guard !arguments.rest.isEmpty else { fail("oss machine run <platform> [options] -- command…") }
                     // A short lease, renewed while the command runs: when this
@@ -964,12 +1017,12 @@ public enum OSSCommand {
                 case "storage.get":
                     guard let target else { fail("oss grant storage.get <sha256 | name>") }
                     request = GrantRequest(verb: "storage.get", object: target, ttl: ttl)
-                case "machine.install", "machine.xctest", "machine.exec", "machine.upload", "machine.download":
+                case "machine.install", "machine.xctest", "machine.exec", "machine.upload", "machine.download", "machine.screenshot", "machine.record":
                     let lease = try await resolveLease(target, client)
                     request = GrantRequest(verb: sub!, lease: lease.id, ttl: ttl)
                 default:
                     fail("oss grant storage.put | storage.get <sha256 | name> | machine.install | machine.xctest <id> | "
-                         + "machine.exec | machine.upload | machine.download <id>")
+                         + "machine.exec | machine.upload | machine.download <id> | machine.screenshot | machine.record <id>")
                 }
                 let grant = try await client.grant(request, holder: holder)
                 if arguments.flags.contains("json") { try printJSON(grant) } else { print(grant.url.absoluteString) }
@@ -1176,6 +1229,24 @@ public enum OSSCommand {
                 }
                 try RFBScreenshot(host: arguments.positional[1], port: port, password: arguments.positional[3]).capture(to: arguments.positional[4])
                 print(arguments.positional[4])
+            #if canImport(AVFoundation)
+            case "vnc-record":
+                // A recording's VNC recorder by hand: <seconds> of a VNC server's screen to an MP4,
+                // cropped to a WindowFrame's JSON (`ScreenMedia.windowScript`'s answer) if given.
+                guard arguments.positional.count >= 6, let port = Int(arguments.positional[2]), let seconds = Double(arguments.positional[4]) else {
+                    fail("oss vnc-record <host> <port> <password> <seconds> <file.mp4> [--window-frame=JSON]")
+                }
+                let frame = try arguments.options["window-frame"].map { try JSONDecoder().decode(WindowFrame.self, from: Data($0.utf8)) }
+                let folder = NSTemporaryDirectory() + "oss-vnc-record-\(Random.hex(4))"
+                let recorder = try RFBRecorder(host: arguments.positional[1], port: port, password: arguments.positional[3], window: frame, folder: folder)
+                FileHandle.standardError.write(Data("recording \(recorder.width)×\(recorder.height) for \(seconds) s\n".utf8))
+                try await Task.sleep(for: .seconds(seconds))
+                let made = try await recorder.stop()
+                try? FileManager.default.removeItem(atPath: arguments.positional[5])
+                try FileManager.default.moveItem(atPath: made, toPath: arguments.positional[5])
+                try? FileManager.default.removeItem(atPath: folder)
+                print(arguments.positional[5])
+            #endif
             #endif
 
             case "setup":

@@ -2,6 +2,26 @@
 
 ## 0.14.0 (unreleased)
 
+- **Pictures and recordings of a lease's screen** (API 19,
+  docs/primary-vms.md's "Pictures and recordings"): `oss machine
+  screenshot` takes a Mac slot (its primary's screen, from the server's
+  VNC capture of the primary, only while the slot holds the primary's GUI
+  session: else 409 `noGUI`), and `--window=<app>` (`?window=`) crops a
+  slot's to that app's frontmost window, its frame read in the console
+  session by `osascript` over CGWindowList (bounds need no Screen
+  Recording permission). `oss machine record <id> start [--window=<app>]`
+  and `stop <out.mp4>` (`POST /v1/machines/<id>/record`, 202;
+  `POST …/record/stop`, the MP4; the `recordings` feature; MCP
+  `oss_record`, its MP4 kept in the caller's storage; grants
+  `machine.screenshot` and `machine.record`, and a CI job's grant opens
+  both): an emulator's by `screenrecord` (ended by SIGINT on the device;
+  parts where it stops itself, joined by ffmpeg or AVFoundation), a
+  simulator's by `simctl io recordVideo --codec=h264` (SIGINT), a VM's or
+  a slot's from its VNC at up to 30 frames a second, encoded by
+  AVFoundation (cropped to a slot's window; a slot's ends if it loses the
+  GUI session). One at a time a lease, an hour at most, discarded with
+  its lease. The GUI session now knows which slot's run has it
+  (`XCTestRuns.guiLease`). `oss vnc-record` records a VNC server by hand.
 - **A runner keeps no room for a VM that can't be leased**: with macOS at
   its cap (both VMs leased), the room CIRoom kept for "a macOS VM its jobs
   may lease" held every runner back, a 4 GB Linux job's too, though no

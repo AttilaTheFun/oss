@@ -72,6 +72,9 @@ actor MachineManager {
     /// iOS leases' test runs (`oss machine xctest`): one at a time a lease,
     /// their files in the lease's folder until it ends.
     let xctests: XCTestRuns
+    /// Each lease's recording of its screen (Recording.swift), discarded
+    /// with the lease.
+    let recordings = Recordings()
     /// The limits (Admission.swift) and the line of leases waiting for room.
     private var admission: AdmissionQueue
     /// The Mac's processes (HostAccounting.swift), read every 15 seconds:
@@ -1042,6 +1045,8 @@ actor MachineManager {
         save()   // a restart from here on deletes the clone instead of bringing the lease back
         forwarders.removeValue(forKey: id)?.forEach { $0.stop() }
         log("lease \(id): \(reason); deleting \(lease.name)")
+        // A recording left running ends with it, its file discarded.
+        await recordings.discard(id)
         switch lease.platform {
         case .macos, .linux, .windows:
             // An image build's place: its machine is the build's.
@@ -1322,24 +1327,136 @@ actor MachineManager {
         return ["stored": name]
     }
 
-    func screenshot(_ id: String) async throws -> Data {
+    /// A PNG of a lease's screen. A Mac slot's is its primary's, while
+    /// the slot holds the primary's GUI session; with `window` (a slot's
+    /// alone), that app's frontmost window cropped from it.
+    func screenshot(_ id: String, window: String? = nil) async throws -> Data {
         let lease = try ready(id)
+        if window != nil, lease.platform != .mac {
+            throw APIError(error: "--window is a Mac slot's (an app's window on its primary): a \(lease.platform.rawValue) lease's picture is its whole screen")
+        }
         switch lease.platform {
         case .ios: return try await Simulators.screenshot(udid: lease.udid ?? "")
         case .android: return try await Emulators.screenshot(port: lease.consolePort ?? 0)
-        case .macos, .linux, .windows:
+        case .macos, .linux, .windows, .mac:
+            #if canImport(CommonCrypto)
+            let screen = try await screen(of: lease)
+            let frame = try await windowFrame(window, of: lease)
             let path = NSTemporaryDirectory() + "oss-vnc-\(Random.hex(4)).png"
             defer { try? FileManager.default.removeItem(atPath: path) }
             // The guest's VNC directly (no relay): macOS's Screen Sharing, or QEMU's on loopback.
             // Off the actor, as input is.
-            let (host, port, password) = lease.qemuVNCPort.map { ("127.0.0.1", $0, "") }
-                ?? (lease.guestAddress ?? "", 5900, lease.vncPassword ?? "")
-            try await Task.detached { try RFBScreenshot(host: host, port: port, password: password).capture(to: path) }.value
+            #if canImport(AVFoundation)
+            try await Task.detached { try RFBScreenshot(host: screen.host, port: screen.port, password: screen.password).capture(to: path, window: frame) }.value
+            #else
+            guard frame == nil else { throw APIError(error: "a window's picture needs a Mac server") }
+            try await Task.detached { try RFBScreenshot(host: screen.host, port: screen.port, password: screen.password).capture(to: path) }.value
+            #endif
+            // Taken while the slot held the session: one that lost it meanwhile may show another slot's app.
+            if lease.platform == .mac { try await holdsGUI(lease) }
             guard let data = FileManager.default.contents(atPath: path) else { throw APIError(error: "no screenshot") }
             return data
+            #else
+            throw APIError(error: "a VM's screen needs a Mac server")
+            #endif
         case .container: throw APIError(error: "a container has no screen")
-        case .mac: throw APIError(error: "a slot has no screen of its own")
         }
+    }
+
+    /// The guest's VNC that shows a lease's screen: a VM's own (macOS's
+    /// Screen Sharing, or QEMU's on loopback), or a slot's primary's while
+    /// the slot holds its GUI session.
+    private func screen(of lease: Lease) async throws -> (host: String, port: Int, password: String) {
+        var shown = lease
+        if lease.platform == .mac {
+            try await holdsGUI(lease)
+            guard let primary = lease.primary.flatMap({ leases[$0] }), primary.state == .ready, let address = primary.guestAddress else {
+                throw APIError(error: "lease \(lease.id)'s primary macOS VM is gone (or not ready)", code: "notReady")
+            }
+            shown = primary
+            shown.guestAddress = address
+        }
+        return shown.qemuVNCPort.map { ("127.0.0.1", $0, "") } ?? (shown.guestAddress ?? "", 5900, shown.vncPassword ?? "")
+    }
+
+    /// Refused (409, `noGUI`) unless the slot's run has its primary's GUI session.
+    private func holdsGUI(_ lease: Lease) async throws {
+        guard await xctests.guiLease() == lease.id else {
+            throw APIError(error: "lease \(lease.id) doesn't hold its primary's GUI session: a slot's screen is pictured or recorded only while "
+                                + "its `oss machine exec --gui` command (or `xctest --gui` run) is running there", code: "noGUI")
+        }
+    }
+
+    /// Where `app`'s frontmost window is on a slot's primary (nil: no
+    /// window asked for), read in its console session.
+    private func windowFrame(_ app: String?, of lease: Lease) async throws -> WindowFrame? {
+        guard let app else { return nil }
+        guard ScreenMedia.validApp(app) else { throw APIError(error: "--window is an app's name or bundle identifier, on one line") }
+        guard let slot = slotRun(lease.id) else {
+            throw APIError(error: "lease \(lease.id)'s primary macOS VM is gone (or not ready)", code: "notReady")
+        }
+        let read = try await Shell.run("/usr/bin/ssh", slot.guest.sshArguments(ScreenMedia.windowLine(app: app, console: slot.console)), timeout: 60)
+        return try ScreenMedia.window(fromOutput: read.output, error: read.error, status: read.status, app: app)
+    }
+
+    /// A recording of the lease's screen begun (one at a time a lease).
+    func startRecording(_ id: String, _ request: RecordRequest) async throws -> RecordingStarted {
+        let lease = try ready(id)
+        if request.window != nil, lease.platform != .mac {
+            throw APIError(error: "--window is a Mac slot's (an app's window on its primary): a \(lease.platform.rawValue) lease records its whole screen")
+        }
+        guard lease.platform != .container else { throw APIError(error: "a container has no screen") }
+        #if os(macOS)
+        try await recordings.reserve(id)
+        let folder = "\(Paths.uploads)/\(id)/recording-\(Random.hex(4))"
+        let recorder: any ScreenRecorder
+        var size: (width: Int, height: Int)?
+        do {
+            switch lease.platform {
+            case .ios:
+                recorder = try await SimulatorRecorder.start(udid: lease.udid ?? "", folder: folder)
+            case .android:
+                recorder = try await EmulatorRecorder.start(config: config, port: lease.consolePort ?? 0, lease: id, folder: folder)
+            default:
+                #if canImport(CommonCrypto) && canImport(AVFoundation)
+                let screen = try await screen(of: lease)
+                let frame = try await windowFrame(request.window, of: lease)
+                let runs = xctests
+                let allowed: (@Sendable () async -> Bool)? = lease.platform == .mac ? { @Sendable in await runs.guiLease() == id } : nil
+                let made = try await Task.detached {
+                    try RFBRecorder(host: screen.host, port: screen.port, password: screen.password, window: frame, folder: folder, allowed: allowed)
+                }.value
+                size = (made.width, made.height)
+                recorder = made
+                #else
+                throw APIError(error: "a VM's recording needs a Mac server")
+                #endif
+            }
+        } catch {
+            await recordings.cancel(id)
+            try? FileManager.default.removeItem(atPath: folder)
+            throw error
+        }
+        guard await recordings.attach(id, recorder), leases[id]?.state == .ready else {
+            _ = await recordings.take(id)
+            await recorder.discard()
+            throw APIError(error: "lease \(id) has ended", code: "notFound")
+        }
+        log("lease \(id): recording its screen" + (request.window.map { " (\($0)'s window)" } ?? ""))
+        return RecordingStarted(lease: id, started: Date(), window: request.window, width: size?.width, height: size?.height)
+        #else
+        throw APIError(error: "recordings need a Mac server")
+        #endif
+    }
+
+    /// The lease's recording ended: its MP4's path (the caller's to delete).
+    func stopRecording(_ id: String) async throws -> String {
+        _ = try ready(id)
+        guard let recorder = await recordings.take(id) else {
+            throw APIError(error: "lease \(id) isn't recording: start one with `oss machine record \(id) start`", code: "notFound")
+        }
+        log("lease \(id): its recording stopped")
+        return try await recorder.stop()
     }
 
     // MARK: Persistence
@@ -1819,7 +1936,15 @@ enum Server {
                 let body = try JSONDecoder.oss.decode(DeviceCommand.self, from: request.body)
                 return .json(try await machines.command(parts[2], body.arguments))
             case ("GET", 4) where parts[1] == "machines" && parts[3] == "screenshot":
-                return HTTPResponse(status: 200, body: try await machines.screenshot(parts[2]), contentType: "image/png")
+                return HTTPResponse(status: 200, body: try await machines.screenshot(parts[2], window: request.query["window"]), contentType: "image/png")
+            case ("POST", 4) where parts[1] == "machines" && parts[3] == "record":
+                let asked = request.body.isEmpty ? RecordRequest() : try JSONDecoder.oss.decode(RecordRequest.self, from: request.body)
+                return .json(try await machines.startRecording(parts[2], asked), status: 202)
+            case ("POST", 5) where parts[1] == "machines" && parts[3] == "record" && parts[4] == "stop":
+                let path = try await machines.stopRecording(parts[2])
+                defer { try? FileManager.default.removeItem(atPath: (path as NSString).deletingLastPathComponent) }
+                guard let data = FileManager.default.contents(atPath: path) else { throw APIError(error: "the recording's file is gone") }
+                return HTTPResponse(status: 200, body: data, contentType: "video/mp4")
             case ("PUT", 5) where parts[1] == "machines" && parts[3] == "files":
                 return .json(try await machines.upload(parts[2], name: parts[4], data: request.body))
             default:

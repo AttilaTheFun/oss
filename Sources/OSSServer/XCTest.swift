@@ -699,19 +699,23 @@ actor XCTestRuns {
     }
 
     /// The primary's GUI session (a Mac slot's `--gui` run): one run at a
-    /// time has it.
-    private var gui: String?
+    /// time has it, for its lease (whose screenshots and recordings are
+    /// taken only while it does).
+    private var gui: (run: String, lease: String?)?
 
-    /// The GUI session taken for `run`, if no other run has it.
-    func takeGUI(_ run: String) -> Bool {
-        guard gui == nil || gui == run else { return false }
-        gui = run
+    /// The GUI session taken for `run` (of `lease`), if no other run has it.
+    func takeGUI(_ run: String, lease: String? = nil) -> Bool {
+        guard gui == nil || gui?.run == run else { return false }
+        gui = (run, lease ?? gui?.lease)
         return true
     }
 
     func giveGUI(_ run: String) {
-        if gui == run { gui = nil }
+        if gui?.run == run { gui = nil }
     }
+
+    /// The lease whose run has the primary's GUI session, if any.
+    func guiLease() -> String? { gui?.lease }
 
     /// The lease ended: its run (if any) stopped, its runs' files deleted.
     func forget(_ lease: String) {
