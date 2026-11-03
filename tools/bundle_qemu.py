@@ -15,7 +15,7 @@ sources are Homebrew's (each formula's url).
 The build Mac needs Homebrew's qemu (`brew install qemu`); a Mac that runs
 OS Server doesn't.
 """
-import json, os, shutil, subprocess, sys
+import json, os, re, shutil, subprocess, sys
 
 PREFIX = "/opt/homebrew"
 BINARIES = ["qemu-system-aarch64", "qemu-img"]
@@ -38,6 +38,33 @@ def dependencies(path):
         if name.startswith(PREFIX):
             found.append(name)
     return found
+
+
+def installed_formulae():
+    """Homebrew's installed formulae as `brew info --json=v2` gives them, or,
+    where brew can't run (a user who doesn't own Homebrew: a slot of OS
+    Server's primary VM, where it can't take its lock), the same fields read
+    from each keg's own copy of its formula (Cellar/<name>/<version>/.brew)."""
+    try:
+        return json.loads(run(os.path.join(PREFIX, "bin", "brew"), "info", "--json=v2", "--installed"))["formulae"]
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        pass
+    formulae = []
+    cellar = os.path.join(PREFIX, "Cellar")
+    for name in sorted(os.listdir(cellar)):
+        for version in sorted(os.listdir(os.path.join(cellar, name)), reverse=True):
+            recipe = os.path.join(cellar, name, version, ".brew", name + ".rb")
+            if not os.path.exists(recipe):
+                continue
+            text = open(recipe).read()
+            url = re.search(r'^\s*url\s+"([^"]+)"', text, re.M)
+            license = re.search(r'^\s*license\s+(.+)$', text, re.M)
+            stable = version.split("_")[0]
+            formulae.append({"name": name, "license": license.group(1).strip().strip('"') if license else None,
+                             "versions": {"stable": stable}, "installed": [{"version": version}],
+                             "urls": {"stable": {"url": url.group(1) if url else ""}}})
+            break
+    return formulae
 
 
 def main():
@@ -86,7 +113,7 @@ def main():
             else:
                 shutil.copy2(source, target)
     # What was bundled, for its sources.
-    formulae = json.loads(run(os.path.join(PREFIX, "bin", "brew"), "info", "--json=v2", "--installed"))["formulae"]
+    formulae = installed_formulae()
     used = sorted({name.split("/opt/")[1].split("/")[0] for name in copied if "/opt/" in name} | {"qemu"})
     with open(os.path.join(destination, "SOURCES.txt"), "w") as out:
         out.write("QEMU and the libraries it loads, from Homebrew; each one's source is its formula's url.\n\n")
