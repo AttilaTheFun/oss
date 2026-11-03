@@ -150,6 +150,10 @@ import OSSClient
     #expect(PrimaryPlan.macos(withSlot)?.id == "p2")
     #expect(PrimaryPlan.step(nil, lendsMacOS: true, restartPending: false, held: withSlot)
             == .release("p1", because: "a second primary macOS VM: p2 is kept"))
+    // No primary wanted: released only once its slots are.
+    #expect(PrimaryPlan.step(nil, lendsMacOS: true, restartPending: false, held: [newer, slot("s1", on: "p2")]) == .none)
+    #expect(PrimaryPlan.step(nil, lendsMacOS: true, restartPending: false, held: [newer])
+            == .release("p2", because: "server.json keeps no primary macOS VM"))
     // Both with slots: neither released for it.
     #expect(PrimaryPlan.extras([older, newer, slot("s1", on: "p1"), slot("s2", on: "p2")]).isEmpty)
 }

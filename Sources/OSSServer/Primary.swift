@@ -109,7 +109,10 @@ enum PrimaryPlan {
         }
         let lease = macos(held)
         guard let settings, lendsMacOS else {
-            return lease.map { .release($0.id, because: "server.json keeps no primary macOS VM") } ?? .none
+            // Released once no slot of its is held: a test running in one isn't ended for it.
+            guard let lease else { return .none }
+            if slots(of: lease.id, held).contains(where: { $0.state != .returning && $0.state != .failed }) { return .none }
+            return .release(lease.id, because: "server.json keeps no primary macOS VM")
         }
         guard let lease else { return restartPending ? .none : .make }
         if lease.state == .creating { return .wait }
