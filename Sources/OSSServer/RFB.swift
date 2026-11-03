@@ -258,6 +258,12 @@ struct RFBScreenshot {
     typealias Failure = RFBConnection.Failure
 
     func capture(to path: String) throws {
+        let (pixels, width, height) = try capturePixels()
+        try Self.writePNG(pixels: pixels, width: width, height: height, to: path)
+    }
+
+    /// The screen's raw pixels (32 bits, blue first, rows top down) and size.
+    func capturePixels() throws -> (pixels: [UInt8], width: Int, height: Int) {
         let connection = try RFBConnection(host: host, port: port, password: password)
         defer { connection.close() }
         let width = connection.width, height = connection.height
@@ -312,7 +318,7 @@ struct RFBScreenshot {
                 }
             }
         }
-        try Self.writePNG(pixels: pixels, width: width, height: height, to: path)
+        return (pixels, width, height)
     }
 
     /// VNC's challenge answered with DES, keyed by the password with each

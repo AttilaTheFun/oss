@@ -207,9 +207,9 @@ enum SlotAPI {
         // A GUI command waits its turn for the primary's session.
         let runs = api.machines.xctests
         let turn = "exec-\(run)"
-        if gui, !(await runs.takeGUI(turn)) {
+        if gui, !(await runs.takeGUI(turn, lease: lease.id)) {
             _ = await peer.send(ExecFrame.stderr(Data("oss: waiting for the primary's GUI session (another --gui command or run has it)\n".utf8)).encoded)
-            while !(await runs.takeGUI(turn)) {
+            while !(await runs.takeGUI(turn, lease: lease.id)) {
                 guard !gone.value else { return }
                 try? await Task.sleep(for: .seconds(2))
             }

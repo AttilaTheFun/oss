@@ -53,7 +53,7 @@ struct HTTPResponse: Sendable {
         json(APIError(error: message), status: status)
     }
 
-    static let reasons = [200: "OK", 201: "Created", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+    static let reasons = [200: "OK", 201: "Created", 202: "Accepted", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
                           405: "Method Not Allowed", 409: "Conflict", 411: "Length Required", 413: "Content Too Large", 426: "Upgrade Required",
                           500: "Internal Server Error", 503: "Service Unavailable"]
 
