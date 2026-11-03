@@ -103,7 +103,8 @@ private func lease(_ id: String, _ platform: Platform, primary: String? = nil, s
     // A second primary with a simulator in it is kept; one with nothing is released.
     var second = lease("p2", .macos, kind: .primary)
     second.created = primary.created.addingTimeInterval(60)
-    #expect(PrimaryPlan.extras([primary, second, lease("s4", .ios, primary: "p2")]).isEmpty)
+    // (The one with a tenant is kept even though newer: the empty one is the extra.)
+    #expect(PrimaryPlan.extras([primary, second, lease("s4", .ios, primary: "p2")]).map(\.id) == ["p1"])
     #expect(PrimaryPlan.extras([primary, second]).map(\.id) == ["p2"])
 }
 
