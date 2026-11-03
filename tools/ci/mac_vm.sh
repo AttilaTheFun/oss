@@ -22,6 +22,10 @@
 #   EOF                         (3.2) in ~/ci, the tree in oss/, Bazel on
 #                               the PATH, the step's arguments in "$@"
 #   mac_vm_lease                the VM leased and reached over SSH
+#   mac_slot_lease              instead: a slot (`mac`) of OS Server's
+#                               primary macOS VM, reached by `oss machine
+#                               exec` (API 18), its Xcode the primary's; the
+#                               steps run there as the slot's user
 #   mac_vm_copy_tree            the tree, Bazel and the steps copied in
 #   in_vm <step> [args…]        one of the steps, in the VM
 #   vm <command…>               a command in the VM, over SSH
@@ -47,6 +51,7 @@ mac_vm_start() {
     chmod 700 "$work"
     mkdir "$work/vm"
     lease=""
+    slot=""
     renewer=""
     child=""
     finished=""
@@ -92,9 +97,14 @@ run() {
     child=""
     return "$status"
 }
-vm() { "$OSS" machine ssh "$lease" --identity="$work/key" -- "$@"; }
-# ssh hands the VM's shell one line, so each argument is quoted for it.
-in_vm() { vm bash ci/in_vm.sh "$(printf '%q ' "$@")"; }
+vm() {
+    if [ -n "$slot" ]; then "$OSS" machine exec "$lease" -- "$@"; else "$OSS" machine ssh "$lease" --identity="$work/key" -- "$@"; fi
+}
+# ssh hands the VM's shell one line, so each argument is quoted for it;
+# exec hands a slot's the arguments as they are.
+in_vm() {
+    if [ -n "$slot" ]; then vm /bin/bash ci/in_vm.sh "$@"; else vm bash ci/in_vm.sh "$(printf '%q ' "$@")"; fi
+}
 
 mac_vm_steps() {
     {
@@ -118,7 +128,8 @@ case "$step" in
             ln -sf "$(command -v bazelisk)" bin/bazel || { echo "in_vm.sh: no bazelisk in the VM" >&2; exit 1; }
         fi
         xcodebuild -version | head -1
-        xcrun simctl list runtimes | grep -i '^ios'
+        # A slot's user, with no login session, may get no list: not a failure.
+        xcrun simctl list runtimes 2> /dev/null | grep -i '^ios' || true
         ;;
 EOF
         cat
@@ -155,6 +166,26 @@ mac_vm_lease() {
     for _ in $(seq 1 30); do vm true 2> /dev/null && break; sleep 5; done
 }
 
+# A slot of the primary macOS VM, for steps that need a Mac and its Xcode
+# but not a machine of their own: ready in seconds, renewed and released
+# as a VM is.
+mac_slot_lease() {
+    slot=1
+    run "$OSS" machine lease mac --minutes=60 --wait --exports > "$work/lease"
+    lease="$(. "$work/lease"; printf '%s' "$OSS_ID")"
+    echo "Leased slot $lease"
+    (
+        trap 'kill $! 2> /dev/null; exit 0' TERM
+        while kill -0 "$$" 2> /dev/null; do
+            sleep 600 &
+            wait $!
+            kill -0 "$$" 2> /dev/null || break
+            "$OSS" machine renew "$lease" --minutes=60 > /dev/null || true
+        done
+    ) &
+    renewer=$!
+}
+
 # The checkout's tracked files as they stand, Bazel, and the steps, into
 # ~/ci there. As they stand: the committed tree with what the job changed
 # since its checkout (the Version step's stamped Info.plists, never
@@ -167,6 +198,12 @@ mac_vm_copy_tree() {
     tree="$(git -C "$ROOT" -c user.name=CI -c user.email=ci@localhost stash create)"
     git -C "$ROOT" archive --format=tar.gz -o "$work/vm/tree.tar.gz" "${tree:-HEAD}"
     [ -z "$bazelisk" ] || cp "$(readlink -f "$bazelisk")" "$work/vm/bazel"
-    run "$OSS" machine upload "$lease" --identity="$work/key" "$work/vm" ci
+    if [ -n "$slot" ]; then
+        # A slot takes a file at a time.
+        local file
+        for file in "$work/vm"/*; do run "$OSS" machine upload "$lease" "$file" "ci/$(basename "$file")" > /dev/null; done
+    else
+        run "$OSS" machine upload "$lease" --identity="$work/key" "$work/vm" ci
+    fi
     run in_vm unpack
 }
