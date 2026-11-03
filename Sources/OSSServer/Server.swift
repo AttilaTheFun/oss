@@ -434,12 +434,17 @@ actor MachineManager {
     private var primaryMisses = 0
     /// What last kept a primary from being made, said once.
     private var primaryTrouble: String?
+    /// recover() has put the saved leases back: until then keepPrimary sees
+    /// none and would make a second primary beside the one being recovered
+    /// (it did, on 2026-11-03's restart).
+    private var recovered = false
 
     /// The primary macOS VM kept (PrimaryPlan.step): made where server.json
     /// has one and none is held, checked once it is ready, released when it
     /// stops answering or isn't as server.json says (the next call makes it
     /// again). Called every minute.
     func keepPrimary() async {
+        guard recovered else { return }
         // Slots whose primary is gone go too.
         for slot in PrimaryPlan.orphans(Array(leases.values)) {
             await release(slot.id, reason: "its primary macOS VM is gone")
@@ -1430,6 +1435,7 @@ actor MachineManager {
         if let containers, config.lends(.container), !file.unreadable {
             await containers.prune(keeping: Set(leases.values.filter { $0.platform == .container }.map(\.name)).union(unreadNames))
         }
+        recovered = true
         if file.unreadable || !unreadLeases.isEmpty {
             log("recover: \(file.unreadable ? "leases.json unreadable" : "\(unreadLeases.count) leases a later build saved"): their machines left alone")
         }

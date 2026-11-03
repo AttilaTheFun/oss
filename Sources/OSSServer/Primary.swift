@@ -75,17 +75,44 @@ enum PrimaryPlan {
     /// Checks in a row it doesn't answer before it is made again.
     static let misses = 3
 
-    /// The macOS primary of the leases held, if any.
+    /// The macOS primary of the leases held, if any: the one kept when
+    /// there are more (primaryOrder).
     static func macos(_ held: [Lease]) -> Lease? {
-        held.first { $0.kind == .primary && $0.platform == .macos && $0.state != .returning && $0.state != .failed }
+        primaryOrder(held).first
+    }
+
+    /// The macOS primaries held, the one to keep first: one with slots held,
+    /// then the oldest (then by id, so the order is the same every time).
+    static func primaryOrder(_ held: [Lease]) -> [Lease] {
+        let primaries = held.filter { $0.kind == .primary && $0.platform == .macos && $0.state != .returning && $0.state != .failed }
+        func slotCount(_ lease: Lease) -> Int { slots(of: lease.id, held).filter { $0.state != .returning && $0.state != .failed }.count }
+        return primaries.sorted { a, b in
+            let (sa, sb) = (slotCount(a), slotCount(b))
+            if sa != sb { return sa > sb }
+            if a.created != b.created { return a.created < b.created }
+            return a.id < b.id
+        }
+    }
+
+    /// Primaries beyond the one kept, without slots: released.
+    static func extras(_ held: [Lease]) -> [Lease] {
+        primaryOrder(held).dropFirst().filter { slots(of: $0.id, held).allSatisfy { $0.state == .returning || $0.state == .failed } }
     }
 
     /// The next step for the macOS primary: wanted where server.json has one
     /// and the server lends macOS; never begun while a restart is pending.
     static func step(_ settings: PrimaryMacSettings?, lendsMacOS: Bool, restartPending: Bool, held: [Lease]) -> PrimaryStep {
+        // Only one is kept: any other (a second one made by mistake) goes,
+        // the oldest and those with slots kept first.
+        if let extra = extras(held).first {
+            return .release(extra.id, because: "a second primary macOS VM: \(primaryOrder(held).first?.id ?? "") is kept")
+        }
         let lease = macos(held)
         guard let settings, lendsMacOS else {
-            return lease.map { .release($0.id, because: "server.json keeps no primary macOS VM") } ?? .none
+            // Released once no slot of its is held: a test running in one isn't ended for it.
+            guard let lease else { return .none }
+            if slots(of: lease.id, held).contains(where: { $0.state != .returning && $0.state != .failed }) { return .none }
+            return .release(lease.id, because: "server.json keeps no primary macOS VM")
         }
         guard let lease else { return restartPending ? .none : .make }
         if lease.state == .creating { return .wait }
