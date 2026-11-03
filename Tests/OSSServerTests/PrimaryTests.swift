@@ -157,3 +157,16 @@ import OSSClient
     // Both with slots: neither released for it.
     #expect(PrimaryPlan.extras([older, newer, slot("s1", on: "p1"), slot("s2", on: "p2")]).isEmpty)
 }
+
+/// The primary's setup: server.json's lines, one script stopping at the first that fails, Homebrew on its PATH.
+@Test func aPrimarysSetupIsOneScript() throws {
+    let config = try JSONDecoder().decode(ServerConfig.self, from: Data(#"""
+        {"primary": {"macos": {"setup": ["command -v qemu-system-aarch64 || brew install qemu"]}}}
+        """#.utf8))
+    let settings = try #require(config.primary?.macos)
+    #expect(settings.setup == ["command -v qemu-system-aarch64 || brew install qemu"])
+    #expect(settings.setupScript == "set -e\nexport PATH=\"/opt/homebrew/bin:$PATH\" HOMEBREW_NO_AUTO_UPDATE=1\ncommand -v qemu-system-aarch64 || brew install qemu")
+    #expect(PrimaryMacSettings().setupScript == nil)
+    // The setup isn't the primary's size or base: changing it doesn't replace the VM.
+    #expect(settings.size == PrimaryMacSettings().size)
+}

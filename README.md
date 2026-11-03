@@ -505,7 +505,12 @@ when it starts, at its own size, and holds it as a lease of its own (kind
 `primary`, holder `primary@oss`): its memory is the budget's, and it is one
 of the two macOS VMs Apple allows. It is checked every minute, and released
 and made again when it stops answering three times running or server.json's
-settings change; `release` refuses it (409, `primary`).
+settings change; `release` refuses it (409, `primary`). Its `setup`, shell
+lines (`"setup": ["command -v qemu-system-aarch64 || brew install qemu"]`),
+runs there as its guest user, an administrator, once it's ready and before
+it lends a slot, and again after each of the server's starts or when the
+lines change: what its base lacks that slots' builds need, each line safe
+to run again.
 
 Its slots are `mac` leases, as many at once as `slots` (its type's cap;
 they take nothing of the budget, the primary's memory being held already):
