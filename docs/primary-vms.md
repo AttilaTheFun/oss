@@ -128,10 +128,14 @@ oss machine record <id> start [--window=<app>]          # a recording begins
 oss machine record <id> stop clip.mp4                   # it ends; an H.264 MP4 comes back
 ```
 
-(`GET /v1/machines/<id>/screenshot`, `POST …/record` and `POST …/record/stop`;
-MCP `oss_screenshot`, `oss_record`; grants `machine.screenshot` and
-`machine.record` for CI's containers.) One recording at a time a lease; one
-left running ends with the lease, its file discarded.
+(`GET /v1/machines/<id>/screenshot?window=`, `POST …/record` `{window?}`
+and `POST …/record/stop`, which answers the MP4; MCP `oss_screenshot` with
+`window`, and `oss_record`, which keeps the MP4 in the caller's storage;
+grants `machine.screenshot` and `machine.record` for CI's containers; API
+19, #97.) One recording at a time a lease (409 `busy`), an hour at most;
+one left running ends with the lease, its file discarded. A slot without
+the GUI turn answers 409 `noGUI`, an app with no window on screen 404
+`noWindow`. Recordings and window crops need a Mac server.
 
 ### macOS: a slot's GUI runs
 
@@ -176,8 +180,9 @@ can't run in the Mac primary. Its emulators stay on the server's Mac,
 leased as now, with the same verbs as a slot's:
 
 - **Screenshot**: `adb exec-out screencap -p` (as now).
-- **Recording**: `adb shell screenrecord` (H.264, three minutes at most a
-  file: longer ones are recorded in parts and joined on the server's Mac).
+- **Recording**: `adb shell screenrecord` (H.264; `--time-limit 0` where
+  the device takes it, else three minutes a part, the parts joined on the
+  server's Mac by ffmpeg when it has it, else AVFoundation).
 - They move into the Linux primary when it comes, the API unchanged.
 
 ### Windows and Ubuntu
