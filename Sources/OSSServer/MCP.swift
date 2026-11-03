@@ -109,6 +109,10 @@ enum MCPServer {
               "ports": ["type": "array", "items": ["type": "integer"], "description": "the container's ports to forward to the server's"],
               "environment": ["type": "object", "description": "variables for its commands"],
               "minutes": ["type": "integer", "description": "how long it is yours (default 60); renew to keep it longer"],
+              "cache": ["type": "boolean", "description": """
+                  its builds read this server's Bazel cache and files, as CI's containers do: the read token in ~/.netrc \
+                  for the server as the container reaches it, and ~/.bazelrc reading its cache (`oss machine run --inside --cache`)
+                  """],
               "label": ["type": "string"]],
              required: ["image"]),
         tool("oss_renew", "Keep a lease: its time set to `minutes` from now.",
@@ -210,7 +214,21 @@ enum MCPServer {
                 let lease = try await client.lease(LeaseRequest(platform: .container, minutes: (arguments["minutes"] as? NSNumber)?.intValue,
                                                                 holder: context.holder, container: spec, kind: .agent,
                                                                 label: arguments["label"] as? String))
-                return text(describe(lease, client))
+                guard arguments["cache"] as? Bool == true else { return text(describe(lease, client)) }
+                // The server as the container reaches it: from the server's own Mac (its MCP, or `oss mcp`
+                // there), its address on the container's network; from elsewhere, the name the caller used.
+                let local = ["127.0.0.1", "localhost", "::1"].contains(client.host)
+                let host = local ? (lease.guestAddress.flatMap(LocalNetworks.hostAddress(facing:)) ?? localHostName) : client.host
+                do {
+                    try await OSSCommand.prepareHome(ExecCommand.path(lease, client: client, holder: lease.holder),
+                                                     netrcHosts: [host], cacheHost: host, client: client)
+                } catch {
+                    try? await client.release(lease.id)
+                    throw Failure(description: "the container's home wasn't made ready for the cache (released): \(error)")
+                }
+                let cache = try await client.cache()
+                return text(describe(lease, client) + "\nits builds read this server's cache and files at http://\(host):\(cache.port) "
+                            + "(the read token in ~/.netrc, the cache in ~/.bazelrc)")
             case "oss_renew":
                 let renewed = try await client.renew(try await lease().id, minutes: (arguments["minutes"] as? NSNumber)?.intValue)
                 return text("lease \(renewed.id): yours until \(iso(renewed.expires)) (\(minutesLeft(renewed.expires)) min)")
