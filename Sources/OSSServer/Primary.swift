@@ -32,6 +32,16 @@ struct PrimaryMacSettings: Codable, Equatable, Sendable {
     var memoryGigabytes = 24
     /// Slots (`mac` leases) at once.
     var slots = 4
+    /// iOS simulators (`ios` leases) at once in the primary instead of on
+    /// the server's Mac (docs/primary-vms.md, "iOS: simulators in the
+    /// primary"); 0, the default: the server's Mac's, as before. More than
+    /// none, every new `ios` lease is the primary's (one already held on the
+    /// Mac stays there until it ends), and the primary's memory grows by
+    /// `simulatorGigabytes` each (24 + 4 × 2 = 32 GB).
+    var simulators = 0
+    /// The device type of an `ios` lease in the primary that asks for none
+    /// (`--device`): the server's own iPhone base's until now.
+    var simulatorDevice = "iPhone 17 Pro"
     /// What the primary needs that its base lacks, as shell lines run by
     /// its guest user (an administrator: Homebrew's owner) once it's ready
     /// and before it lends a slot, again after each of the server's starts
@@ -39,11 +49,19 @@ struct PrimaryMacSettings: Codable, Equatable, Sendable {
     /// (`command -v qemu-system-aarch64 || brew install qemu`).
     var setup: [String] = []
 
-    init(config: String = "xcode_27_2", cpus: Int = 8, memoryGigabytes: Int = 24, slots: Int = 4, setup: [String] = []) {
+    /// What each simulator adds to the primary's memory: a booted iOS 27
+    /// simulator with its app takes about 2 GB, as the budget's estimate
+    /// for one on the server's Mac says.
+    static let simulatorGigabytes = 2
+
+    init(config: String = "xcode_27_2", cpus: Int = 8, memoryGigabytes: Int = 24, slots: Int = 4, simulators: Int = 0,
+         simulatorDevice: String = "iPhone 17 Pro", setup: [String] = []) {
         self.config = config
         self.cpus = cpus
         self.memoryGigabytes = memoryGigabytes
         self.slots = slots
+        self.simulators = simulators
+        self.simulatorDevice = simulatorDevice
         self.setup = setup
     }
 
@@ -54,6 +72,8 @@ struct PrimaryMacSettings: Codable, Equatable, Sendable {
         cpus = max(1, try c.decodeIfPresent(Int.self, forKey: .cpus) ?? d.cpus)
         memoryGigabytes = max(4, try c.decodeIfPresent(Int.self, forKey: .memoryGigabytes) ?? d.memoryGigabytes)
         slots = max(0, try c.decodeIfPresent(Int.self, forKey: .slots) ?? d.slots)
+        simulators = max(0, try c.decodeIfPresent(Int.self, forKey: .simulators) ?? d.simulators)
+        simulatorDevice = try c.decodeIfPresent(String.self, forKey: .simulatorDevice) ?? d.simulatorDevice
         setup = try c.decodeIfPresent([String].self, forKey: .setup) ?? []
     }
 
@@ -65,8 +85,15 @@ struct PrimaryMacSettings: Codable, Equatable, Sendable {
         return (["set -e", "export PATH=\"/opt/homebrew/bin:$PATH\" HOMEBREW_NO_AUTO_UPDATE=1"] + setup).joined(separator: "\n")
     }
 
-    /// What it holds of the budget, and its VM's CPUs and memory.
-    var size: LeaseSize { LeaseSize(cpus: cpus, memoryBytes: Int64(memoryGigabytes) << 30) }
+    /// What it holds of the budget, and its VM's CPUs and memory: its own,
+    /// and its simulators'.
+    var size: LeaseSize { LeaseSize(cpus: cpus, memoryBytes: Int64(vmGigabytes) << 30) }
+
+    /// Its VM's memory: `memoryGigabytes`, and `simulatorGigabytes` for each simulator.
+    var vmGigabytes: Int { memoryGigabytes + simulators * Self.simulatorGigabytes }
+
+    /// What its lease is called where everyone sees it.
+    var label: String { "Primary macOS VM: \(slots) slots" + (simulators > 0 ? ", \(simulators) simulators" : "") }
 }
 
 /// What keeping the primary asks for now.
@@ -101,7 +128,7 @@ enum PrimaryPlan {
     /// then the oldest (then by id, so the order is the same every time).
     static func primaryOrder(_ held: [Lease]) -> [Lease] {
         let primaries = held.filter { $0.kind == .primary && $0.platform == .macos && $0.state != .returning && $0.state != .failed }
-        func slotCount(_ lease: Lease) -> Int { slots(of: lease.id, held).filter { $0.state != .returning && $0.state != .failed }.count }
+        func slotCount(_ lease: Lease) -> Int { tenants(of: lease.id, held).filter { $0.state != .returning && $0.state != .failed }.count }
         return primaries.sorted { a, b in
             let (sa, sb) = (slotCount(a), slotCount(b))
             if sa != sb { return sa > sb }
@@ -110,9 +137,9 @@ enum PrimaryPlan {
         }
     }
 
-    /// Primaries beyond the one kept, without slots: released.
+    /// Primaries beyond the one kept, without slots or simulators: released.
     static func extras(_ held: [Lease]) -> [Lease] {
-        primaryOrder(held).dropFirst().filter { slots(of: $0.id, held).allSatisfy { $0.state == .returning || $0.state == .failed } }
+        primaryOrder(held).dropFirst().filter { tenants(of: $0.id, held).allSatisfy { $0.state == .returning || $0.state == .failed } }
     }
 
     /// The next step for the macOS primary: wanted where server.json has one
@@ -125,23 +152,27 @@ enum PrimaryPlan {
         }
         let lease = macos(held)
         guard let settings, lendsMacOS else {
-            // Released once no slot of its is held: a test running in one isn't ended for it.
+            // Released once no slot or simulator of its is held: a test running in one isn't ended for it.
             guard let lease else { return .none }
-            if slots(of: lease.id, held).contains(where: { $0.state != .returning && $0.state != .failed }) { return .none }
+            if tenants(of: lease.id, held).contains(where: { $0.state != .returning && $0.state != .failed }) { return .none }
             return .release(lease.id, because: "server.json keeps no primary macOS VM")
         }
         guard let lease else { return restartPending ? .none : .make }
         if lease.state == .creating { return .wait }
-        // Replaced for new settings only once no slot of its is held: a
-        // test running in one isn't ended for it.
-        if slots(of: lease.id, held).contains(where: { $0.state != .returning && $0.state != .failed }) { return .check(lease.id) }
-        if lease.config != settings.config {
-            return .release(lease.id, because: "its base is now \(settings.config), not \(lease.config)")
-        }
-        if let size = lease.size, size != settings.size {
-            return .release(lease.id, because: "its size is now \(settings.cpus) CPUs and \(settings.memoryGigabytes) GB")
-        }
+        // Replaced for new settings only once no slot or simulator of its
+        // is held: a test running in one isn't ended for it.
+        if tenants(of: lease.id, held).contains(where: { $0.state != .returning && $0.state != .failed }) { return .check(lease.id) }
+        if let why = outdated(lease, settings) { return .release(lease.id, because: why) }
         return .check(lease.id)
+    }
+
+    /// Why a primary isn't as server.json says (its base or its size), or
+    /// nil: it is replaced once nothing lives in it, and lends nothing new
+    /// meanwhile, so what lives in it drains.
+    static func outdated(_ lease: Lease, _ settings: PrimaryMacSettings) -> String? {
+        if lease.config != settings.config { return "its base is now \(settings.config), not \(lease.config)" }
+        if let size = lease.size, size != settings.size { return "its size is now \(settings.cpus) CPUs and \(settings.vmGigabytes) GB" }
+        return nil
     }
 }
 
@@ -151,10 +182,29 @@ extension PrimaryPlan {
         held.filter { $0.platform == .mac && $0.primary == primary }
     }
 
-    /// Slots whose primary is gone or going: released with it.
+    /// What lives in a primary: its slots, and the `ios` leases whose
+    /// simulators run there.
+    static func tenants(of primary: String, _ held: [Lease]) -> [Lease] {
+        held.filter { isTenant($0) && $0.primary == primary }
+    }
+
+    /// A slot, or an `ios` lease whose simulator is a primary's (one on the
+    /// server's Mac has no primary).
+    static func isTenant(_ lease: Lease) -> Bool {
+        lease.platform == .mac || (lease.platform == .ios && lease.primary != nil)
+    }
+
+    /// Slots and simulators whose primary is gone or going: released with
+    /// it (after a restart too: one whose primary didn't come back).
     static func orphans(_ held: [Lease]) -> [Lease] {
         let primaries = Set(held.filter { $0.kind == .primary && $0.state != .returning && $0.state != .failed }.map(\.id))
-        return held.filter { $0.platform == .mac && $0.state != .returning && $0.state != .failed && !primaries.contains($0.primary ?? "") }
+        return held.filter { isTenant($0) && $0.state != .returning && $0.state != .failed && !primaries.contains($0.primary ?? "") }
+    }
+
+    /// Whether a new `ios` lease's simulator is the primary's: server.json
+    /// keeps a primary macOS VM with simulators, and the server lends macOS.
+    static func simulatorsInPrimary(_ settings: PrimaryMacSettings?, lendsMacOS: Bool) -> Bool {
+        lendsMacOS && (settings?.simulators ?? 0) > 0
     }
 }
 

@@ -99,9 +99,16 @@ enum XCTestAPI {
         }
         let folder = runs.folder(lease: lease.id, run: run)
         let prepared: XCTestFolder.Prepared
+        // A simulator in the primary: its run is the primary's (PrimaryXCTest).
+        let inPrimary = !mac && lease.primary != nil
+        let primary = inPrimary ? await api.machines.primaryGuest(ofLease: lease.id) : nil
         do {
+            if inPrimary, primary == nil { throw APIError(error: "lease \(lease.id)'s primary macOS VM is gone (or not ready)", code: "notReady") }
             if mac {
                 prepared = try await prepareMac(asked, lease: lease, folder: folder, api: api)
+            } else if let primary {
+                let xcode = try await PrimaryXCTest.xcode(primary)
+                prepared = try await prepare(asked, lease: lease, folder: folder, api: api, primary: (xcode, PrimaryXCTest.folder(lease: lease.id, run: run)))
             } else {
                 prepared = try await prepare(asked, lease: lease, folder: folder, api: api)
             }
@@ -139,7 +146,12 @@ enum XCTestAPI {
             return
         }
         let gui = asked.gui
+        let udid = lease.udid ?? ""
         let work = Task {
+            if let primary {
+                return try await PrimaryXCTest.run(folder: folder, prepared: prepared, lease: lease.id, run: run, udid: udid, guest: primary,
+                                                   onlyTesting: only, output: output)
+            }
             guard let slot else { return try await tools.xcodebuild(arguments, output: output) }
             let place = MacXCTest.Place(lease: lease.id, run: run, gui: gui, console: slot.console)
             // A GUI run waits for the primary's session (one at a time there).
@@ -205,7 +217,8 @@ enum XCTestAPI {
 
     /// The run's folder made ready from the holder's objects, each kept
     /// from the sweep while it's unpacked.
-    private static func prepare(_ asked: XCTestRequest, lease: Lease, folder: String, api: API) async throws -> XCTestFolder.Prepared {
+    private static func prepare(_ asked: XCTestRequest, lease: Lease, folder: String, api: API,
+                                primary: (xcode: PrimaryXCTest.Xcode, folder: String)? = nil) async throws -> XCTestFolder.Prepared {
         var opened: [String] = []
         do {
             var paths: [String] = []
@@ -217,9 +230,11 @@ enum XCTestAPI {
                 opened.append(hash)
                 paths.append(path)
             }
-            let developer = try await api.machines.xctests.tools.developerDirectory()
+            let developer: String
+            if let primary { developer = primary.xcode.developerDirectory } else { developer = try await api.machines.xctests.tools.developerDirectory() }
             let prepared = try await XCTestFolder.prepare(tests: paths[0], host: paths.count > 1 ? paths[1] : nil, ui: asked.ui, in: folder,
-                                                          developerDirectory: developer)
+                                                          developerDirectory: developer,
+                                                          primary: primary.map { ($0.folder, $0.xcode.testingFramework) })
             for hash in opened { await api.storage.close(hash) }
             return prepared
         } catch {

@@ -376,6 +376,11 @@ extension ServerConfig {
         for (name, size) in sizes {
             if let platform = Platform(rawValue: name) { estimates[platform] = LeaseSize(cpus: 0, memoryBytes: size.bytes) }
         }
+        // Simulators in the primary: as many as it runs, its memory theirs (held already).
+        if PrimaryPlan.simulatorsInPrimary(primary?.macos, lendsMacOS: lends(.macos)), let simulators = primary?.macos?.simulators {
+            caps[.ios] = min(caps[.ios] ?? simulators, simulators)
+            estimates[.ios] = .zero
+        }
         return LeasePolicy(caps: caps, memoryBytes: memory, maxCPUs: max(1, maxCPUs ?? cores), estimates: estimates,
                            hostLimitBytes: max(0, Int64(clamping: memoryBytes) - LeasePolicy.reserve(memoryBytes)))
     }

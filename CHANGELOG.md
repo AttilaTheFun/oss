@@ -2,6 +2,29 @@
 
 ## 0.14.0 (unreleased)
 
+- **iOS simulators in the primary macOS VM** (docs/primary-vms.md, "iOS:
+  simulators in the primary"): server.json's `primary.macos.simulators`
+  (0 by default: the server's Mac's simulators, as before) puts new `ios`
+  leases' simulators in the primary, at most that many (the `ios` cap,
+  taking nothing of the budget; the primary grows by 2 GB each), of
+  `primary.macos.simulatorDevice` (`iPhone 17 Pro`) or the `--device` and
+  `--runtime` asked for, made there and booted headless by its guest user
+  over SSH. The same lease, verbs, grants and MCP tools: simctl (the files
+  it names copied there), install, xctest (plain, hosted and UI, the UI
+  runner made from the primary's Xcode), screenshots, AXe's input (the
+  app's own AXe copied there at first use), recordings. Kept across
+  restarts and released with their primary; strays there deleted. No API
+  change: the lease's `primary` (API 17) names the primary, as a slot's
+  does, and older clients decode it or skip it.
+- **A primary due for replacement lends nothing new**: one whose base or
+  size no longer matches server.json refuses new slots and simulators
+  (`busy`), so what lives in it drains and it is replaced.
+- **A simulator's scale from Xcode 27's device types**: their profiles have
+  no `mainScreenScale`, so every simulator was taken as 3 pixels a point
+  and an iPad's taps landed at two thirds of where they were asked; the
+  scale now comes from the device type's capabilities when the profile
+  hasn't it.
+
 - **Pictures and recordings of a lease's screen** (API 19,
   docs/primary-vms.md's "Pictures and recordings"): `oss machine
   screenshot` takes a Mac slot (its primary's screen, from the server's
