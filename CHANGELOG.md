@@ -27,6 +27,19 @@
   (a macOS .xctestrun), copied there, the result bundle copied back for the
   JUnit and `--result`. `--gui` (XCTestRequest.gui): in the primary's
   console session, one at a time, for tests that draw a window.
+- **Commands and files on a slot** (API 18): `oss machine exec`, `upload`
+  and `download`, their grants (`machine.exec`, `machine.upload`,
+  `machine.download`) and the MCP tools `oss_exec`, `oss_upload` and
+  `oss_download` take a `mac` lease, through a container's routes and
+  frames. A command runs on the primary over SSH as the slot's user, in
+  its home (or a `workingDirectory` under it or /tmp), in a login bash, its
+  arguments and environment single-quoted words that reach it as given;
+  it runs in a process group of its own, which signals (and its client
+  going: TERM, then KILL ten seconds on) reach as its own user. Files go
+  through a container's script as the slot's user, under its home or
+  /tmp. `ExecRequest.gui` (optional; `oss machine exec --gui`, `oss_exec`'s
+  `gui`) runs a slot's command in the primary's GUI session, one at a time,
+  taking turns with `xctest --gui`. No `tty` on a slot yet.
 - **A CI runner keeps room for its job's VM**: runners that build hold
   their container (16 GB) while their jobs wait for a macOS VM, and four
   started at once held the memory their jobs' VMs needed, so none could

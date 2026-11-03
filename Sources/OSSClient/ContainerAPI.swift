@@ -46,8 +46,8 @@ extension OSSClient {
             return try await Self.exec(socket: socket, request, input: input, output: output)
         }
         #endif
-        guard lease.platform == .container else {
-            throw OSSError(status: 0, message: "lease \(lease.id) takes no commands (a container's, once it is ready)")
+        guard lease.platform.takesExec else {
+            throw OSSError(status: 0, message: "lease \(lease.id) takes no commands (a container's or a Mac slot's, once it is ready)")
         }
         return try await exec(lease.id, holder: lease.holder, request, input: input, output: output)
     }

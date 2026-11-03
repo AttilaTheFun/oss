@@ -125,14 +125,18 @@ enum MCPServer {
              ["id": leaseID, "command": ["type": "string"],
               "timeout": ["type": "integer", "description": "seconds before it is stopped (default 600)"]],
              required: ["id", "command"]),
-        tool("oss_exec", "Run a command in a leased container (sh -c), to its end: its output, errors and exit status.",
+        tool("oss_exec", """
+            Run a command in a leased container or Mac slot (sh -c), to its end: its output, errors and exit status. \
+            A slot's runs on its primary as the slot's user, in its home (directory: under it or /tmp).
+            """,
              ["id": leaseID, "command": ["type": "string"], "input": ["type": "string", "description": "its standard input"],
-              "directory": ["type": "string"], "timeout": ["type": "integer", "description": "seconds before it is stopped (default 600)"]],
+              "directory": ["type": "string"], "timeout": ["type": "integer", "description": "seconds before it is stopped (default 600)"],
+              "gui": ["type": "boolean", "description": "a Mac slot's: in its primary's GUI session (one at a time), for an app that draws"]],
              required: ["id", "command"]),
-        tool("oss_upload", "Write a small text file into a leased container (a big one: oss_grant machine.upload, then PUT it to the URL).",
+        tool("oss_upload", "Write a small text file into a leased container or Mac slot (a big one: oss_grant machine.upload, then PUT it to the URL).",
              ["id": leaseID, "path": ["type": "string"], "content": ["type": "string"], "mode": ["type": "string", "description": "e.g. 755"]],
              required: ["id", "path", "content"]),
-        tool("oss_download", "Read a small text file from a leased container (a big one: oss_grant machine.download, then GET the URL).",
+        tool("oss_download", "Read a small text file from a leased container or Mac slot (a big one: oss_grant machine.download, then GET the URL).",
              ["id": leaseID, "path": ["type": "string"]], required: ["id", "path"]),
         tool("oss_simctl", "Run simctl against a leased iOS simulator: install @<an uploaded .app>, launch <bundle id>, openurl <url>, terminate, listapps, privacy, status_bar, … (an app from storage: oss_install).",
              ["id": leaseID, "arguments": ["type": "array", "items": ["type": "string"]]], required: ["id", "arguments"]),
@@ -143,7 +147,7 @@ enum MCPServer {
         tool("oss_storage", "Your objects in the server's storage: each lease on one (id, SHA-256, size, name, until when).", [:]),
         tool("oss_grant", """
             A URL that does one thing for a few minutes, for files too big for a tool call: storage.put (PUT the file's bytes; \
-            name it with `name`), storage.get (GET an object of yours), machine.upload / machine.download (a container's \
+            name it with `name`), storage.get (GET an object of yours), machine.upload / machine.download (a container's or Mac slot's \
             file: add ?path=…), machine.install, machine.exec. A grant is a secret: don't put it anywhere else.
             """,
              ["verb": ["type": "string", "enum": ["storage.put", "storage.get", "machine.upload", "machine.download", "machine.install", "machine.exec", "machine.xctest"]],
@@ -248,13 +252,16 @@ enum MCPServer {
                 return text(out, error: result.status != 0)
             case "oss_exec":
                 let held = try await lease()
-                guard held.platform == .container else { throw Failure(description: "\(held.id) is a \(held.platform.rawValue) lease: oss_exec runs in containers (a VM: oss_ssh)") }
+                guard held.platform.takesExec else {
+                    throw Failure(description: "\(held.id) is a \(held.platform.rawValue) lease: oss_exec runs in containers and Mac slots (a VM: oss_ssh)")
+                }
                 guard let command = arguments["command"] as? String else { throw Failure(description: "which command?") }
                 let (frames, feed) = AsyncStream<ExecFrame>.makeStream()
                 if let input = arguments["input"] as? String { feed.yield(.stdin(Data(input.utf8))) }
                 feed.yield(.closeStdin)
                 let collected = Collected()
-                let request = ExecRequest(arguments: ["/bin/sh", "-c", command], workingDirectory: arguments["directory"] as? String)
+                let request = ExecRequest(arguments: ["/bin/sh", "-c", command], workingDirectory: arguments["directory"] as? String,
+                                          gui: (arguments["gui"] as? Bool) == true ? true : nil)
                 let status = try await withTimeout(number("timeout") ?? 600) {
                     try await client.exec(held.id, holder: context.holder, request, input: frames) { frame in
                         switch frame {

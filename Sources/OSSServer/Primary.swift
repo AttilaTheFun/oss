@@ -192,12 +192,21 @@ enum SlotUser {
             """
     }
 
-    /// The user's processes ended, the user deleted, its home with it.
+    /// The slot's keychain unlocked (before a run or a command), in the
+    /// user's own bootstrap.
+    static func unlockScript(lease: String, password: String) -> String {
+        let user = name(lease)
+        return "sudo launchctl asuser \"$(id -u \(user))\" sudo -u \(user) -H security unlock-keychain -p '\(password)' '\(keychain(lease))'"
+    }
+
+    /// The user's processes ended, the user deleted, its home with it (and
+    /// its commands' pid files).
     static func deleteScript(lease: String) -> String {
         let user = name(lease)
         return """
             user=\(user)
             sudo pkill -9 -u "$user" 2>/dev/null || true
+            sudo rm -f /tmp/oss-exec-\(lease)-*.pid
             if id "$user" >/dev/null 2>&1; then
                 sudo sysadminctl -deleteUser "$user" >/dev/null 2>&1 || sudo dscl . -delete "/Users/$user" || true
             fi

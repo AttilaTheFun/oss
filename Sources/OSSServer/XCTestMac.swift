@@ -164,8 +164,7 @@ enum MacXCTest {
         guard sent.ok else { throw APIError(error: "copying the run to the primary: \(sent.error.suffix(300))") }
         if !place.gui {
             // A slot's keychain unlocked for the run (its password on no command line: a script's standard input).
-            _ = try? await guest.run("sudo launchctl asuser \"$(id -u \(place.user))\" sudo -u \(place.user) -H security unlock-keychain -p '\(keychainPassword)' '\(SlotUser.keychain(place.lease))'",
-                                     timeout: 60)
+            _ = try? await guest.run(SlotUser.unlockScript(lease: place.lease, password: keychainPassword), timeout: 60)
         }
         let remote = place.asUser(xcodebuild(place, bundle: bundle, onlyTesting: onlyTesting))
         let status: Int32

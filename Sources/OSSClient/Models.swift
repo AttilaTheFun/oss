@@ -14,6 +14,10 @@ public enum Platform: String, Codable, CaseIterable, Sendable {
     case mac
 
     public var isVM: Bool { self == .macos || self == .linux || self == .windows }
+    /// Takes commands and files through the server (`oss machine exec`,
+    /// `upload`, `download`, their grants): a container, or a Mac slot
+    /// (API 18).
+    public var takesExec: Bool { self == .container || self == .mac }
 }
 
 /// What a container lease runs: an image from a registry, what it's given,
@@ -160,8 +164,8 @@ public struct ContainerMount: Codable, Sendable, Hashable {
 
 /// A command run in a container lease: the first frame on its exec socket
 /// (`Lease.execSocket`), then a stream of `ExecFrame`s both ways; or, from
-/// any computer, the body of `POST /v1/machines/<id>/exec` (API 9), whose
-/// connection then carries the same frames.
+/// any computer, the body of `POST /v1/machines/<id>/exec` (API 9; a Mac
+/// slot's too from API 18), whose connection then carries the same frames.
 public struct ExecRequest: Codable, Sendable, Hashable {
     public var arguments: [String]
     /// A terminal of `columns` × `rows`, its output on stdout alone.
@@ -170,15 +174,20 @@ public struct ExecRequest: Codable, Sendable, Hashable {
     public var rows: Int?
     public var environment: [String: String]
     public var workingDirectory: String?
+    /// A Mac slot's command in its primary's GUI session (its console
+    /// user's, one such command at a time on the primary), for an app that
+    /// draws (API 18). Absent (nil) is false; a container ignores it.
+    public var gui: Bool?
 
     public init(arguments: [String], tty: Bool = false, columns: Int? = nil, rows: Int? = nil,
-                environment: [String: String] = [:], workingDirectory: String? = nil) {
+                environment: [String: String] = [:], workingDirectory: String? = nil, gui: Bool? = nil) {
         self.arguments = arguments
         self.tty = tty
         self.columns = columns
         self.rows = rows
         self.environment = environment
         self.workingDirectory = workingDirectory
+        self.gui = gui
     }
 }
 
@@ -1182,6 +1191,12 @@ public enum OSS {
     /// jobs, image builds and leases being made or deleted have ended; then
     /// it restarts (or, held, waits for its installer's `now`), the line of
     /// leases waiting kept across it.
+    /// 17 from 0.14.0: the primary macOS VM and its slots (`platform:
+    /// mac`), and `machine xctest` on a slot.
+    /// 18 from 0.14.0: a slot's commands and files through the same routes
+    /// as a container's (`POST /v1/machines/<id>/exec`, `PUT`/`GET
+    /// …/files`, their grants), and `ExecRequest.gui` (a slot's command in
+    /// its primary's GUI session).
     /// 7 from 0.13.0: storage (`/v1/storage/…`: objects by their SHA-256,
     /// kept while a holder's lease on them lasts), grants (`/v1/grants`: a
     /// URL that does one thing without the token), an iOS lease's app
@@ -1202,7 +1217,7 @@ public enum OSS {
     /// 3 from 0.4.0: the Bazel cache (`GET /v1/cache`, the `cache` feature).
     /// 2 from 0.3.0: containers (`/v1/containers`) are gone, and Status and
     /// Capabilities no longer carry them.
-    public static let apiLevel = 17
+    public static let apiLevel = 18
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants"]
 }

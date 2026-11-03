@@ -27,11 +27,13 @@ let usage = """
                                                             ports (8080 → host:47512)
       oss machine ssh <id> [-- command…]                    macOS, Linux, Windows
       oss machine vnc <id> [--open]                         macOS, Linux, Windows: its VNC address and password
-      oss machine exec <id | --socket=PATH | --url=GRANT> [--tty] [--env=NAME=VALUE]… [--env-file=F] [--workdir=DIR] -- command…
+      oss machine exec <id | --socket=PATH | --url=GRANT> [--tty] [--gui] [--env=NAME=VALUE]… [--env-file=F] [--workdir=DIR] -- command…
                                                             a container: the command run in it, streamed, signals passed
                                                             on; by its socket on the server's Mac, else through the server
                                                             (--socket: the lease's execSocket, no server or token needed;
-                                                            --url: a machine.exec grant's, no token)
+                                                            --url: a machine.exec grant's, no token); a Mac slot: run on
+                                                            its primary as its user, in its home (no --tty yet; --gui: in
+                                                            the primary's GUI session, one at a time, for an app that draws)
       oss volume list [--json] | delete <name>                       containers' volumes, kept ones too
     Storage (files kept on the server by their SHA-256 while a lease of yours holds them, 24h unless --ttl, at most 7d):
       oss storage put <file> [--name=N] [--ttl=24h] [--json]
@@ -49,8 +51,9 @@ let usage = """
       oss grant machine.install | machine.xctest <id | ios> [--ttl=5m] [--json]
                                                             an app installed on its simulator; tests run there, and their
                                                             results read
-      oss grant machine.exec | machine.upload | machine.download <id | container> [--ttl=5m] [--json]
-                                                            a container's commands, files put in it, files read from it
+      oss grant machine.exec | machine.upload | machine.download <id | container | mac> [--ttl=5m] [--json]
+                                                            a container's or Mac slot's commands, files put in it, files
+                                                            read from it
     What this Mac lends (on the server's Mac; the app's Settings › Components):
       oss component list                                    each component: installed, or not, or why not here
       oss component install <id> [--file=PATH]              macos, linux, windows (--file= its ISO), android, ios
@@ -73,12 +76,13 @@ let usage = """
       oss machine type <id> <text…>                         typed into what has focus
       oss machine key <id> <key>                            return, tab, escape, backspace, delete, space, up, down,
                                                             left, right, pageup, pagedown, home, back; on a VM cmd+a…
-      oss machine upload <id> <local> <remote> [--mode=755] macOS, Linux, Windows (scp; a directory too); a container (a
-                                                            file, through the server; its mode the local file's unless
-                                                            --mode; remote/ puts it in that folder)
+      oss machine upload <id> <local> <remote> [--mode=755] macOS, Linux, Windows (scp; a directory too); a container or a
+                                                            Mac slot (a file, through the server; its mode the local
+                                                            file's unless --mode; remote/ puts it in that folder; a
+                                                            slot's paths are its home's, or /tmp's)
       oss machine download <id> <remote> <local>
-      oss machine upload --url=GRANT <local> <remote>       a container's, with a machine.upload grant, no token
-      oss machine download --url=GRANT <remote> <local>     a container's, with a machine.download grant, no token
+      oss machine upload --url=GRANT <local> <remote>       a container's or slot's, with a machine.upload grant, no token
+      oss machine download --url=GRANT <remote> <local>     a container's or slot's, with a machine.download grant, no token
       oss machine run <platform> [--config=NAME] [--minutes=N] -- command…   (a 5-minute lease renewed while it runs;
                                                             SIGTERM releases it at once; --kind, --label, --link,
                                                             --device and --runtime as lease's)
@@ -447,7 +451,7 @@ func octalMode(_ path: String) -> String? {
     return String(permissions & 0o777, radix: 8)
 }
 
-/// `oss machine upload|download` for a container, through the server:
+/// `oss machine upload|download` for a container or a Mac slot, through the server:
 /// `put` and `get` the token's way or a grant's. A folder isn't a file:
 /// it goes as an archive through exec.
 func containerTransfer(_ sub: String, _ from: String, _ to: String, mode: String?, id: String,
@@ -456,7 +460,7 @@ func containerTransfer(_ sub: String, _ from: String, _ to: String, mode: String
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: from, isDirectory: &isDirectory) else { fail("no file \(from)") }
         guard !isDirectory.boolValue else {
-            fail("a container takes a file at a time; a folder goes as an archive: tar -c -C \(from) . | oss machine exec \(id) -- "
+            fail("a container or a Mac slot takes a file at a time; a folder goes as an archive: tar -c -C \(from) . | oss machine exec \(id) -- "
                  + "sh -c 'mkdir -p \(to) && tar -x -C \(to)'")
         }
         let remote = to.hasSuffix("/") ? to + URL(fileURLWithPath: from).lastPathComponent : to
@@ -690,8 +694,8 @@ public enum OSSCommand {
                     exit(try Shell.passthrough("/usr/bin/ssh", client.sshArguments(lease, identity: arguments.options["identity"]) + arguments.rest))
                 case "exec":
                     let lease = try await resolveLease(target, client)
-                    guard lease.platform == .container, lease.state == .ready else {
-                        fail("exec is for a ready container lease: a VM takes ssh, a simulator simctl, an emulator adb")
+                    guard lease.platform.takesExec, lease.state == .ready else {
+                        fail("exec is for a ready container lease or Mac slot: a VM takes ssh, a simulator simctl, an emulator adb")
                     }
                     // Its socket on the server's Mac; through the server from anywhere else, in the holder's name.
                     exit(try await ExecCommand.run(arguments, through: ExecCommand.path(lease, client: client,
@@ -732,7 +736,7 @@ public enum OSSCommand {
                 case "upload", "download":
                     guard arguments.positional.count >= 5 else { fail("oss machine \(sub!) <id> <from> <to>") }
                     let lease = try await resolveLease(target, client)
-                    if lease.platform == .container {
+                    if lease.platform.takesExec {
                         // A file, through the server (from this Mac too), in the holder's name.
                         let holder = arguments.options["holder"] ?? holderName()
                         try await containerTransfer(sub!, arguments.positional[3], arguments.positional[4], mode: arguments.options["mode"],
@@ -742,7 +746,7 @@ public enum OSSCommand {
                         exit(0)
                     }
                     guard lease.platform.isVM else {
-                        fail("upload and download are for VMs and containers: a simulator takes simctl, an emulator adb push")
+                        fail("upload and download are for VMs, containers and Mac slots: a simulator takes simctl, an emulator adb push")
                     }
                     let remote = "\(lease.sshUser ?? "runner")@\(client.host):"
                     let (from, to) = sub == "upload"
