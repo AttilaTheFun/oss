@@ -478,6 +478,18 @@ actor MachineManager {
     /// primary: a slot is lent once the current one has.
     private var primarySetUp: [String: String] = [:]
 
+    /// Images' unpacked root filesystems no container was made from in
+    /// server.json's `containerTemplateDays` (2), deleted: at the start and
+    /// every hour. A container's clone doesn't need its template; the next
+    /// container of that image unpacks it again.
+    func pruneTemplates() async {
+        guard let containers, config.lends(.container) else { return }
+        let (files, bytes) = await containers.pruneTemplates(unusedFor: max(0, config.containerTemplateDays) * 86400)
+        guard !files.isEmpty else { return }
+        log("containers: deleted \(files.count) image templates unused for \(config.containerTemplateDays) days, "
+            + "\(bytes >> 30) GB: \(files.map { String($0.prefix(12)) }.joined(separator: ", "))")
+    }
+
     /// The primary macOS VM kept (PrimaryPlan.step): made where server.json
     /// has one and none is held, checked once it is ready, released when it
     /// stops answering or isn't as server.json says (the next call makes it
@@ -1785,6 +1797,7 @@ actor MachineManager {
         if let containers, config.lends(.container), !file.unreadable {
             await containers.prune(keeping: Set(leases.values.filter { $0.platform == .container }.map(\.name)).union(unreadNames))
         }
+        await pruneTemplates()
         recovered = true
         if file.unreadable || !unreadLeases.isEmpty {
             log("recover: \(file.unreadable ? "leases.json unreadable" : "\(unreadLeases.count) leases a later build saved"): their machines left alone")
@@ -1894,6 +1907,13 @@ public final class ServerHost: Sendable {
                 await machines.checkRestart()
                 await machines.refreshHost()
                 await machines.reviveMachines()
+            }
+        }
+        // Unused image templates deleted, every hour (after recovery's own pass).
+        Task {
+            while true {
+                try? await Task.sleep(for: .seconds(3600))
+                await machines.pruneTemplates()
             }
         }
         // The primary VMs kept (Primary.swift), once a minute.
