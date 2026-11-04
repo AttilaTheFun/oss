@@ -157,6 +157,10 @@ private func appFolder(config: String?, key: String?, configMode: Int = 0o600, k
     // A small Mac runs one.
     #expect(CIDefaults.concurrency(cores: 10, memoryBytes: 16 << 30, containerCapacity: 4) == 1)
     #expect(CIDefaults.concurrency(cores: 32, memoryBytes: 512 << 30, containerCapacity: 16) == 4)
+    // The room kept for a VM beside a starting runner: a macOS VM's unless said, 0 for none.
+    #expect(sized.vmRoomGB == nil)
+    let noRoom = try JSONDecoder().decode(CISettings.self, from: Data(#"{"vmRoomGB": 0}"#.utf8))
+    #expect(noRoom.vmRoomGB == 0)
 }
 
 // MARK: Which jobs are the server's
@@ -486,6 +490,18 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     #expect(await eventually { host.started == [1] })
     let state = await service.list().first?.state
     #expect(state == .starting || state == .listening)
+}
+
+@Test func waitingJobsAreRetriedTogetherOncePerWait() async throws {
+    let github = queueGitHub()
+    let host = FakeRunnerHost()
+    host.busy = 1_000_000
+    let service = CIService(plan: plan(max: 4), github: makeREST(github), host: host, busyRetry: .milliseconds(20))
+    await service.offer(try decodedJobs([job(1), job(2), job(3)]), repository: "owner/gh_mcp")
+    try await Task.sleep(for: .milliseconds(400))
+    // Twenty waits at most, three jobs a wait: not a retry each, doubling.
+    let refused = 1_000_000 - host.busy
+    #expect(refused >= 3 && refused <= 3 * 21)
 }
 
 @Test func aWaitingJobSaysWhy() async throws {

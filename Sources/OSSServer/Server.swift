@@ -220,8 +220,10 @@ actor MachineManager {
         let atCap = Set(Platform.allCases.filter { platform in
             admission.policy.caps[platform].map { cap in held.filter { $0.platform == platform }.count >= cap } ?? false
         })
-        // Room kept for a macOS VM only while one more may be leased.
-        let headroom = config.lends(.macos) && !atCap.contains(.macos) ? admission.policy.estimate(.macos).memoryBytes : 0
+        // Room kept for a VM only while one more macOS VM may be leased:
+        // server.json's ci.vmRoomGB, else a macOS VM's size.
+        let room = config.ci?.vmRoomGB.map { Int64(max(0, $0) * Double(1 << 30)) } ?? admission.policy.estimate(.macos).memoryBytes
+        let headroom = config.lends(.macos) && !atCap.contains(.macos) ? room : 0
         return CIRoom.refusal(runner: memoryBytes, budget: budget(), headroom: headroom, atCap: atCap)
     }
 

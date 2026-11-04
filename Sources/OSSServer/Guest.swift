@@ -138,6 +138,8 @@ struct Guest: Sendable {
                 sudo launchctl enable system/com.apple.screensharing
                 sudo launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
                 sudo launchctl kickstart -k system/com.apple.screensharing
+                # No crash dialogs over the desktop (a system process's crash, say): reports only.
+                defaults write com.apple.CrashReporter DialogType -string none
                 # Whatever the image's last session left open (System Settings, say) closes: a clean desktop.
                 pkill -x "System Settings" 2>/dev/null || true
                 """

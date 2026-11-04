@@ -682,7 +682,10 @@ repositories server.json names, beside any runner they have already.
    Visor's agent image), `cpus` and `memoryGigabytes` (each
    job's container: 4 and 4), `sizes` (a repository's own, where its jobs
    build in their container: `{"owner/reviews": {"cpus": 6,
-   "memoryGigabytes": 16}}`), `pollSeconds` (5), `unclaimedMinutes` (10)
+   "memoryGigabytes": 16}}`), `pollSeconds` (5), `unclaimedMinutes` (10),
+   `vmRoomGB` (the memory kept free beside a starting runner for a VM its
+   job may lease, while another macOS VM may be leased: a macOS VM's by
+   default; 0 where jobs lease slots and containers rather than whole VMs)
    and `serverURL` (the server as a job's container reaches it: by default
    this Mac's address on the containers' network).
    Each job's container reads the server's Bazel cache (~/.bazelrc and
