@@ -13,12 +13,16 @@ import OSSClient
 // (AdmissionTests).
 
 /// server.json's `budget`: the memory every lease together may take of the
-/// Mac (LeasePolicy.defaultMemory where it isn't given).
+/// Mac (LeasePolicy.defaultMemory where it isn't given), and what the Mac
+/// keeps for macOS and its own apps whatever the leases use
+/// (LeasePolicy.reserve where it isn't given: a quarter of a 128 GB Mac).
 struct BudgetSettings: Codable, Sendable, Equatable {
     var memoryGB: Double?
+    var reserveGB: Double?
 
-    init(memoryGB: Double? = nil) {
+    init(memoryGB: Double? = nil, reserveGB: Double? = nil) {
         self.memoryGB = memoryGB
+        self.reserveGB = reserveGB
     }
 }
 
@@ -372,6 +376,9 @@ extension ServerConfig {
         // Slots, as many as the primary lends (without one, leaseSlot lends none).
         if let slots = primary?.macos?.slots { caps[.mac] = slots }
         let memory = budget?.memoryGB.map { Int64(max(0, $0) * Double(1 << 30)) } ?? LeasePolicy.defaultMemory(memoryBytes)
+        // What the Mac keeps whatever the leases use: server.json's, else a
+        // quarter (LeasePolicy.reserve), never below 8 GB.
+        let reserve = budget?.reserveGB.map { max(Int64(8) << 30, Int64(max(0, $0) * Double(1 << 30))) } ?? LeasePolicy.reserve(memoryBytes)
         var estimates = LeasePolicy.defaultEstimates
         for (name, size) in sizes {
             if let platform = Platform(rawValue: name) { estimates[platform] = LeaseSize(cpus: 0, memoryBytes: size.bytes) }
@@ -382,6 +389,6 @@ extension ServerConfig {
             estimates[.ios] = .zero
         }
         return LeasePolicy(caps: caps, memoryBytes: memory, maxCPUs: max(1, maxCPUs ?? cores), estimates: estimates,
-                           hostLimitBytes: max(0, Int64(clamping: memoryBytes) - LeasePolicy.reserve(memoryBytes)))
+                           hostLimitBytes: max(0, Int64(clamping: memoryBytes) - reserve))
     }
 }

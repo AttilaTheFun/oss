@@ -188,7 +188,9 @@ budget both have room for it:
   simulators and emulators from the rest by their processes. Whatever the
   budget, the Mac keeps its reserve: the leases' use (each the more of its
   size and its footprint) and everything else's together stay under the
-  Mac's memory less the reserve.
+  Mac's memory less the reserve, a quarter of it unless `budget.reserveGB`
+  says (at least 8 GB): `{"memoryGB": 104, "reserveGB": 24}` lends 104 of a
+  128 GB Mac and keeps 24.
 - **CPUs are shared out, not budgeted**: most machines leave most of
   theirs idle, and at worst everything slows down. One VM or container may
   have at most `maxCPUs` (by default the Mac's cores); a lease asking for
