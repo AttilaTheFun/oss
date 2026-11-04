@@ -312,8 +312,8 @@ public struct OSSClient: Sendable {
             do {
                 lease = try await requestLease(request)
                 break
-            } catch let error as OSSError where waitForCapacity && (error.message.hasPrefix("busy") || error.code == "volumeInUse"
-                                                                    || error.code == "restarting") {
+            } catch let error as OSSError where waitForCapacity && (error.message.hasPrefix("busy") || error.code == "busy"
+                                                                    || error.code == "volumeInUse" || error.code == "restarting") {
                 progress("\(error.message); waiting")
                 try await Task.sleep(for: retry)
             } catch let error as OSSError where waitForCapacity && error.status == 0 && unanswered < Self.restartPatience {
