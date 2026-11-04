@@ -353,9 +353,20 @@ public struct OSSClient: Sendable {
     }
 
     /// `simctl` (an iOS lease) or `adb` (an Android one) on the server, against that device only.
-    public func deviceCommand(_ lease: Lease, _ arguments: [String]) async throws -> DeviceCommandResult {
+    /// `environment` (API 20): a simulator's launch or spawn's, each name the
+    /// app's (`SIMCTL_CHILD_<name>` to simctl), a value `@name` the path of
+    /// that file of the lease's. Refused here for a server before API 20,
+    /// which would launch the app without it.
+    public func deviceCommand(_ lease: Lease, _ arguments: [String], environment: [String: String] = [:]) async throws -> DeviceCommandResult {
+        if !environment.isEmpty {
+            let api = try await capabilities().api
+            guard api >= 20 else {
+                throw OSSError(status: 0, message: "this server (API \(api)) passes no environment to simctl: that's API 20's")
+            }
+        }
         let tool = lease.platform == .ios ? "simctl" : "adb"
-        return try await json("POST", "/v1/machines/\(lease.id)/\(tool)", body: DeviceCommand(arguments: arguments))
+        return try await json("POST", "/v1/machines/\(lease.id)/\(tool)",
+                              body: DeviceCommand(arguments: arguments, environment: environment.isEmpty ? nil : environment))
     }
 
     /// A PNG of a lease's screen; with `window` (a Mac slot's, API 19),

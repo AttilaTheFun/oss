@@ -38,6 +38,8 @@ oss machine list                                 # every lease: kind, holder, ti
 oss machine ssh <id> -- <command>                # VMs: as runner; sudo needs no password
 oss machine simctl <id> install ./My.app         # iOS: local paths uploaded first
 oss machine simctl <id> launch <bundle id> | openurl <url> | terminate … | listapps
+oss machine upload <ios lease> ./ctl.json ctl.json   # a file of its own folder, where its simulator runs
+oss machine simctl <id> --env=NAME=VALUE --env=CTL=@ctl.json -- launch <bundle id>   # the app's environment
 oss machine xctest <id> --tests=<Tests.zip> [--host=<App.ipa>] [--ui] [--junit=out.xml] [--result=out.xcresult.zip]
                                                  # iOS: rules_apple's tests on its simulator (built here or on Linux)
 oss machine adb <id> install ./app.apk | shell … | logcat -d   # Android
@@ -46,7 +48,7 @@ oss machine tap <id> <x> <y>                     # any lease, in the screenshot'
 oss machine swipe <id> <x> <y> <to x> <to y> [--ms=300]
 oss machine type <id> <text…>
 oss machine key <id> return                      # names; on a VM cmd+a…
-oss machine upload|download <id> <from> <to>     # VMs (scp); containers (a file, through the server)
+oss machine upload|download <id> <from> <to>     # VMs (scp); containers, slots, iOS leases (a file, through the server)
 oss machine vnc <id>                             # VMs: vnc://host:port and its password
 oss machine renew <id> --minutes=60
 oss machine release <id>

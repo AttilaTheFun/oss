@@ -161,7 +161,7 @@ extension OSSClient {
     /// simctl (iOS) or adb (Android) on the server, for this lease's device.
     /// Local paths among the arguments are uploaded first (a directory, such
     /// as an .app, zipped) and named `@<file>`.
-    func deviceCommandUploading(_ lease: Lease, _ arguments: [String]) async throws -> DeviceCommandResult {
+    func deviceCommandUploading(_ lease: Lease, _ arguments: [String], environment: [String: String] = [:]) async throws -> DeviceCommandResult {
         var sent: [String] = []
         for argument in arguments {
             var isDirectory: ObjCBool = false
@@ -179,7 +179,7 @@ extension OSSClient {
             }
             sent.append("@\(name)")
         }
-        return try await deviceCommand(lease, sent)
+        return try await deviceCommand(lease, sent, environment: environment)
     }
 
     /// Where a lease's SSH host keys are kept (each guest's are new).

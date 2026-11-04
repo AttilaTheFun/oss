@@ -51,9 +51,9 @@ let usage = """
       oss grant machine.install | machine.xctest <id | ios> [--ttl=5m] [--json]
                                                             an app installed on its simulator; tests run there, and their
                                                             results read
-      oss grant machine.exec | machine.upload | machine.download <id | container | mac> [--ttl=5m] [--json]
+      oss grant machine.exec | machine.upload | machine.download <id | container | mac | ios> [--ttl=5m] [--json]
                                                             a container's or Mac slot's commands, files put in it, files
-                                                            read from it
+                                                            read from it (an iOS lease's files, not exec)
       oss grant machine.screenshot | machine.record <id | platform> [--ttl=5m] [--json]
                                                             a picture of its screen; a recording of it started and stopped
     What this Mac lends (on the server's Mac; the app's Settings › Components):
@@ -61,6 +61,9 @@ let usage = """
       oss component install <id> [--file=PATH]              macos, linux, windows (--file= its ISO), android, ios
       oss component remove <id>                             what it installed deleted (refused while a lease uses it)
       oss machine simctl <id> <simctl arguments…>          iOS: install ./My.app, launch <bundle id>, openurl …
+      oss machine simctl <id> --env=NAME=VALUE… -- launch <bundle id>
+                                                            the app's environment (simctl's SIMCTL_CHILD_NAME); a value
+                                                            or argument @name is that file of the lease's (upload)
       oss machine install <id> <sha256 | name>              iOS: an .ipa or zipped .app of yours from storage installed
       oss machine install --url=GRANT <sha256 | name>       the same with a machine.install grant, no token
       oss machine xctest <id> --tests=<object | file> [--host=<object | file>] [--ui] [--gui] [--only-testing=Class[/method]]…
@@ -93,10 +96,12 @@ let usage = """
       oss machine upload <id> <local> <remote> [--mode=755] macOS, Linux, Windows (scp; a directory too); a container or a
                                                             Mac slot (a file, through the server; its mode the local
                                                             file's unless --mode; remote/ puts it in that folder; a
-                                                            slot's paths are its home's, or /tmp's)
+                                                            slot's paths are its home's, or /tmp's); an iOS lease (a
+                                                            file of its own folder, where its simulator runs: @name in
+                                                            simctl's arguments and --env values; the path printed)
       oss machine download <id> <remote> <local>
-      oss machine upload --url=GRANT <local> <remote>       a container's or slot's, with a machine.upload grant, no token
-      oss machine download --url=GRANT <remote> <local>     a container's or slot's, with a machine.download grant, no token
+      oss machine upload --url=GRANT <local> <remote>       a container's, slot's or iOS lease's, with a machine.upload grant
+      oss machine download --url=GRANT <remote> <local>     the same with a machine.download grant, no token
       oss machine run <platform> [--config=NAME] [--minutes=N] -- command…   (a 5-minute lease renewed while it runs;
                                                             SIGTERM releases it at once; --kind, --label, --link,
                                                             --device and --runtime as lease's)
@@ -247,6 +252,7 @@ func describe(_ lease: Lease, _ client: OSSClient) -> String {
                      + (lease.primary.map { "in primary \($0) of \(client.host)" } ?? "on \(client.host)"))
         lines.append("  oss machine simctl \(lease.id) install ./My.app | launch <bundle id> | openurl <url> | ...")
         lines.append("  oss machine xctest \(lease.id) --tests=<Tests.zip> [--host=<App.ipa>] [--ui]")
+        lines.append("  oss machine upload \(lease.id) <file> <name>, then simctl \(lease.id) --env=NAME=@<name> -- launch <bundle id>")
         if client.host == "127.0.0.1", lease.primary == nil { lines.append("  (on this Mac: xcrun simctl … \(lease.udid ?? ""))") }
     case .android:
         lines.append("  adb connect \(env["OSS_ADB"]!)   (then adb -s \(env["OSS_ADB"]!) …)")
@@ -470,6 +476,38 @@ func octalMode(_ path: String) -> String? {
     let value = (try? FileManager.default.attributesOfItem(atPath: path))?[.posixPermissions]
     guard let permissions = (value as? NSNumber)?.intValue ?? (value as? Int) else { return nil }
     return String(permissions & 0o777, radix: 8)
+}
+
+/// `oss machine simctl <id> [--env=NAME=VALUE]… [--] <simctl arguments…>`:
+/// the environment (also from `--env` before the id) and the command.
+/// `--env` is taken only before the command (or its `--`); after it,
+/// everything is simctl's. A value may be empty, or `@name` (a file of the
+/// lease's, by its path on the simulator's machine).
+enum DeviceCommandLine {
+    static func split(_ before: [String], _ given: [String]) throws -> (environment: [String: String], command: [String]) {
+        var environment: [String: String] = [:]
+        func take(_ pair: String) throws {
+            guard let equals = pair.firstIndex(of: "="), equals != pair.startIndex else {
+                throw OSSError(status: 0, message: "--env=NAME=VALUE, not \(pair)")
+            }
+            environment[String(pair[..<equals])] = String(pair[pair.index(after: equals)...])
+        }
+        for pair in before { try take(pair) }
+        var rest = given[...]
+        while let first = rest.first {
+            if first.hasPrefix("--env=") {
+                try take(String(first.dropFirst("--env=".count)))
+                rest = rest.dropFirst()
+            } else if first == "--env", rest.count >= 2 {
+                try take(rest[rest.index(after: rest.startIndex)])
+                rest = rest.dropFirst(2)
+            } else {
+                break
+            }
+        }
+        if rest.first == "--" { rest = rest.dropFirst() }
+        return (environment, Array(rest))
+    }
 }
 
 /// `oss machine upload|download` for a container or a Mac slot, through the server:
@@ -748,7 +786,10 @@ public enum OSSCommand {
                     if arguments.flags.contains("open") { _ = try Shell.passthrough("/usr/bin/open", [url]) }
                 case "simctl", "adb":
                     let lease = try await resolveLease(target, client)
-                    let result = try await client.deviceCommandUploading(lease, Array(arguments.positional.dropFirst(3)) + arguments.rest)
+                    let (environment, command) = try DeviceCommandLine.split(arguments.all["env"] ?? [],
+                                                                             Array(arguments.positional.dropFirst(3)) + arguments.rest)
+                    guard environment.isEmpty || sub == "simctl" else { fail("--env is for simctl launch or spawn") }
+                    let result = try await client.deviceCommandUploading(lease, command, environment: environment)
                     print(result.output, terminator: "")
                     FileHandle.standardError.write(Data(result.error.utf8))
                     exit(result.status)
@@ -777,8 +818,9 @@ public enum OSSCommand {
                 case "upload", "download":
                     guard arguments.positional.count >= 5 else { fail("oss machine \(sub!) <id> <from> <to>") }
                     let lease = try await resolveLease(target, client)
-                    if lease.platform.takesExec {
-                        // A file, through the server (from this Mac too), in the holder's name.
+                    if lease.platform.takesFiles {
+                        // A file, through the server (from this Mac too), in the holder's name;
+                        // an iOS lease's in its own folder where its simulator runs (API 20).
                         let holder = arguments.options["holder"] ?? holderName()
                         try await containerTransfer(sub!, arguments.positional[3], arguments.positional[4], mode: arguments.options["mode"],
                                                     id: lease.id,
@@ -787,7 +829,7 @@ public enum OSSCommand {
                         exit(0)
                     }
                     guard lease.platform.isVM else {
-                        fail("upload and download are for VMs, containers and Mac slots: a simulator takes simctl, an emulator adb push")
+                        fail("upload and download are for VMs, containers, Mac slots and iOS leases: an emulator takes adb push")
                     }
                     let remote = "\(lease.sshUser ?? "runner")@\(client.host):"
                     let (from, to) = sub == "upload"

@@ -2,6 +2,25 @@
 
 ## 0.14.0 (unreleased)
 
+- **An iOS lease's files and its app's environment** (API 20): `oss
+  machine upload <ios lease> <file> <path>` and `download` go through the
+  files routes containers and slots take (`PUT`/`GET
+  /v1/machines/<id>/files?path=…`, grants `machine.upload` and
+  `machine.download`, MCP `oss_upload`/`oss_download`), `path` relative to
+  the lease's own folder where its simulator runs
+  (`/Users/Shared/oss-ios/<id>/files` in the primary, as its guest user;
+  its uploads on the server's Mac), no `..`, `~` or absolute paths, the
+  absolute path answered, deleted at release. `oss machine simctl <id>
+  --env=NAME=VALUE… -- launch …` (`DeviceCommand.environment`, MCP
+  `oss_simctl`'s `environment`): each name the app's as simctl's
+  `SIMCTL_CHILD_<name>` (`env …` over SSH in the primary, every value
+  quoted), for `launch` and `spawn` alone; `@<path>` in an argument or an
+  environment value is that file's path on the simulator's machine. A file
+  put this way replaces one of the same name uploaded before by
+  `PUT …/files/<name>`, which simctl's `@name` still copies across. The
+  client refuses an environment to a server below API 20, which would drop
+  it.
+
 - **iOS simulators in the primary macOS VM** (docs/primary-vms.md, "iOS:
   simulators in the primary"): server.json's `primary.macos.simulators`
   (0 by default: the server's Mac's simulators, as before) puts new `ios`
