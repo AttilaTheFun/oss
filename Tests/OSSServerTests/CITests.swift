@@ -453,7 +453,8 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     await service.offer(try decodedJobs([job(3, created: "2026-10-31T10:03:00Z"), job(1, created: "2026-10-31T10:01:00Z"),
                                          job(2, created: "2026-10-31T10:02:00Z")]), repository: "owner/gh_mcp")
     #expect(await eventually { host.runningLeases.count == 2 })
-    #expect(host.started == [1, 2])
+    // The two queued first, started together: in either order.
+    #expect(Set(host.started) == [1, 2])
     #expect(await service.list().first { $0.id == 3 }?.state == .queued)
     // Each runner's configuration is named for its lease, with the job's labels.
     let configs = github.requests.filter { $0.url.path.hasSuffix("generate-jitconfig") }
@@ -463,7 +464,7 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     #expect(first["runner_group_id"] as? Int == 1)
     // One ends: the third takes its place.
     host.finish("lease1", lines: ["√ Connected to GitHub", "Listening for Jobs", "Running job: job 1", "Job job 1 completed with result: Succeeded"])
-    #expect(await eventually { host.started == [1, 2, 3] })
+    #expect(await eventually { host.started.count == 3 && host.started.last == 3 })
     #expect(await eventually { await service.list().first { $0.id == 1 }?.state == .completed })
     let done = try #require(await service.list().first { $0.id == 1 })
     #expect(done.result == "Succeeded")
