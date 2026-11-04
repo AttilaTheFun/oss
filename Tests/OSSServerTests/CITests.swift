@@ -157,6 +157,10 @@ private func appFolder(config: String?, key: String?, configMode: Int = 0o600, k
     // A small Mac runs one.
     #expect(CIDefaults.concurrency(cores: 10, memoryBytes: 16 << 30, containerCapacity: 4) == 1)
     #expect(CIDefaults.concurrency(cores: 32, memoryBytes: 512 << 30, containerCapacity: 16) == 4)
+    // The room kept for a VM beside a starting runner: a macOS VM's unless said, 0 for none.
+    #expect(sized.vmRoomGB == nil)
+    let noRoom = try JSONDecoder().decode(CISettings.self, from: Data(#"{"vmRoomGB": 0}"#.utf8))
+    #expect(noRoom.vmRoomGB == 0)
 }
 
 // MARK: Which jobs are the server's

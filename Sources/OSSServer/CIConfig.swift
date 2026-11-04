@@ -22,6 +22,12 @@ struct CISettings: Codable, Sendable, Equatable {
     /// How many jobs at once, across repositories: the App's file's, else
     /// from the Mac's cores and memory (CIDefaults.concurrency).
     var maxConcurrent: Int?
+    /// The memory kept free beside a starting runner for a VM its job may
+    /// lease (CIRoom), in GB: a macOS VM's by default; 0 where CI's jobs
+    /// lease no whole VMs (slots and containers instead), so every runner
+    /// the budget holds may start, and a job that does lease one waits in
+    /// line for it.
+    var vmRoomGB: Double?
     /// Each job's container's CPUs and memory.
     var cpus: Int?
     var memoryGigabytes: Int?
@@ -52,6 +58,7 @@ struct CISettings: Codable, Sendable, Equatable {
         labels = try c.decodeIfPresent([String: String].self, forKey: .labels) ?? [:]
         image = try c.decodeIfPresent(String.self, forKey: .image)
         maxConcurrent = try c.decodeIfPresent(Int.self, forKey: .maxConcurrent)
+        vmRoomGB = try c.decodeIfPresent(Double.self, forKey: .vmRoomGB)
         cpus = try c.decodeIfPresent(Int.self, forKey: .cpus)
         memoryGigabytes = try c.decodeIfPresent(Int.self, forKey: .memoryGigabytes)
         sizes = try c.decodeIfPresent([String: RunnerSize].self, forKey: .sizes) ?? [:]
