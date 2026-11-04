@@ -432,8 +432,10 @@ enum Simulators {
             log("running \(script)")
             var environment = ProcessInfo.processInfo.environment
             environment["OSS_UDID"] = udid
-            let status = try Shell.passthrough("/bin/bash", [script], environment: environment)
-            guard status == 0 else { throw ShellError(description: "\(script) failed (\(status)); \(name) is left booted for a look") }
+            // Shell.run, not passthrough: a minute's script mustn't hold one of Swift's cooperative threads.
+            let run = try await Shell.run("/bin/bash", [script], environment: environment)
+            log(run.output + run.error)
+            guard run.ok else { throw ShellError(description: "\(script) failed (\(run.status)); \(name) is left booted for a look") }
         }
         // Its script kept by path, for a lease of another device type (`create`).
         Paths.ensure(Paths.simulators)

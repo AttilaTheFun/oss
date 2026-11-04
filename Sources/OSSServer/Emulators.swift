@@ -150,8 +150,10 @@ enum Emulators {
                 var environment = Emulators.environment(c)
                 environment["ANDROID_SERIAL"] = "emulator-\(port)"
                 environment["ADB"] = adbPath(c)
-                let status = try Shell.passthrough("/bin/bash", [script], environment: environment)
-                guard status == 0 else { throw ShellError(description: "\(script) failed (\(status))") }
+                // Shell.run, not passthrough: a long script mustn't hold one of Swift's cooperative threads.
+                let run = try await Shell.run("/bin/bash", [script], environment: environment)
+                log(run.output + run.error)
+                guard run.ok else { throw ShellError(description: "\(script) failed (\(run.status))") }
             }
             let saved = try await adb(c, ["-s", "emulator-\(port)", "emu", "avd", "snapshot", "save", "default_boot"], timeout: 600)
             guard saved.ok, !saved.output.contains("KO") else { throw ShellError(description: "saving the snapshot: \(saved.output)\(saved.error)") }
@@ -299,21 +301,18 @@ enum Emulators {
         return try await adb(ServerConfig.load(), ["-s", "emulator-\(port)"] + arguments, timeout: 600)
     }
 
+    /// Its screen as a PNG. Through Shell.run, which waits on adb's exit
+    /// without holding a thread: a Process's waitUntilExit here held one of
+    /// Swift's cooperative threads for each picture, and pictures taken
+    /// often (a proof, OS Monitor's screen view) starved the server's
+    /// tasks for seconds at a time.
     static func screenshot(port: Int) async throws -> Data {
-        let path = NSTemporaryDirectory() + "oss-emu-\(Random.hex(4)).png"
-        defer { try? FileManager.default.removeItem(atPath: path) }
         let c = ServerConfig.load()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: adbPath(c))
-        process.arguments = ["-s", "emulator-\(port)", "exec-out", "screencap", "-p"]
-        process.environment = environment(c)
-        FileManager.default.createFile(atPath: path, contents: nil)
-        process.standardOutput = FileHandle(forWritingAtPath: path)
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0, let data = FileManager.default.contents(atPath: path), !data.isEmpty else {
-            throw APIError(error: "adb screencap failed")
+        let result = try await Shell.run(adbPath(c), ["-s", "emulator-\(port)", "exec-out", "screencap", "-p"],
+                                         environment: environment(c), timeout: 60)
+        guard result.ok, !result.data.isEmpty else {
+            throw APIError(error: "adb screencap failed" + (result.error.isEmpty ? "" : ": \(result.error)"))
         }
-        return data
+        return result.data
     }
 }
