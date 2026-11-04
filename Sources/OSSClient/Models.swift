@@ -349,6 +349,12 @@ public struct Lease: Codable, Sendable {
     // VMs
     /// The guest's address on the VMs' network (reached from the server's Mac only).
     public var guestAddress: String?
+    /// The server's Mac as the lease's machine reaches it (API 21): its side
+    /// of the VMs' network for a VM, a container, a slot or a simulator in
+    /// the primary; 127.0.0.1 for a simulator or emulator on the Mac itself.
+    /// Where a lease's app reaches something served on the server's Mac (a
+    /// test's web site).
+    public var hostAddress: String?
     /// Ports on the server's Mac forwarded to the guest's SSH and VNC.
     public var sshPort: Int?
     public var vncPort: Int?
@@ -1275,7 +1281,7 @@ public enum OSS {
     /// and `machine.download`), and `DeviceCommand.environment` (a
     /// simulator's launch or spawn: `SIMCTL_CHILD_<name>`; `@name` values
     /// those files' paths).
-    public static let apiLevel = 20
+    public static let apiLevel = 21
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants", "recordings"]
 }

@@ -294,9 +294,23 @@ actor MachineManager {
         }
     }
 
-    func all() -> [Lease] { leases.values.sorted { $0.created < $1.created } }
+    func all() -> [Lease] { leases.values.sorted { $0.created < $1.created }.map(withHostAddress) }
     func held(_ platform: Platform) -> Int { leases.values.filter { $0.platform == platform && $0.state != .failed }.count }
-    func lease(_ id: String) -> Lease? { leases[id] }
+    func lease(_ id: String) -> Lease? { leases[id].map(withHostAddress) }
+
+    /// A lease with `hostAddress`: the server's Mac as its machine reaches
+    /// it. A lease living in a primary reaches the Mac as the primary does.
+    func withHostAddress(_ lease: Lease) -> Lease {
+        var lease = lease
+        let guest = lease.primary.flatMap { leases[$0]?.guestAddress } ?? lease.guestAddress
+        switch lease.platform {
+        case .ios, .android:
+            lease.hostAddress = lease.primary == nil ? "127.0.0.1" : guest.flatMap(LocalNetworks.hostAddress(facing:))
+        default:
+            lease.hostAddress = guest.flatMap(LocalNetworks.hostAddress(facing:))
+        }
+        return lease
+    }
 
     /// A lease taken as it is, its machine already there: a test's, whose
     /// simulator is a fake (simulators have no backend to fake, as
