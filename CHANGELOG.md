@@ -2,6 +2,11 @@
 
 ## 0.14.0 (unreleased)
 
+- **A lease's `hostAddress`** (API 21): the server's Mac as the lease's
+  machine reaches it, for an app there to reach something served on the
+  Mac (a test's web site): the Mac's side of the VMs' network for a VM, a
+  container, a slot or a simulator in the primary; 127.0.0.1 for a
+  simulator or emulator on the Mac itself.
 - **An iOS lease's files and its app's environment** (API 20): `oss
   machine upload <ios lease> <file> <path>` and `download` go through the
   files routes containers and slots take (`PUT`/`GET
