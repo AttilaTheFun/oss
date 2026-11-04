@@ -113,6 +113,10 @@ enum MCPServer {
                   its builds read this server's Bazel cache and files, as CI's containers do: the read token in ~/.netrc \
                   for the server as the container reaches it, and ~/.bazelrc reading its cache (`oss machine run --inside --cache`)
                   """],
+              "virtualization": ["type": "boolean", "description": """
+                  nested virtualization: /dev/kvm in it, for a VM of its own (an Android emulator); refused where the server's \
+                  Mac can't nest
+                  """],
               "label": ["type": "string"]],
              required: ["image"]),
         tool("oss_renew", "Keep a lease: its time set to `minutes` from now.",
@@ -241,6 +245,7 @@ enum MCPServer {
                                          diskBytes: number("disk_gb").map { Int64($0 * gigabyte) }, volumes: volumes)
                 spec.environment = (arguments["environment"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String }
                 spec.ports = (arguments["ports"] as? [NSNumber] ?? []).map(\.intValue)
+                spec.virtualization = arguments["virtualization"] as? Bool ?? false
                 let lease = try await client.lease(LeaseRequest(platform: .container, minutes: (arguments["minutes"] as? NSNumber)?.intValue,
                                                                 holder: context.holder, container: spec, kind: .agent,
                                                                 label: arguments["label"] as? String))

@@ -147,6 +147,10 @@ final class FakeContainers: ContainerBackend, @unchecked Sendable {
     let root: String
     private let lock = NSLock()
     private var running: [String: FakeExecServer] = [:]
+    private var specs: [String: ContainerSpec] = [:]
+
+    /// What `name` was started from.
+    func spec(_ name: String) -> ContainerSpec? { lock.withLock { specs[name] } }
 
     init(root: String) { self.root = root }
 
@@ -156,7 +160,10 @@ final class FakeContainers: ContainerBackend, @unchecked Sendable {
         // A Unix socket's path has at most 104 bytes.
         let server = try FakeExecServer(socket: NSTemporaryDirectory() + "oss-test-\(UUID().uuidString.prefix(8)).sock", home: home(name))
         await server.start()
-        lock.withLock { running[name] = server }
+        lock.withLock {
+            running[name] = server
+            specs[name] = spec
+        }
         return server.socket
     }
 
@@ -579,3 +586,59 @@ final class EchoServer: @unchecked Sendable {
     func stop() { listener.cancel() }
 }
 #endif
+
+@Test func nestedVirtualizationIsForAMacThatNestsAndBootsOSSServersKVMKernel() async throws {
+    let folder = NSTemporaryDirectory() + "oss-kvm-kernel-test-\(UUID().uuidString)"
+    let (folderBefore, nestsBefore) = (KVMKernel.folder, KVMKernel.hostNests)
+    KVMKernel.folder = folder
+    defer {
+        KVMKernel.folder = folderBefore
+        KVMKernel.hostNests = nestsBefore
+        try? FileManager.default.removeItem(atPath: folder)
+    }
+    try await withContainerServer(ports: 38740...38741) { server in
+        let asked = LeaseRequest(platform: .container, holder: "alice",
+                                 container: ContainerSpec(image: "ubuntu:24.04", virtualization: true))
+
+        // A Mac that can't nest: refused, saying why.
+        KVMKernel.hostNests = { false }
+        let refused = await #expect(throws: APIError.self) { try await server.machines.lease(asked, local: false) }
+        #expect(refused?.code == "virtualizationUnsupported")
+        #expect(await server.machines.all().isEmpty)
+
+        // One that can, its kernel already built: the container is started
+        // asking for it, from anywhere.
+        KVMKernel.hostNests = { true }
+        try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: KVMKernel.path, contents: Data("kernel".utf8))
+        let made = try await server.machines.lease(asked, local: false)
+        var lease = made
+        for _ in 0..<500 where lease.state != .ready && lease.state != .failed {
+            try await Task.sleep(for: .milliseconds(20))
+            lease = try #require(await server.machines.lease(made.id))
+        }
+        #expect(lease.state == .ready)
+        #expect(lease.container?.virtualization == true)
+        #expect(server.containers.spec(lease.name)?.virtualization == true)
+        // And a plain one isn't.
+        let plain = try await server.lease()
+        #expect(server.containers.spec(plain.name)?.virtualization == false)
+    }
+}
+
+@Test func aContainerSpecWithoutVirtualizationReadsAsNone() throws {
+    let old = try JSONDecoder.oss.decode(ContainerSpec.self, from: Data(#"{"image": "alpine:3.20"}"#.utf8))
+    #expect(old.virtualization == false)
+    let nested = ContainerSpec(image: "ubuntu:24.04", virtualization: true)
+    #expect(try JSONDecoder.oss.decode(ContainerSpec.self, from: JSONEncoder.oss.encode(nested)).virtualization)
+}
+
+@Test func theKVMKernelsRecipeChecksItsSourcesAndTurnsOnKVMAndVhost() {
+    let script = KVMKernel.script
+    #expect(script.contains("\(KVMKernel.sourceSHA256)  linux.tar.xz' | sha256sum -c"))
+    #expect(script.contains("\(KVMKernel.configSHA256)  config' | sha256sum -c"))
+    #expect(script.contains("apple/containerization/\(KVMKernel.configCommit)/kernel/config-arm64"))
+    #expect(script.contains("-e VHOST_NET -e VHOST_VSOCK"))
+    #expect(script.contains("for option in KVM VHOST VHOST_NET VHOST_VSOCK"))
+    #expect(KVMKernel.path.hasSuffix("/vmlinux-kvm-\(KVMKernel.recipe.prefix(12))"))
+}

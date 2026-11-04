@@ -37,10 +37,13 @@ public struct HelperSpec: Codable, Sendable {
     /// which OS Server writes each time it starts the helper; a spec from
     /// before 0.14 has none, and the helper takes ContainerNetwork.socket.
     public var network: String?
+    /// Nested virtualization (`/dev/kvm`, with `kernel` OS Server's KVM
+    /// one); a spec from before API 22 has none.
+    public var virtualization: Bool?
 
     public init(name: String, kernel: String, initfs: String, rootfs: String, socket: String, cpus: Int, memoryBytes: Int64,
                 rosetta: Bool, mounts: [ContainerMount], volumes: [Volume], image: ImageConfig?, environment: [String: String],
-                workingDirectory: String?, command: [String]?, network: String? = nil) {
+                workingDirectory: String?, command: [String]?, network: String? = nil, virtualization: Bool = false) {
         self.name = name
         self.kernel = kernel
         self.initfs = initfs
@@ -56,6 +59,7 @@ public struct HelperSpec: Codable, Sendable {
         self.workingDirectory = workingDirectory
         self.command = command
         self.network = network
+        self.virtualization = virtualization
     }
 
     /// The file beside `helper.json` the helper writes the container's IPv4

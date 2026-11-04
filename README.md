@@ -305,6 +305,19 @@ oss volume delete app-build
   follow the container when it starts again.
 - **Rosetta** (`--rosetta`) runs x86_64 Linux programs, where the Mac has
   Rosetta.
+- **Nested virtualization** (`--virtualization`, API 22): `/dev/kvm` in
+  the container, for a VM of its own (an Android emulator: AOSP's
+  Cuttlefish, as Google's emulator has no build for arm64 Linux), where
+  the server's Mac nests (an M3 or newer, macOS 15); elsewhere refused
+  (`virtualizationUnsupported`). The containers' usual kernel (Kata
+  Containers') has no KVM, so such a container boots OS Server's own:
+  Apple's container kernel configuration (apple/containerization's
+  `kernel/config-arm64`) with vhost-net and vhost-vsock turned on (crosvm
+  wants them), built from kernel.org's sources (each checked by its
+  SHA-256) the first time a lease asks, in a container lease of kind
+  `build` (a few minutes, while the lease waits), and kept in the
+  Containers folder (`kernel/vmlinux-kvm-<recipe>`). KVM there emulates
+  GICv3 alone: a guest asking for GICv2 is refused.
 - **The network** is NAT (vmnet's shared mode): the container reaches the
   internet and the Mac's LAN addresses, the server's API and its Bazel
   cache included. Every container is on the same one (since 0.14),
@@ -682,7 +695,8 @@ repositories server.json names, beside any runner they have already.
    Visor's agent image), `cpus` and `memoryGigabytes` (each
    job's container: 4 and 4), `sizes` (a repository's own, where its jobs
    build in their container: `{"owner/reviews": {"cpus": 6,
-   "memoryGigabytes": 16}}`), `pollSeconds` (5), `unclaimedMinutes` (10),
+   "memoryGigabytes": 16}}`; `"virtualization": true` gives its jobs'
+   containers nested virtualization, `/dev/kvm` for an emulator), `pollSeconds` (5), `unclaimedMinutes` (10),
    `vmRoomGB` (the memory kept free beside a starting runner for a VM its
    job may lease, while another macOS VM may be leased: a macOS VM's by
    default; 0 where jobs lease slots and containers rather than whole VMs)

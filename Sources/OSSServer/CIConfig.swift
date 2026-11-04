@@ -79,6 +79,9 @@ struct CISettings: Codable, Sendable, Equatable {
 struct RunnerSize: Codable, Sendable, Equatable, Hashable {
     var cpus: Int?
     var memoryGigabytes: Int?
+    /// Nested virtualization in its jobs' containers (`/dev/kvm`: an
+    /// Android emulator in a job), where the server's Mac nests.
+    var virtualization: Bool?
 }
 
 /// The GitHub App OS Server runs CI as (`~/.config/oss/ci-github-app.json`,
@@ -176,6 +179,8 @@ struct CIPlan: Sendable, Equatable {
         /// Its jobs' containers, where it has a size of its own.
         var cpus: Int?
         var memoryGigabytes: Int?
+        /// Its jobs' containers have nested virtualization (RunnerSize).
+        var virtualization = false
         /// Its jobs (by name) that write the Bazel cache, on main.
         var populate: [String] = []
 
@@ -212,7 +217,8 @@ struct CIPlan: Sendable, Equatable {
             let size = settings.sizes[name] ?? settings.sizes.first { $0.key.lowercased() == name.lowercased() }?.value
             let populate = settings.populate[name] ?? settings.populate.first { $0.key.lowercased() == name.lowercased() }?.value ?? []
             return Repository(name: name, label: settings.label(name), cpus: size?.cpus.map { max(1, $0) },
-                              memoryGigabytes: size?.memoryGigabytes.map { max(1, $0) }, populate: populate)
+                              memoryGigabytes: size?.memoryGigabytes.map { max(1, $0) }, virtualization: size?.virtualization == true,
+                              populate: populate)
         }
         let concurrent = settings.maxConcurrent ?? app.maxConcurrent
             ?? CIDefaults.concurrency(cores: cores, memoryBytes: memoryBytes, containerCapacity: containerCapacity)

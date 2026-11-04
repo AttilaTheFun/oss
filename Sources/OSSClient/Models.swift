@@ -52,10 +52,14 @@ public struct ContainerSpec: Codable, Sendable, Hashable {
     /// Mac, from the range VMs' ports come from, reached from this Mac, the
     /// LAN and the tailnet (`Lease.ports`), until the lease ends.
     public var ports: [Int]
+    /// Nested virtualization (API 22): `/dev/kvm` in the container, its
+    /// kernel OS Server's own with KVM, for a VM of its own (an Android
+    /// emulator). Only where the Mac nests (an M3 or newer).
+    public var virtualization: Bool
 
     public init(image: String, cpus: Int? = nil, memoryBytes: Int64? = nil, diskBytes: Int64? = nil, mounts: [ContainerMount] = [],
                 volumes: [ContainerVolume] = [], rosetta: Bool = false, environment: [String: String] = [:],
-                workingDirectory: String? = nil, command: [String]? = nil, ports: [Int] = []) {
+                workingDirectory: String? = nil, command: [String]? = nil, ports: [Int] = [], virtualization: Bool = false) {
         self.image = image
         self.cpus = cpus
         self.memoryBytes = memoryBytes
@@ -67,6 +71,7 @@ public struct ContainerSpec: Codable, Sendable, Hashable {
         self.workingDirectory = workingDirectory
         self.command = command
         self.ports = ports
+        self.virtualization = virtualization
     }
 
     public init(from decoder: Decoder) throws {
@@ -82,6 +87,7 @@ public struct ContainerSpec: Codable, Sendable, Hashable {
         workingDirectory = try c.decodeIfPresent(String.self, forKey: .workingDirectory)
         command = try c.decodeIfPresent([String].self, forKey: .command)
         ports = try c.decodeIfPresent([Int].self, forKey: .ports) ?? []
+        virtualization = try c.decodeIfPresent(Bool.self, forKey: .virtualization) ?? false
     }
 }
 
@@ -1281,7 +1287,11 @@ public enum OSS {
     /// and `machine.download`), and `DeviceCommand.environment` (a
     /// simulator's launch or spawn: `SIMCTL_CHILD_<name>`; `@name` values
     /// those files' paths).
-    public static let apiLevel = 21
+    /// 21 from 0.14.0: a lease's `hostAddress`.
+    /// 22 from 0.14.0: `ContainerSpec.virtualization`, a container with
+    /// nested virtualization (`/dev/kvm`, OS Server's kernel with KVM); a
+    /// server whose Mac can't nest refuses it (`virtualizationUnsupported`).
+    public static let apiLevel = 22
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants", "recordings"]
 }

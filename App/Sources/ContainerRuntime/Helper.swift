@@ -82,6 +82,8 @@ public enum ContainerHelper {
         config.dns = DNS(nameservers: [attachment.gateway])
         try? Data(attachment.address.utf8).write(to: addressFile, options: .atomic)
         say("\(spec.name): \(attachment.cidr) on the containers' network \(attachment.subnet)")
+        // A VM of its own inside it (its kernel has KVM).
+        config.virtualization = spec.virtualization == true
         config.cpus = spec.cpus
         config.memoryInBytes = UInt64(spec.memoryBytes)
         config.hostname = spec.name

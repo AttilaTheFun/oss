@@ -81,6 +81,11 @@ actor ContainerEngine: ContainerBackend {
         if spec.rosetta, VZLinuxRosettaDirectoryShare.availability != .installed {
             throw APIError(error: "Rosetta isn't installed on this Mac (softwareupdate --install-rosetta)")
         }
+        // OS Server's kernel with KVM, which the server built before asking.
+        let kernel = spec.virtualization ? URL(fileURLWithPath: KVMKernel.path) : kernelPath
+        if spec.virtualization, !FileManager.default.fileExists(atPath: kernel.path) {
+            throw APIError(error: "no KVM kernel at \(kernel.path) for nested virtualization")
+        }
         let manager = try await prepared()
         let reference = try Self.qualified(spec.image)
         ServerLog.write("container \(name): \(reference)")
@@ -94,11 +99,12 @@ actor ContainerEngine: ContainerBackend {
         let rootfs = directory.appendingPathComponent("rootfs.ext4")
         try FileManager.default.copyItem(at: template, to: rootfs)
         let volumes = try spec.volumes.map { try volume($0) }
-        let helperSpec = HelperSpec(name: name, kernel: kernelPath.path, initfs: root.appendingPathComponent("initfs.ext4").path,
+        let helperSpec = HelperSpec(name: name, kernel: kernel.path, initfs: root.appendingPathComponent("initfs.ext4").path,
                                     rootfs: rootfs.path, socket: socket(name), cpus: spec.cpus ?? ContainerDefaults.cpus,
                                     memoryBytes: spec.memoryBytes ?? ContainerDefaults.memoryBytes, rosetta: spec.rosetta,
                                     mounts: spec.mounts, volumes: volumes, image: config, environment: spec.environment,
-                                    workingDirectory: spec.workingDirectory, command: spec.command)
+                                    workingDirectory: spec.workingDirectory, command: spec.command,
+                                    virtualization: spec.virtualization)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(helperSpec).write(to: directory.appendingPathComponent("helper.json"))

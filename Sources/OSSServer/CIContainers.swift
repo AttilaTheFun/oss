@@ -48,7 +48,7 @@ struct CIContainers: CIRunnerHost {
         if let refusal = await machines.ciRunnerRefusal(memoryBytes: memory) { throw CIBusy(description: refusal) }
         let lease = try await self.lease(holder: runnerHolder, label: "\(job.repository) · \(job.workflow ?? "a workflow") #\(job.runID) · \(job.name)",
                                     link: job.url ?? job.runURL, labels: labels, cpus: repository?.cpus,
-                                    memoryGigabytes: repository?.memoryGigabytes)
+                                    memoryGigabytes: repository?.memoryGigabytes, virtualization: repository?.virtualization == true)
         do {
             try await put(runner, into: lease, "mkdir -p \"$HOME/actions-runner\" && tar -xz -C \"$HOME/actions-runner\"")
             if let client {
@@ -122,9 +122,9 @@ struct CIContainers: CIRunnerHost {
     /// A container leased (held until released) and ready, for a runner or
     /// for building oss.
     func lease(holder: String, label: String, link: URL?, labels: [String: String], cpus: Int? = nil,
-               memoryGigabytes: Int? = nil) async throws -> Lease {
+               memoryGigabytes: Int? = nil, virtualization: Bool = false) async throws -> Lease {
         let spec = ContainerSpec(image: plan.image, cpus: cpus ?? plan.cpus, memoryBytes: Int64(memoryGigabytes ?? plan.memoryGigabytes) << 30,
-                                 rosetta: true)
+                                 rosetta: true, virtualization: virtualization)
         let request = LeaseRequest(platform: .container, minutes: 0, holder: holder, container: spec, kind: .ci, label: label, link: link,
                                    labels: labels)
         let made: Lease

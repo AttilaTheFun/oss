@@ -100,6 +100,9 @@ anywhere else). `--port` forwards a container's port to one of the
 server's (`oss machine list` says which): a server under test in a
 container of its own can't take you down with it. `--mount` shares the
 server Mac's own folders, so only a client on that Mac may ask for one.
+`--virtualization` gives the container `/dev/kvm` for a VM of its own (an
+Android emulator), where the server's Mac nests; the first such lease
+waits a few minutes while the server builds its kernel.
 Prefer a container to a Linux VM for headless Linux work; release it when
 done, as any lease (`--minutes=0`, held until released, is for an agent's
 own session container, which its program releases).

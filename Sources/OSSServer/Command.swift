@@ -12,12 +12,14 @@ let usage = """
                                                             base; unknown ones refused with the close ones
       oss machine lease container --image=REF [--cpus=N] [--memory=GB] [--disk=GB] [--mount=/mac/path:/path[:ro]]…
                                   [--volume=NAME:/path:GB[:keep]]… [--port=N]… [--rosetta] [--env=NAME=VALUE]…
-                                  [--workdir=DIR] [--command="…"] [--minutes=0]
+                                  [--workdir=DIR] [--command="…"] [--minutes=0] [--virtualization]
                                                             a container on the server's Mac, for a client anywhere
                                                             (--mount: a client on that Mac only; --port: its TCP port
                                                             forwarded on the Mac's LAN and tailnet; --minutes=0: held
                                                             until released); it outlives the server's restarts, and
-                                                            after the Mac's starts again from its own disk
+                                                            after the Mac's starts again from its own disk;
+                                                            --virtualization: /dev/kvm in it, for a VM of its own (an
+                                                            Android emulator), where the server's Mac nests (M3 or newer)
       oss machine lease … [--kind=ci|session|agent|manual] [--label="…"] [--link=URL]
                                                             who it's for, shown wherever it is; with no --kind in GitHub
                                                             Actions: ci, labelled with the job, linked to its run
@@ -462,7 +464,8 @@ func containerSpec(_ args: Arguments) -> ContainerSpec {
                          diskBytes: gigabytes("disk"), mounts: mounts, volumes: volumes, rosetta: args.flags.contains("rosetta"),
                          environment: environment,
                          workingDirectory: args.options["workdir"],
-                         command: args.options["command"].map { $0.split(separator: " ").map(String.init) }, ports: ports)
+                         command: args.options["command"].map { $0.split(separator: " ").map(String.init) }, ports: ports,
+                         virtualization: args.flags.contains("virtualization"))
 }
 
 /// A lease's forwarded ports for a line: `8080 → host:47512, …`.
