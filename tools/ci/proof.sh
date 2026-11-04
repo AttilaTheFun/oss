@@ -74,10 +74,16 @@ commit="$(git -C "$ROOT" rev-parse HEAD)"
 python="${PROOF_PYTHON:-$(command -v python3)}"
 ref="${PROOF_REF:-${GITHUB_REF:-refs/heads/$(git -C "$ROOT" branch --show-current)}}"
 mac_vm_start oss-proof
-# Pillow for tools/proof.py, where the python3 hasn't it (a runner's, for this run alone).
+# Pillow for tools/proof.py, where the python3 hasn't it: Debian's, in an
+# OS Server runner (root, apt, a python3 with no pip), else pip's.
 if ! "$python" -c 'import PIL' 2> /dev/null; then
-    "$python" -m pip install --quiet --user --break-system-packages Pillow 2> /dev/null \
-        || "$python" -m pip install --quiet --user Pillow
+    if [ "$(id -u)" = 0 ] && command -v apt-get > /dev/null; then
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq > /dev/null \
+            && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pil > /dev/null
+    else
+        "$python" -m pip install --quiet --user Pillow
+    fi
+    "$python" -c 'import PIL' || { echo "proof.sh: no Pillow for $python" >&2; exit 1; }
 fi
 
 # The other leases (the simulator, full's guests) and the run's ssh-agent,
