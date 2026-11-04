@@ -83,7 +83,8 @@ struct GrantKey: Sendable {
     static let screenVerbs = ["machine.screenshot", "machine.record"]
     /// The verbs whose lease is an iOS lease's.
     static let iosVerbs = ["machine.install", "machine.xctest"]
-    /// The verbs whose lease is a container's, or a Mac slot's (API 18).
+    /// The verbs whose lease is a container's, or a Mac slot's (API 18);
+    /// an iOS lease's too for its files (API 20).
     static let containerVerbs = ["machine.exec", "machine.upload", "machine.download"]
 
     /// The server's key: read, or made (32 random bytes, readable by its owner only).
@@ -237,8 +238,10 @@ struct GrantKey: Sendable {
             guard let lease, lease.id == id, lease.holder == holder, lease.state == .creating || lease.state == .ready else {
                 throw APIError(error: "no lease \(id) of \(holder)'s", code: "notFound")
             }
-            guard lease.platform.takesExec else {
-                throw APIError(error: "\(verb) is for a container lease or a Mac slot (a VM takes SSH, a simulator simctl, an emulator adb)")
+            // An iOS lease's files too (API 20), not its commands.
+            guard lease.platform.takesExec || (lease.platform == .ios && verb != "machine.exec") else {
+                throw APIError(error: "\(verb) is for a container lease or a Mac slot\(verb == "machine.exec" ? "" : " (or an iOS lease's files)") "
+                                    + "(a VM takes SSH, a simulator simctl, an emulator adb)")
             }
             claims.resource = "machines/\(id)"
             path = "/v1/machines/\(id)/" + (verb == "machine.exec" ? "exec" : "files")

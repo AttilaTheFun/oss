@@ -18,6 +18,10 @@ public enum Platform: String, Codable, CaseIterable, Sendable {
     /// `upload`, `download`, their grants): a container, or a Mac slot
     /// (API 18).
     public var takesExec: Bool { self == .container || self == .mac }
+    /// Whether its files go through the server (`PUT`/`GET
+    /// /v1/machines/<id>/files?path=…`): a container's, a Mac slot's, and an
+    /// iOS lease's folder (API 20).
+    public var takesFiles: Bool { takesExec || self == .ios }
 }
 
 /// What a container lease runs: an image from a registry, what it's given,
@@ -529,12 +533,20 @@ public struct RenewRequest: Codable, Sendable {
     public init(minutes: Int? = nil) { self.minutes = minutes }
 }
 
-/// A command for a lease's simulator (`simctl`) or emulator (`adb`), run on
-/// the server's Mac against that device only. `@name` arguments are files
-/// uploaded to the lease first.
+/// A command for a lease's simulator (`simctl`) or emulator (`adb`), run
+/// against that device only. `@name` arguments are the lease's files (put
+/// first: `upload`, or an iOS lease's `uploadFile`, API 20).
 public struct DeviceCommand: Codable, Sendable {
     public var arguments: [String]
-    public init(arguments: [String]) { self.arguments = arguments }
+    /// A simulator's `launch` or `spawn` (API 20): each name given the app
+    /// (simctl's `SIMCTL_CHILD_<name>`; one with that prefix already is
+    /// kept so); a value `@name` is that file of the lease's, by its path on
+    /// the simulator's machine. Older servers ignore it.
+    public var environment: [String: String]?
+    public init(arguments: [String], environment: [String: String]? = nil) {
+        self.arguments = arguments
+        self.environment = environment
+    }
 }
 
 public struct DeviceCommandResult: Codable, Sendable {
@@ -1257,7 +1269,13 @@ public enum OSS {
     /// with a `RecordRequest`, `POST …/record/stop` answering the H.264
     /// MP4; the `recordings` feature), with grants `machine.screenshot`
     /// and `machine.record`.
-    public static let apiLevel = 19
+    /// 20 from 0.14.0: an iOS lease's files through the same routes as a
+    /// container's (`PUT`/`GET /v1/machines/<id>/files?path=…`, relative to
+    /// its own folder on the simulator's machine; grants `machine.upload`
+    /// and `machine.download`), and `DeviceCommand.environment` (a
+    /// simulator's launch or spawn: `SIMCTL_CHILD_<name>`; `@name` values
+    /// those files' paths).
+    public static let apiLevel = 20
     /// What every server does; one that keeps a Bazel cache adds `cache`.
     public static let features = ["machines", "screenshots", "input", "usage", "storage", "grants", "recordings"]
 }

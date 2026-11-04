@@ -493,6 +493,91 @@ struct SimulatorHost: Sendable {
     func simctl(_ arguments: [String], timeout: TimeInterval = 300) async throws -> ProcessResult {
         try await run("/usr/bin/xcrun", ["simctl"] + arguments, timeout: timeout)
     }
+
+    /// simctl with `environment` (SimulatorFiles.childEnvironment's
+    /// `SIMCTL_CHILD_` names, which simctl hands the app it launches without
+    /// the prefix): here in its process's environment, on the primary by
+    /// `env` on SSH's command line (`primaryInvocation`).
+    func simctl(_ arguments: [String], environment: [String: String], timeout: TimeInterval = 300) async throws -> ProcessResult {
+        guard !environment.isEmpty else { return try await simctl(arguments, timeout: timeout) }
+        guard let guest else {
+            let merged = ProcessInfo.processInfo.environment.merging(environment) { $1 }
+            return try await Shell.run("/usr/bin/xcrun", ["simctl"] + arguments, environment: merged, timeout: timeout)
+        }
+        let (program, words) = Self.primaryInvocation(arguments, environment: environment)
+        return try await Shell.run("/usr/bin/ssh", guest.sshArguments(Self.remoteLine(program, words)), timeout: timeout)
+    }
+
+    /// The program and arguments simctl runs as on the primary with an
+    /// environment: `/usr/bin/env NAME=value… /usr/bin/xcrun simctl …`, the
+    /// names sorted, each word quoted by `remoteLine`.
+    static func primaryInvocation(_ arguments: [String], environment: [String: String]) -> (String, [String]) {
+        guard !environment.isEmpty else { return ("/usr/bin/xcrun", ["simctl"] + arguments) }
+        let assignments = environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
+        return ("/usr/bin/env", assignments + ["/usr/bin/xcrun", "simctl"] + arguments)
+    }
+}
+
+/// An iOS lease's files (API 20): a folder of its own on the machine its
+/// simulator runs on, where `oss machine upload` puts them (`PUT
+/// /v1/machines/<id>/files?path=…`, as a container's) and `@name` in a
+/// simctl argument or environment value names them. On the primary it is
+/// `/Users/Shared/oss-ios/<id>/files` (the guest user's, which runs the
+/// simulator); on the server's Mac the lease's uploads. Both go at release.
+enum SimulatorFiles {
+    /// The lease's folder: on the primary, or this Mac's (`uploads`).
+    static func root(lease: String, inPrimary: Bool, uploads: String = Paths.uploads) -> String {
+        inPrimary ? "\(PrimarySimulators.folder(lease))/files" : "\(uploads)/\(lease)"
+    }
+
+    /// A path the holder gives, under `root`: relative to it (`ctl.json`,
+    /// `runs/1/ctl.json`). Absolute, `~`, `..` and nothing at all are refused.
+    static func resolve(_ path: String, root: String) throws -> String {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true).filter { $0 != "." }
+        guard !path.isEmpty, path.count <= 4096, !path.contains("\0"), !path.hasPrefix("/"), !path.hasPrefix("~"),
+              !parts.isEmpty, !parts.contains("..") else {
+            throw APIError(error: "an iOS lease's file is a path in its own folder (ctl.json, runs/ctl.json): not \(path)")
+        }
+        return root + "/" + parts.joined(separator: "/")
+    }
+
+    /// `@name` arguments (the lease's files) as paths under `root`, with the
+    /// names they took (each once); other arguments as given.
+    static func mapNames(_ arguments: [String], root: String) throws -> (arguments: [String], files: [String]) {
+        var files: [String] = []
+        let mapped = try arguments.map { argument -> String in
+            guard argument.hasPrefix("@"), argument.count > 1 else { return argument }
+            let name = String(argument.dropFirst())
+            guard !name.hasPrefix("/"), !name.split(separator: "/").contains("..") else {
+                throw APIError(error: "\(argument): a file of the lease's own folder, by its name")
+            }
+            if !files.contains(name) { files.append(name) }
+            return try resolve(name, root: root)
+        }
+        return (mapped, files)
+    }
+
+    /// A launch's environment for simctl: each name prefixed
+    /// `SIMCTL_CHILD_` (one that has it already kept so), a value that is
+    /// `@name` the path of that file of the lease's; with the names of the
+    /// files it took. A name is a shell's (SlotCommand.validName); no NUL.
+    static func childEnvironment(_ environment: [String: String], root: String) throws -> (environment: [String: String], files: [String]) {
+        var result: [String: String] = [:]
+        var files: [String] = []
+        for (name, value) in environment.sorted(by: { $0.key < $1.key }) {
+            guard SlotCommand.validName(name) else { throw APIError(error: "an environment variable's name is letters, digits and _: not \(name)") }
+            guard !value.contains("\0") else { throw APIError(error: "\(name)'s value can't hold a NUL") }
+            let (mapped, taken) = try mapNames([value], root: root)
+            for file in taken where !files.contains(file) { files.append(file) }
+            result[name.hasPrefix(childPrefix) ? name : childPrefix + name] = mapped[0]
+        }
+        return (result, files)
+    }
+
+    static let childPrefix = "SIMCTL_CHILD_"
+
+    /// The simctl commands an environment is for: those that start a process.
+    static let takesEnvironment: Set<String> = ["launch", "spawn"]
 }
 
 /// The primary's simulators: what an `ios` lease is there, and the files
@@ -536,17 +621,7 @@ enum PrimarySimulators {
     /// path. Arguments that aren't `@name` are as given. A name that climbs
     /// out (`..`) or is absolute is refused: only the lease's own uploads go.
     static func remoteArguments(_ arguments: [String], lease: String) throws -> (arguments: [String], files: [String]) {
-        var files: [String] = []
-        let mapped = try arguments.map { argument -> String in
-            guard argument.hasPrefix("@"), argument.count > 1 else { return argument }
-            let name = String(argument.dropFirst())
-            guard !name.hasPrefix("/"), !name.split(separator: "/").contains("..") else {
-                throw APIError(error: "\(argument): a file of the lease's uploads, by its name")
-            }
-            if !files.contains(name) { files.append(name) }
-            return "\(folder(lease))/files/\(name)"
-        }
-        return (mapped, files)
+        try SimulatorFiles.mapNames(arguments, root: SimulatorFiles.root(lease: lease, inPrimary: true))
     }
 
     /// The command line that unpacks a tarball (on standard input) into a

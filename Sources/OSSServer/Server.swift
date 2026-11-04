@@ -1450,26 +1450,36 @@ actor MachineManager {
     }
 
     /// `simctl` for a simulator, `adb` for an emulator, with `@name`
-    /// arguments the lease's uploaded files.
-    func command(_ id: String, _ arguments: [String]) async throws -> DeviceCommandResult {
+    /// arguments the lease's files. A simulator's `launch` or `spawn` takes
+    /// an environment (API 20): each name given the app as simctl's
+    /// `SIMCTL_CHILD_` one, an `@name` value that file's path.
+    func command(_ id: String, _ arguments: [String], environment: [String: String] = [:]) async throws -> DeviceCommandResult {
         let lease = try ready(id)
-        let resolved = arguments.map { argument -> String in
-            guard argument.hasPrefix("@") else { return argument }
-            return "\(Paths.uploads)/\(id)/\(argument.dropFirst())"
+        if !environment.isEmpty {
+            guard lease.platform == .ios, SimulatorFiles.takesEnvironment.contains(arguments.first ?? "") else {
+                throw APIError(error: "an environment is for an iOS lease's simctl launch or spawn (each name passed as SIMCTL_CHILD_<name>)")
+            }
         }
         let result: ProcessResult
         switch lease.platform {
-        case .ios where lease.primary != nil:
-            // In the primary: the files it names (`@name`) copied into its folder there first.
+        case .ios:
+            // Its files (`@name`) in its folder where its simulator is: in the
+            // primary, those uploaded here by name (`PUT …/files/<name>`)
+            // copied there first; those put there by path are there already.
             let host = try simulatorHost(of: lease)
-            let (remote, files) = try PrimarySimulators.remoteArguments(arguments, lease: id)
-            let checked = try Simulators.holderArguments(remote, udid: lease.udid ?? "")
+            let root = SimulatorFiles.root(lease: id, inPrimary: host.isPrimary)
+            let (mapped, files) = try SimulatorFiles.mapNames(arguments, root: root)
+            let (childEnvironment, named) = try SimulatorFiles.childEnvironment(environment, root: root)
+            let checked = try Simulators.holderArguments(mapped, udid: lease.udid ?? "")
             if let guest = host.guest {
-                try await PrimarySimulators.send(files, from: "\(Paths.uploads)/\(id)", to: "\(PrimarySimulators.folder(id))/files", guest: guest)
+                let uploads = "\(Paths.uploads)/\(id)"
+                let here = (files + named.filter { !files.contains($0) }).filter { FileManager.default.fileExists(atPath: "\(uploads)/\($0)") }
+                try await PrimarySimulators.send(here, from: uploads, to: root, guest: guest)
             }
-            result = try await Simulators.simctl(checked, on: host)
-        case .ios: result = try await Simulators.run(resolved, udid: lease.udid ?? "")
-        case .android: result = try await Emulators.run(resolved, port: lease.consolePort ?? 0)
+            result = try await host.simctl(checked, environment: childEnvironment)
+        case .android:
+            let (resolved, _) = try SimulatorFiles.mapNames(arguments, root: "\(Paths.uploads)/\(id)")
+            result = try await Emulators.run(resolved, port: lease.consolePort ?? 0)
         default: throw APIError(error: "\(lease.platform.rawValue) leases take \(lease.platform == .container ? "exec" : "SSH"), not device commands")
         }
         return DeviceCommandResult(status: result.status, output: result.output, error: result.error)
@@ -2102,7 +2112,7 @@ enum Server {
                 return .json(reached(try await machines.renew(parts[2], minutes: body.minutes)))
             case ("POST", 4) where parts[1] == "machines" && (parts[3] == "simctl" || parts[3] == "adb"):
                 let body = try JSONDecoder.oss.decode(DeviceCommand.self, from: request.body)
-                return .json(try await machines.command(parts[2], body.arguments))
+                return .json(try await machines.command(parts[2], body.arguments, environment: body.environment ?? [:]))
             case ("GET", 4) where parts[1] == "machines" && parts[3] == "screenshot":
                 return HTTPResponse(status: 200, body: try await machines.screenshot(parts[2], window: request.query["window"]), contentType: "image/png")
             case ("POST", 4) where parts[1] == "machines" && parts[3] == "record":

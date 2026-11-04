@@ -177,7 +177,14 @@ recordVideo`, status_bar or AXe's input (checked on an `xcode_27_2` clone,
   server's own base's type until now) on the newest runtime that runs it;
   about 45 s (no bases to clone). Its files (uploads a command names, apps
   to install, test runs) are copied into `/Users/Shared/oss-ios/<id>` there
-  by tar over SSH; it and its folder are deleted at release.
+  by tar over SSH; it and its folder are deleted at release. Its own
+  files (API 20: `oss machine upload <lease> <file> <path>`, the files
+  routes a container's take) go straight into its `files/` there, as its
+  guest user, by ContainerAPI's script over SSH; `@<path>` in a simctl
+  argument or environment value is that file's path there.
+- **Environment**: `launch` and `spawn` take one (API 20), each name the
+  app's through simctl's `SIMCTL_CHILD_<name>`: `env NAME=value… xcrun
+  simctl …` on SSH's command line, every word single-quoted.
 - **Screenshot**: `xcrun simctl io <udid> screenshot --mask=black` there,
   its bytes back over SSH, with the status bar held still as on the Mac
   (the primary's clock is in the server's time zone).

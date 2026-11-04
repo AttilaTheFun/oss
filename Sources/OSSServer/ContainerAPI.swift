@@ -29,6 +29,8 @@ import Network
 ///
 /// A Mac slot (`mac`, API 18) takes the same routes, its grants too: its
 /// commands and files run on its primary over SSH as its user (SlotAPI).
+/// An iOS lease (API 20) takes the files routes and their grants alone:
+/// its own folder where its simulator runs (SimulatorFiles).
 enum ContainerAPI {
     /// The routes whose connection is handed over once their head has come.
     static func streams(_ method: String, _ parts: [String]) -> Bool {
@@ -46,10 +48,18 @@ enum ContainerAPI {
         do {
             let lease = try await self.lease(parts[2], access: access, request: request, api: api)
             if request.method == "POST" {
+                guard lease.platform.takesExec else {
+                    throw APIError(error: "an iOS lease takes simctl, not exec (its files: PUT and GET …/files?path=…)")
+                }
                 if lease.platform == .mac { try await SlotAPI.exec(request, peer, lease: lease, api: api) } else { try await exec(request, peer, lease: lease) }
                 return
             }
-            let commands = lease.platform == .mac ? try await SlotAPI.files(lease, api: api) : FileCommands.container(lease.execSocket ?? "")
+            let commands: FileCommands
+            switch lease.platform {
+            case .mac: commands = try await SlotAPI.files(lease, api: api)
+            case .ios: commands = try await iosFiles(lease, request: request, api: api)
+            default: commands = FileCommands.container(lease.execSocket ?? "")
+            }
             if request.method == "PUT" {
                 try await upload(request, peer, lease: lease, commands: commands)
             } else {
@@ -62,19 +72,40 @@ enum ContainerAPI {
         }
     }
 
-    /// The container (or Mac slot) lease a request may use: its holder's
-    /// (`Server.holdersLease`), ready.
+    /// The container (or Mac slot, or iOS) lease a request may use: its
+    /// holder's (`Server.holdersLease`), ready.
     static func lease(_ id: String, access: Access, request: HTTPRequest, api: API) async throws -> Lease {
         let lease = try await Server.holdersLease(id, access: access, request: request, api: api,
                                                   what: "a container's exec and files are")
-        guard lease.platform.takesExec else {
-            throw APIError(error: "exec and files through the server are a container lease's or a Mac slot's: a VM takes SSH (oss machine ssh, "
-                                + "upload, download), a simulator simctl, an emulator adb")
+        guard lease.platform.takesFiles else {
+            throw APIError(error: "exec and files through the server are a container lease's or a Mac slot's (files an iOS lease's too): "
+                                + "a VM takes SSH (oss machine ssh, upload, download), an emulator adb")
         }
-        guard lease.state == .ready, lease.platform == .mac || lease.execSocket != nil else {
+        guard lease.state == .ready, lease.platform == .mac || lease.platform == .ios || lease.execSocket != nil else {
             throw APIError(error: "lease \(id) isn't ready yet", code: "notReady")
         }
         return lease
+    }
+
+    /// An iOS lease's files (API 20): ContainerAPI's script in its own
+    /// folder (SimulatorFiles), on the primary over SSH as its guest user
+    /// (who runs the simulator), else here; a path is relative to the
+    /// folder and stays in it. A put on the primary drops a copy of the same
+    /// name uploaded here before (`PUT …/files/<name>`), which a command
+    /// naming it would otherwise copy over it.
+    static func iosFiles(_ lease: Lease, request: HTTPRequest, api: API) async throws -> FileCommands {
+        let host = try await api.machines.simulatorHost(of: lease)
+        let root = SimulatorFiles.root(lease: lease.id, inPrimary: host.isPrimary)
+        if host.isPrimary, request.method == "PUT", let path = request.query["path"],
+           let older = try? SimulatorFiles.resolve(path, root: "\(Paths.uploads)/\(lease.id)") {
+            try? FileManager.default.removeItem(atPath: older)
+        }
+        let guest = host.guest
+        return FileCommands(start: { arguments, stdout in
+            let program = arguments[0], rest = Array(arguments.dropFirst())
+            guard let guest else { return try RemoteProcess.start(program, rest, stdout: stdout) }
+            return try RemoteProcess.start("/usr/bin/ssh", guest.sshArguments(SimulatorHost.remoteLine(program, rest)), stdout: stdout)
+        }, resolve: { try SimulatorFiles.resolve($0, root: root) })
     }
 
     /// An exec's body, its `ExecRequest`, read; nil when the client went away.

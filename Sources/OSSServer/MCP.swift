@@ -133,13 +133,22 @@ enum MCPServer {
               "directory": ["type": "string"], "timeout": ["type": "integer", "description": "seconds before it is stopped (default 600)"],
               "gui": ["type": "boolean", "description": "a Mac slot's: in its primary's GUI session (one at a time), for an app that draws"]],
              required: ["id", "command"]),
-        tool("oss_upload", "Write a small text file into a leased container or Mac slot (a big one: oss_grant machine.upload, then PUT it to the URL).",
+        tool("oss_upload", """
+            Write a small text file into a leased container or Mac slot, or an iOS lease's own folder (its path relative to it; \
+            @<path> in oss_simctl's arguments and environment names it) (a big one: oss_grant machine.upload, then PUT it to the URL).
+            """,
              ["id": leaseID, "path": ["type": "string"], "content": ["type": "string"], "mode": ["type": "string", "description": "e.g. 755"]],
              required: ["id", "path", "content"]),
-        tool("oss_download", "Read a small text file from a leased container or Mac slot (a big one: oss_grant machine.download, then GET the URL).",
+        tool("oss_download", "Read a small text file from a leased container or Mac slot, or an iOS lease's folder (a big one: oss_grant machine.download, then GET the URL).",
              ["id": leaseID, "path": ["type": "string"]], required: ["id", "path"]),
-        tool("oss_simctl", "Run simctl against a leased iOS simulator: install @<an uploaded .app>, launch <bundle id>, openurl <url>, terminate, listapps, privacy, status_bar, … (an app from storage: oss_install).",
-             ["id": leaseID, "arguments": ["type": "array", "items": ["type": "string"]]], required: ["id", "arguments"]),
+        tool("oss_simctl", """
+            Run simctl against a leased iOS simulator: install @<an uploaded .app>, launch <bundle id>, openurl <url>, terminate, \
+            listapps, privacy, status_bar, … (an app from storage: oss_install). `environment` (launch and spawn): the app's \
+            variables (simctl's SIMCTL_CHILD_<name>); a value @<path> is that file of the lease's (oss_upload) by its full path.
+            """,
+             ["id": leaseID, "arguments": ["type": "array", "items": ["type": "string"]],
+              "environment": ["type": "object", "additionalProperties": ["type": "string"], "description": "launch or spawn: the app's environment"]],
+             required: ["id", "arguments"]),
         tool("oss_adb", "Run adb against a leased Android emulator: install @<an uploaded .apk>, shell …, logcat -d, ….",
              ["id": leaseID, "arguments": ["type": "array", "items": ["type": "string"]]], required: ["id", "arguments"]),
         tool("oss_install", "Install an .ipa or a zipped .app from storage (yours, by its SHA-256 or name) on a leased iOS simulator.",
@@ -147,8 +156,8 @@ enum MCPServer {
         tool("oss_storage", "Your objects in the server's storage: each lease on one (id, SHA-256, size, name, until when).", [:]),
         tool("oss_grant", """
             A URL that does one thing for a few minutes, for files too big for a tool call: storage.put (PUT the file's bytes; \
-            name it with `name`), storage.get (GET an object of yours), machine.upload / machine.download (a container's or Mac slot's \
-            file: add ?path=…), machine.install, machine.exec, machine.screenshot (GET a PNG), machine.record (POST to start, POST \
+            name it with `name`), storage.get (GET an object of yours), machine.upload / machine.download (a container's, Mac slot's or \
+            iOS lease's file: add ?path=…), machine.install, machine.exec, machine.screenshot (GET a PNG), machine.record (POST to start, POST \
             …/record/stop for the MP4). A grant is a secret: don't put it anywhere else.
             """,
              ["verb": ["type": "string", "enum": ["storage.put", "storage.get", "machine.upload", "machine.download", "machine.install", "machine.exec",
@@ -310,7 +319,18 @@ enum MCPServer {
                     throw Failure(description: "\(held.id) is a \(held.platform.rawValue) lease")
                 }
                 let given = arguments["arguments"] as? [String] ?? []
-                let result = context.localFiles ? try await client.deviceCommandUploading(held, given) : try await client.deviceCommand(held, given)
+                var environment: [String: String] = [:]
+                if let asked = arguments["environment"] {
+                    guard name == "oss_simctl", let pairs = asked as? [String: Any] else {
+                        throw Failure(description: "environment is oss_simctl's: an object of names and string values")
+                    }
+                    for (key, value) in pairs {
+                        guard let value = value as? String else { throw Failure(description: "\(key)'s value is a string") }
+                        environment[key] = value
+                    }
+                }
+                let result = context.localFiles ? try await client.deviceCommandUploading(held, given, environment: environment)
+                    : try await client.deviceCommand(held, given, environment: environment)
                 var out = "exit status \(result.status)\n\(result.output)"
                 if !result.error.isEmpty { out += "\n[stderr]\n\(result.error)" }
                 return text(out, error: result.status != 0)
