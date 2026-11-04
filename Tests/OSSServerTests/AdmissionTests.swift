@@ -278,3 +278,15 @@ private func decode(_ json: String) throws -> ServerConfig {
     let request = try JSONDecoder.oss.decode(LeaseRequest.self, from: Data(#"{"platform": "ios"}"#.utf8))
     #expect(request.waitTicket == nil)
 }
+
+/// What the Mac keeps whatever the leases use: a quarter by default, or
+/// server.json's budget.reserveGB (never below 8 GB), with a budget to match.
+@Test func theReserveIsServerJSONsWhenItSaysOne() {
+    #expect(ServerConfig().leasePolicy(memoryBytes: 128 << 30, cores: 16).hostLimitBytes == 96 * gb)
+    var config = ServerConfig()
+    config.budget = BudgetSettings(memoryGB: 104, reserveGB: 24)
+    let limits = config.leasePolicy(memoryBytes: 128 << 30, cores: 16)
+    #expect(limits.memoryBytes == 104 * gb && limits.hostLimitBytes == 104 * gb)
+    config.budget = BudgetSettings(reserveGB: 2)
+    #expect(config.leasePolicy(memoryBytes: 128 << 30, cores: 16).hostLimitBytes == 120 * gb)
+}
