@@ -66,6 +66,8 @@ actor MachineManager {
     private let bazelCache: (port: Int, readToken: String)?
     /// What runs containers, where this process can (OS Server's app).
     let containers: ContainerBackend?
+    /// The KVM kernel's build, while one runs (KVMKernel).
+    var kvmKernelTask: Task<String, Error>?
     /// Where the leases are kept across restarts (`State/leases.json`; a
     /// test's own elsewhere).
     private let leasesPath: String
@@ -344,6 +346,10 @@ actor MachineManager {
             }
             guard spec.ports.count <= ContainerDefaults.maxPorts else {
                 throw APIError(error: "at most \(ContainerDefaults.maxPorts) ports a container lease")
+            }
+            if spec.virtualization, !KVMKernel.hostNests() {
+                throw APIError(error: "this server's Mac can't run a VM inside a container's (nested virtualization needs an M3 or newer "
+                                    + "and macOS 15)", code: "virtualizationUnsupported")
             }
             for port in spec.ports where !(1...65535).contains(port) { throw APIError(error: "no port \(port): 1 to 65535") }
             guard Set(spec.ports).count == spec.ports.count else { throw APIError(error: "a port is asked for twice") }
@@ -810,6 +816,8 @@ actor MachineManager {
 
     private func createContainer(_ id: String, lease: Lease) async throws {
         guard let containers, let spec = lease.container else { throw APIError(error: "no container backend") }
+        // Its kernel OS Server's own with KVM, built the first time one is asked for.
+        if spec.virtualization { _ = try await kvmKernel() }
         let socket = try await containers.start(name: lease.name, spec: spec)
         guard leases[id]?.state == .creating else { await containers.stop(name: lease.name, spec: spec); return }
         leases[id]?.cpus = spec.cpus ?? ContainerDefaults.cpus

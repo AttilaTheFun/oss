@@ -2,6 +2,15 @@
 
 ## 0.14.0 (unreleased)
 
+- **Containers with nested virtualization** (API 22): `oss machine
+  lease|run container --virtualization` (`ContainerSpec.virtualization`,
+  `oss_container_lease`'s `virtualization`, a repository's
+  `ci.sizes.<repo>.virtualization` for its jobs) has `/dev/kvm`, for a VM
+  of its own such as an Android emulator; refused with
+  `virtualizationUnsupported` where the Mac can't nest. Such a container
+  boots OS Server's own kernel with KVM (Apple's container configuration
+  with vhost-net and vhost-vsock), built in a container the first time
+  one is asked for and kept in the Containers folder.
 - **A lease's `hostAddress`** (API 21): the server's Mac as the lease's
   machine reaches it, for an app there to reach something served on the
   Mac (a test's web site): the Mac's side of the VMs' network for a VM, a
