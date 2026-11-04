@@ -221,6 +221,10 @@ struct ServerConfig: Codable, Sendable {
     /// The containers' network (ContainerNetwork): the one vmnet network every
     /// container is on, made with this subnet when its owner starts.
     var containerSubnet: String = ContainerNetwork.defaultSubnet
+    /// How long an image's unpacked root filesystem (a template, 6 GB or
+    /// so) is kept once no container has been made from it: CI's image
+    /// changes several times a day, and each version leaves one.
+    var containerTemplateDays: Double = 2
     /// The primary VMs (Primary.swift, docs/primary-vms.md): OS Server's own,
     /// kept running, whose slots it lends. None without it.
     var primary: PrimarySettings?
@@ -265,6 +269,7 @@ struct ServerConfig: Codable, Sendable {
         useUTM = try c.decodeIfPresent(Bool.self, forKey: .useUTM) ?? d.useUTM
         ci = try c.decodeIfPresent(CISettings.self, forKey: .ci)
         containerSubnet = try c.decodeIfPresent(String.self, forKey: .containerSubnet) ?? d.containerSubnet
+        containerTemplateDays = try c.decodeIfPresent(Double.self, forKey: .containerTemplateDays) ?? d.containerTemplateDays
         primary = try c.decodeIfPresent(PrimarySettings.self, forKey: .primary)
     }
 

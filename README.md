@@ -1172,6 +1172,17 @@ App's files: "CI in OS Server's containers", above):
 {"ci": {"repositories": ["owner/name"], "labels": {"owner/name": "name-oss"}, "maxConcurrent": 2}}
 ```
 
+How long an image's unpacked root filesystem (its template in
+`Containers/templates`, 6 GB or so, cloned for each container of that
+image) is kept once no container has been made from it, in days: deleted
+at the server's start and every hour after, and unpacked again by the
+next container that needs it. CI's image changes several times a day, and
+each version leaves a template:
+
+```json
+{"containerTemplateDays": 2}
+```
+
 The containers' network's subnet (a private /16 to /28, written as its
 network's address; the Mac takes its first address, containers the rest):
 

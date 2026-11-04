@@ -29,6 +29,10 @@ public protocol ContainerBackend: Sendable {
     /// Every container but `keeping` deleted (at the server's start, after
     /// the leases are taken up again).
     func prune(keeping: Set<String>) async
+    /// Images' unpacked root filesystems no container was made from in
+    /// `unusedFor` (a container's clone doesn't need its template), and
+    /// partial ones; what it deleted, with the room it gave back.
+    func pruneTemplates(unusedFor: TimeInterval) async -> (files: [String], bytes: Int64)
     /// The folder its root filesystem is in, for the disk it takes.
     func directory(name: String) -> String?
     /// The volumes on this Mac, kept ones too.
@@ -41,6 +45,10 @@ public protocol ContainerBackend: Sendable {
     /// Every container stopped and everything the backend keeps deleted
     /// (the component removed).
     func removeEverything() async
+}
+
+extension ContainerBackend {
+    public func pruneTemplates(unusedFor: TimeInterval) async -> (files: [String], bytes: Int64) { ([], 0) }
 }
 
 extension ContainerBackend {

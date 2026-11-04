@@ -2,6 +2,10 @@
 
 ## 0.14.0 (unreleased)
 
+- **Unused image templates go after two days** (server.json's
+  `containerTemplateDays`), checked at the start and every hour, not after
+  two weeks and only at the start: each CI image version left a 6 GB
+  template, and they had grown to 260 GB.
 - **Containers with nested virtualization** (API 22): `oss machine
   lease|run container --virtualization` (`ContainerSpec.virtualization`,
   `oss_container_lease`'s `virtualization`, a repository's

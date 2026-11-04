@@ -159,16 +159,12 @@ actor ContainerEngine: ContainerBackend {
         if let released = await NetworkOwnerClient.keep(left), !released.isEmpty {
             ServerLog.write("containers' network: gave back the addresses of \(released.joined(separator: ", ")): no container holds them")
         }
-        // Unpacked images no container was made from in two weeks (a container's clone doesn't need its template).
+    }
+
+    func pruneTemplates(unusedFor: TimeInterval) async -> (files: [String], bytes: Int64) {
+        // While none is being unpacked or touched (template(_:sizeBytes:)).
         let templates = root.appendingPathComponent("templates")
-        for file in (try? FileManager.default.contentsOfDirectory(atPath: templates.path)) ?? [] {
-            let url = templates.appendingPathComponent(file)
-            let used = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
-            if Date().timeIntervalSince(used) > 14 * 86400 || file.contains(".partial.") {
-                ServerLog.write("containers: deleting \(file), unused since \(used)")
-                try? FileManager.default.removeItem(at: url)
-            }
-        }
+        return (try? await exclusively { ContainerTemplates.prune(templates, unusedFor: unusedFor) }) ?? ([], 0)
     }
 
     nonisolated func directory(name: String) -> String? {
