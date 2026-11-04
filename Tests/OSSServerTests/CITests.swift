@@ -154,6 +154,16 @@ private func appFolder(config: String?, key: String?, configMode: Int = 0o600, k
     let sizedPlan = try #require(CIPlan.make(settings: sized, app: CIAppConfig(appId: 1), containerCapacity: 4).0)
     #expect(sizedPlan.repositories.first { $0.name == "owner/reviews" }.map { ($0.cpus, $0.memoryGigabytes) }! == (6, 16))
     #expect(sizedPlan.repositories.first { $0.name == "owner/gh_mcp" }.map { ($0.cpus, $0.memoryGigabytes) }! == (nil, nil))
+    // A job's own size over its repository's, by its name (a matrix's too); the rest its repository's.
+    let jobSized = try JSONDecoder().decode(CISettings.self, from: Data("""
+        {"repositories": ["owner/visor"], "sizes": {"owner/visor": {"cpus": 6, "memoryGigabytes": 12},
+         "owner/visor:changes": {"cpus": 2, "memoryGigabytes": 2}, "owner/visor:test": {"memoryGigabytes": 16}}}
+        """.utf8))
+    let visor = try #require(CIPlan.make(settings: jobSized, app: CIAppConfig(appId: 1), containerCapacity: 4).0?.repositories.first)
+    func job(_ name: String) -> CIJob { CIJob(id: 1, repository: "owner/visor", name: name, runID: 9, labels: [], queued: Date()) }
+    #expect(visor.size(of: job("changes")).cpus == 2 && visor.size(of: job("changes")).memoryGigabytes == 2)
+    #expect(visor.size(of: job("test (macOS)")).cpus == 6 && visor.size(of: job("test (macOS)")).memoryGigabytes == 16)
+    #expect(visor.size(of: job("linux")).cpus == 6 && visor.size(of: job("linux")).memoryGigabytes == 12)
     // Nested virtualization in a repository's jobs' containers, where its size asks.
     #expect(sizedPlan.repositories.first { $0.name == "owner/gh_mcp" }?.virtualization == true)
     #expect(sizedPlan.repositories.first { $0.name == "owner/reviews" }?.virtualization == false)

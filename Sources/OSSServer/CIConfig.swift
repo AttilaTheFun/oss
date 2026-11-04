@@ -183,6 +183,21 @@ struct CIPlan: Sendable, Equatable {
         var virtualization = false
         /// Its jobs (by name) that write the Bazel cache, on main.
         var populate: [String] = []
+        /// Its jobs' own sizes, by name (`"owner/repo:job"` in `sizes`),
+        /// over the repository's: a light job (one that only decides what
+        /// to run) asks for little.
+        var jobs: [String: RunnerSize] = [:]
+
+        /// `job`'s container's CPUs, memory and nested virtualization: its
+        /// own size's where it has one (by its name, or its name before a
+        /// matrix's " (…)"), else the repository's; nil for the plan's.
+        func size(of job: CIJob) -> (cpus: Int?, memoryGigabytes: Int?, virtualization: Bool) {
+            let base = job.name.range(of: " (").map { String(job.name[..<$0.lowerBound]) } ?? job.name
+            let own = jobs[job.name] ?? jobs[base]
+                ?? jobs.first { $0.key.lowercased() == job.name.lowercased() || $0.key.lowercased() == base.lowercased() }?.value
+            return (own?.cpus.map { max(1, $0) } ?? cpus, own?.memoryGigabytes.map { max(1, $0) } ?? memoryGigabytes,
+                    own?.virtualization ?? virtualization)
+        }
 
         /// Whether `job` is one that fills the cache: one of their names, on main.
         func populates(_ job: CIJob) -> Bool { populate.contains(job.name) && job.branch == "main" }
@@ -216,9 +231,13 @@ struct CIPlan: Sendable, Equatable {
         let repositories = allowed.filter { seen.insert($0.lowercased()).inserted }.map { name in
             let size = settings.sizes[name] ?? settings.sizes.first { $0.key.lowercased() == name.lowercased() }?.value
             let populate = settings.populate[name] ?? settings.populate.first { $0.key.lowercased() == name.lowercased() }?.value ?? []
+            var jobs: [String: RunnerSize] = [:]
+            for (key, size) in settings.sizes where key.lowercased().hasPrefix(name.lowercased() + ":") {
+                jobs[String(key.dropFirst(name.count + 1))] = size
+            }
             return Repository(name: name, label: settings.label(name), cpus: size?.cpus.map { max(1, $0) },
                               memoryGigabytes: size?.memoryGigabytes.map { max(1, $0) }, virtualization: size?.virtualization == true,
-                              populate: populate)
+                              populate: populate, jobs: jobs)
         }
         let concurrent = settings.maxConcurrent ?? app.maxConcurrent
             ?? CIDefaults.concurrency(cores: cores, memoryBytes: memoryBytes, containerCapacity: containerCapacity)
