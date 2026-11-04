@@ -1829,6 +1829,16 @@ public final class ServerHost: Sendable {
         // closed: SIGPIPE's default ended the server, every lease's ports with
         // it, after a lease's SSH connection closed.
         signal(SIGPIPE, SIG_IGN)
+        #if os(macOS)
+        // Never napped: macOS throttled the app, its window closed, to
+        // background priority (4, not 31) on 2026-11-04, and with its few
+        // cooperative threads barely scheduled the API stopped answering
+        // while leases and CI waited on it. An activity held for the
+        // process's life keeps it at its own priority and its timers on time.
+        ServerActivity.token = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled, .latencyCritical],
+            reason: "OS Server lends machines and runs CI")
+        #endif
         Paths.migrate()
         ManagementKey.settle()
         let config = ServerConfig.load()
@@ -2181,4 +2191,11 @@ enum Server {
     }
 }
 
+#endif
+
+#if os(macOS)
+/// The server's process activity (ServerHost.start), held until it exits.
+enum ServerActivity {
+    nonisolated(unsafe) static var token: NSObjectProtocol?
+}
 #endif
