@@ -104,6 +104,8 @@ import OSSClient
     // In the user's bootstrap, and never failing the slot.
     #expect(make.contains("as_user() { sudo launchctl asuser \"$uid\" sudo -u \"$user\" -H \"$@\"; }"))
     #expect(make.contains("its keychain wasn't made; the slot has none"))
+    // No crash dialog over the screen's pictures.
+    #expect(make.contains("defaults write com.apple.CrashReporter DialogType -string none"))
     let delete = SlotUser.deleteScript(lease: "ab12")
     #expect(delete.contains("sysadminctl -deleteUser \"$user\""))
     #expect(delete.contains("rm -rf \"/Users/$user\""))

@@ -193,6 +193,14 @@ actor CIService {
     /// or called off; the jobs wait their turn at GitHub, and the next
     /// server takes them.
     private(set) var paused = false
+    /// A pump already asked for after a wait: one at a time, however many
+    /// jobs wait. One each, every pump retrying every waiting job, doubled
+    /// with every round, and the retries (each asking GitHub and measuring
+    /// the host) starved the server's threads.
+    private var retryPending = false
+    /// What each waiting job was last logged as waiting for: logged again
+    /// only when that changes.
+    private var waitLogged: [Int: String] = [:]
 
     func pause(_ on: Bool) {
         paused = on
@@ -232,10 +240,16 @@ actor CIService {
             jobs[id]?.waiting = busy.description
             active.remove(id)
             queue.insert(id, at: 0)
-            log("ci: \(job.repository) job \(id) waits: \(busy)")
+            if waitLogged[id] != busy.description {
+                waitLogged[id] = busy.description
+                log("ci: \(job.repository) job \(id) waits: \(busy)")
+            }
+            guard !retryPending else { return }
+            retryPending = true
             let retry = busyRetry
             Task {
                 try? await Task.sleep(for: retry)
+                self.retryPending = false
                 self.pump()
             }
             return
@@ -355,6 +369,7 @@ actor CIService {
     private func finish(_ id: Int) {
         active.remove(id)
         runners[id] = nil
+        waitLogged[id] = nil
         let weekAgo = Date().addingTimeInterval(-7 * 24 * 3600)
         let ended = jobs.values.filter { $0.state.ended }.sorted { ($0.ended ?? $0.queued) > ($1.ended ?? $1.queued) }
         for (index, job) in ended.enumerated() where index >= Self.kept || (job.ended ?? job.queued) < weekAgo {

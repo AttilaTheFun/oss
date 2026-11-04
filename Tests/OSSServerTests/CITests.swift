@@ -492,6 +492,18 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     #expect(state == .starting || state == .listening)
 }
 
+@Test func waitingJobsAreRetriedTogetherOncePerWait() async throws {
+    let github = queueGitHub()
+    let host = FakeRunnerHost()
+    host.busy = 1_000_000
+    let service = CIService(plan: plan(max: 4), github: makeREST(github), host: host, busyRetry: .milliseconds(20))
+    await service.offer(try decodedJobs([job(1), job(2), job(3)]), repository: "owner/gh_mcp")
+    try await Task.sleep(for: .milliseconds(400))
+    // Twenty waits at most, three jobs a wait: not a retry each, doubling.
+    let refused = 1_000_000 - host.busy
+    #expect(refused >= 3 && refused <= 3 * 21)
+}
+
 @Test func aWaitingJobSaysWhy() async throws {
     let github = queueGitHub()
     let host = FakeRunnerHost()

@@ -229,12 +229,22 @@ enum SlotUser {
     /// wants of a user with no login session, and can't fail the slot: a
     /// test that keeps no token needs none, and one that does says so; what
     /// went wrong is in the script's standard error, for the server's log.
+    /// No crash dialogs on the primary's screen: a new user's first run of
+    /// com.apple.datamigrator crashes, and its "quit unexpectedly" dialog
+    /// sat over every picture a `--gui` run took. Set for the screen's user
+    /// before each slot's user is made (the reports are still written).
+    static let noCrashDialogs = #"""
+        console=$(stat -f %Su /dev/console)
+        if [ -n "$console" ] && [ "$console" != root ]; then sudo -u "$console" -H defaults write com.apple.CrashReporter DialogType -string none || true; fi
+        """#
+
     static func makeScript(lease: String, password: String) -> String {
         let user = name(lease)
         let keychain = keychain(lease)
         return """
             set -euo pipefail
             user=\(user)
+            \(noCrashDialogs)
             if ! id "$user" >/dev/null 2>&1; then
                 sudo sysadminctl -addUser "$user" -fullName "OS Server slot \(lease)" -password '\(password)' -home "/Users/$user" >/dev/null 2>&1
             fi
