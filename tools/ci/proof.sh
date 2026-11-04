@@ -29,7 +29,7 @@
 #                       the base hasn't got (new, and changed)
 #   diffs/<name>.png    each that changed, faded grey with its changed
 #                       pixels red (tools/ci/snapshot_diff.swift, built
-#                       here)
+#                       and run in the macOS VM)
 #   proof.json          {"commit", "ref", "kind", "run",
 #                        "base": {"ref", "commit"},
 #                        "screens": [{"name", "changed", "changedPixels"}]}
@@ -38,8 +38,8 @@
 # failures.
 #
 #   PROOF_REF     the ref the proof is of (default: GITHUB_REF, else the branch)
-#   PROOF_PYTHON  the python3 that runs tools/proof.py, with Pillow (default:
-#                 the PATH's)
+#   PROOF_PYTHON  the python3 that runs tools/proof.py (default: the PATH's,
+#                 given Pillow if it hasn't it)
 #   GITHUB_EVENT_NAME, GITHUB_BASE_REF, GITHUB_REF_NAME  what the base is
 #                 (by hand, none: main)
 #
@@ -48,7 +48,9 @@
 # key, which an ssh-agent of the run's holds, so tools/proof.py's plain
 # `oss machine ssh` reaches them too; its macOS VM is the one leased here
 # (--held: its own lease would not wait for a free VM), and its app the
-# one built here (--no-build). It needs Pillow in the runner's python3.
+# one built here (--no-build). The runner may be any Unix (OS Server's
+# own: a Linux container): what needs macOS (the picture tools,
+# CoreGraphics) is built and run in the macOS VM.
 # Every lease is released however the script ends.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -71,7 +73,12 @@ commit="$(git -C "$ROOT" rev-parse HEAD)"
 # tools/proof.py's interpreter: one with Pillow.
 python="${PROOF_PYTHON:-$(command -v python3)}"
 ref="${PROOF_REF:-${GITHUB_REF:-refs/heads/$(git -C "$ROOT" branch --show-current)}}"
-mac_vm_start oss-ci
+mac_vm_start oss-proof
+# Pillow for tools/proof.py, where the python3 hasn't it (a runner's, for this run alone).
+if ! "$python" -c 'import PIL' 2> /dev/null; then
+    "$python" -m pip install --quiet --user --break-system-packages Pillow 2> /dev/null \
+        || "$python" -m pip install --quiet --user Pillow
+fi
 
 # The other leases (the simulator, full's guests) and the run's ssh-agent,
 # given back before the VM.
@@ -100,13 +107,10 @@ lease_other() {
 }
 others="$work/lease-linux $work/lease-windows $work/lease-ios"
 
-# The tools and the proof's base first, nothing leased if a tool doesn't
-# build or the base can't be fetched: the diff, the window cutter and the
-# base's chooser here, the window's frame in the VM.
-xcrun swiftc -O -o "$work/snapshot_diff" "$ROOT/tools/ci/snapshot_diff.swift"
-xcrun swiftc -O -o "$work/window_shot" "$ROOT/tools/ci/window_shot.swift"
-xcrun swiftc -O -o "$work/proof_baseline" "$ROOT/tools/ci/proof_baseline/Baseline.swift" "$ROOT/tools/ci/proof_baseline/main.swift"
-xcrun swiftc -O -target arm64-apple-macos14 -o "$work/vm/window_rect" "$ROOT/tools/window_rect.swift"
+# The base's chooser and the proof's base first, nothing leased if it
+# doesn't build or the base can't be fetched: Foundation alone, so any
+# runner's Swift. The picture tools (CoreGraphics) are built in the VM.
+swiftc -O -o "$work/proof_baseline" "$ROOT/tools/ci/proof_baseline/Baseline.swift" "$ROOT/tools/ci/proof_baseline/main.swift"
 # A release's base is the release before: its tags, asked of origin. A run
 # by hand's (proposing a release, or proving an earlier commit to bisect)
 # is the release before the commit: the tags its history has before it.
@@ -171,6 +175,28 @@ mac_vm_steps << 'STEPS'
     frame)
         sudo launchctl asuser "$(id -u)" ~/ci/window_rect 'OS Monitor'
         ;;
+    tools)
+        # The picture tools, which need macOS (CoreGraphics), built where they run.
+        xcrun swiftc -O -o bin/snapshot_diff oss/tools/ci/snapshot_diff.swift || exit
+        xcrun swiftc -O -o bin/window_shot oss/tools/ci/window_shot.swift || exit
+        xcrun swiftc -O -target arm64-apple-macos14 -o window_rect oss/tools/window_rect.swift || exit
+        ;;
+    shot)
+        # A window cut from a screenshot uploaded here: shot <screen.png> <x> <y> <width> <height> <window.png>
+        bin/window_shot "$@"
+        ;;
+    compare)
+        # Each picture in compare/new against the base's of its name in
+        # compare/base (none: a new screen): its diff in compare/diffs, and
+        # "<name> <pixels changed>" a line out.
+        mkdir -p compare/diffs || exit
+        for new in compare/new/*.png; do
+            [ -e "$new" ] || continue
+            name="$(basename "$new" .png)"
+            pixels="$(bin/snapshot_diff "compare/base/$name.png" "$new" "compare/diffs/$name.png")" || exit
+            echo "$name $pixels"
+        done
+        ;;
 STEPS
 
 echo "::group::A macOS VM (xcode_27_2)"
@@ -187,6 +213,7 @@ if [ "$kind" = full ]; then
     done
 fi
 mac_vm_copy_tree
+run in_vm tools || { echo "::error::the picture tools didn't build in the VM"; exit 1; }
 echo "::endgroup::"
 
 status=0
@@ -218,18 +245,20 @@ echo "::endgroup::"
 
 echo "::group::OS Monitor for the Mac"
 for appearance in light dark; do
+    # shellcheck disable=SC2086 # the frame's four numbers, a word each
     if run in_vm monitor "$appearance" \
         && run "$OSS" machine screenshot "$lease" "$work/monitor-$appearance-screen.png" > /dev/null \
-        && frame="$(in_vm frame)" && [ "$(echo "$frame" | wc -w)" -eq 4 ]; then
-        # shellcheck disable=SC2086
-        "$work/window_shot" "$work/monitor-$appearance-screen.png" $frame "$recorded/monitor-mac-window-$appearance.png"
+        && frame="$(in_vm frame)" && [ "$(echo "$frame" | wc -w)" -eq 4 ] \
+        && run "$OSS" machine upload "$lease" --identity="$work/key" "$work/monitor-$appearance-screen.png" ci/screen.png > /dev/null \
+        && in_vm shot screen.png $frame window.png \
+        && run "$OSS" machine download "$lease" --identity="$work/key" ci/window.png "$recorded/monitor-mac-window-$appearance.png" > /dev/null; then
+        :
     else
         echo "::error::OS Monitor's Mac window ($appearance) wasn't pictured"
         status=1
     fi
 done
 echo "::endgroup::"
-mac_vm_release
 
 echo "::group::OS Monitor on an iPhone simulator"
 rm -rf "$work/ipa" && mkdir "$work/ipa" && ditto -x -k "$work/out/OS-Monitor.ipa" "$work/ipa"
@@ -268,9 +297,33 @@ fi
 on_cleanup
 echo "::endgroup::"
 
-# The proof, from the pictures and the ones kept at the base.
+# Each picture with the one kept at the base, if the base has one (one it
+# hasn't is new, and every pixel of it changed): compared in the VM, where
+# the diff tool runs, before it goes.
+echo "::group::The pictures compared with $base_ref's"
+mkdir -p "$work/compare/new" "$work/compare/base"
+for picture in "$recorded"/*.png; do
+    [ -e "$picture" ] || continue
+    name="$(basename "$picture" .png)"
+    cp "$picture" "$work/compare/new/$name.png"
+    if git -C "$ROOT" cat-file -e "$base_commit:Tests/Proof/$name.png" 2> /dev/null; then
+        git -C "$ROOT" show "$base_commit:Tests/Proof/$name.png" > "$work/compare/base/$name.png"
+    fi
+done
+if run "$OSS" machine upload "$lease" --identity="$work/key" "$work/compare" ci/compare > /dev/null \
+    && in_vm compare > "$work/pixels" \
+    && run "$OSS" machine download "$lease" --identity="$work/key" ci/compare/diffs "$work/diffs" > /dev/null; then
+    :
+else
+    echo "::error::the pictures weren't compared"
+    status=1
+fi
+echo "::endgroup::"
+mac_vm_release
+
+# The proof, from the pictures, the base's and their comparison.
 json() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-mkdir -p "$proof/screens" "$proof/diffs" "$proof/before" "$work/base"
+mkdir -p "$proof/screens" "$proof/diffs" "$proof/before"
 screens=""
 summary=""
 count=0
@@ -278,14 +331,14 @@ for picture in "$recorded"/*.png; do
     [ -e "$picture" ] || continue
     name="$(basename "$picture" .png)"
     cp "$picture" "$proof/screens/$name.png"
-    # Its picture at the base, if the base has one: one it hasn't is new,
-    # and every pixel of it changed.
-    kept="$work/base/$name.png"
-    rm -f "$kept"
-    if git -C "$ROOT" cat-file -e "$base_commit:Tests/Proof/$name.png" 2> /dev/null; then
-        git -C "$ROOT" show "$base_commit:Tests/Proof/$name.png" > "$kept"
+    kept="$work/compare/base/$name.png"
+    pixels="$(awk -v name="$name" '$1 == name { print $2 }' "$work/pixels" 2> /dev/null)"
+    if [ -z "$pixels" ]; then
+        echo "::error::$name wasn't compared"
+        status=1
+        continue
     fi
-    pixels="$("$work/snapshot_diff" "$kept" "$picture" "$proof/diffs/$name.png")"
+    [ ! -e "$work/diffs/$name.png" ] || cp "$work/diffs/$name.png" "$proof/diffs/$name.png"
     changed=false
     [ "$pixels" -eq 0 ] || changed=true
     # A changed screen as it was, to be seen beside it.

@@ -1437,10 +1437,10 @@ snapshot.
 
 ## This repository's CI
 
-`.github/workflows/ci.yml` runs on a self-hosted runner (label `oss-ci`)
-on a Mac that runs OS Server, as a user of its own (no sudo, no keychain,
-no SSH key of its own; on its PATH, OS Server's command line with a lease
-token, bazelisk, Xcode's tools and a python3 with Pillow). Each job leases
+`.github/workflows/ci.yml` runs on OS Server's own single-use runners
+(label `oss-jit`: a Linux container of Visor's agent image for each job,
+made and deleted by the OS Server it tests, with its command line and a
+grant for the job; no sudo, no keychain, no SSH key of its own). Each job leases
 what it runs in from that OS Server and gives it back however it ends: a
 step that leases execs its script, so the runner's cancel reaches the
 script's trap. Every self-hosted job is skipped for a fork's pull request,
@@ -1451,20 +1451,21 @@ and only the publishing jobs may ask for an OIDC token (`id-token: write`).
 | `build-and-test` | pull requests, main | `tools/ci/mac_vm_tests.sh`, in a macOS VM (`xcode_27_2`): `swift build --build-tests`, then `swift test` one test at a time (the forwarder's tests time real sockets) with `OSS_TEST_SIMCTL=1` (real simulators of an iPad and an iPhone, made and deleted in the VM); the App package's `swift build`; OS Monitor's `bazel build` for the Mac and the iPhone's simulator |
 | `linux` | pull requests, main | `tools/ci/linux_build.sh`: `swift build --product oss` in a container of Visor's agent image (with Rosetta), the tree on its standard input, through `oss machine run container --inside` (its exec through the server's API: the runner's user can't reach a container's socket) |
 | `proof` | by hand only (full): to propose a release (no release without its commit's proof), or on a branch pushed at an earlier commit to bisect; compared with the release before the commit | `tools/ci/proof.sh` (below), uploaded as the `proof` artifact, kept 90 days |
-| `beta` | pull requests, main, after `build-and-test` | `tools/ci/mac_vm_package.sh`: OS Server.app (`App/build.sh --zip`, QEMU from Homebrew installed first) and OS Monitor for the Mac built in a macOS VM of their own, OS Monitor's icon checked for its dark appearance; then `tools/ci/publish_from_ci.sh`, which sends each, unsigned, to Applications Server with the job's OIDC token: the server signs them with Developer ID and notarizes them (com.LoganShire.OSS, com.LoganShire.OSMonitor.Mac). OS Server's version is `OSS.version`, its build number the run's |
+| `alpha` | main's pushes | `tools/ci/mac_vm_package.sh`: OS Server.app (`App/build.sh --zip`, QEMU from Homebrew installed first) and OS Monitor for the Mac built on a slot of the primary macOS VM, OS Monitor's icon checked for its dark appearance; then `tools/ci/publish_from_ci.sh`, which sends each, unsigned, to Applications Server with the job's OIDC token: the server signs them with Developer ID and notarizes them (com.LoganShire.OSS, com.LoganShire.OSMonitor.Mac). OS Server's version is `OSS.version`, its build number the run's |
 | `release` | a release published | the same once its tag is on main and is `v` + `OSS.version`: production |
 
 **The proof** (`tools/ci/proof.sh --kind quick|full --proof <dir>`):
 
-1. Builds `tools/ci/snapshot_diff.swift`, `tools/ci/window_shot.swift`
-   and `tools/ci/proof_baseline` on the runner, and
-   `tools/window_rect.swift` for the VM, and fetches the proof's base
-   (below) into the job's shallow checkout.
+1. Builds `tools/ci/proof_baseline` on the runner (Foundation alone),
+   gives the runner's python3 Pillow if it hasn't it, and fetches the
+   proof's base (below) into the job's shallow checkout.
 2. Leases a macOS VM (`xcode_27_2`) with a key of the run's own, which an
    ssh-agent of the run's holds (so `tools/proof.py`'s own `oss machine
    ssh` reaches it); for full, a Linux and a Windows VM meanwhile.
-3. Builds OS Server.app and OS Monitor (Mac, and the iPhone's simulator)
-   in the VM, and takes them back.
+3. Builds the picture tools (`tools/ci/snapshot_diff.swift`,
+   `tools/ci/window_shot.swift`, `tools/window_rect.swift`: CoreGraphics,
+   so macOS's) and OS Server.app and OS Monitor (Mac, and the iPhone's
+   simulator) in the VM, and takes the apps back.
 4. Runs `tools/proof.py --held <the VM> --no-build`, against the VM: OS
    Server's window, menu bar menu, Set Up window and menu bar item, light
    and dark; for full, the Linux and Windows guests' Screen windows too.
@@ -1472,11 +1473,12 @@ and only the publishing jobs may ask for an OIDC token (`id-token: write`).
    free VM, `--no-build` because the app is the VM's build, the agent for
    its SSH, and no sudo outside the leases.
 5. OS Monitor's Mac window in the same VM (cut from the screen by its
-   frame, its corners cut away as proof.py cuts OS Server's), then its
-   four screens on an iPhone simulator leased for it.
-6. Gives every lease back, and compares each picture with the one kept
-   for it in `Tests/Proof/` at the base (`git show <base>:Tests/Proof/<name>.png`;
-   a channel more than 24 apart is a changed pixel).
+   frame in the VM, its corners cut away as proof.py cuts OS Server's),
+   then its four screens on an iPhone simulator leased for it.
+6. Compares each picture, in the VM, with the one kept for it in
+   `Tests/Proof/` at the base (`git show <base>:Tests/Proof/<name>.png`;
+   a channel more than 24 apart is a changed pixel), and gives every
+   lease back.
 
 ```
 screens/<name>.png   every picture at this commit: server-*, monitor-mac-*, monitor-ios-*
