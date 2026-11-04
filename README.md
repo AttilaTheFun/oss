@@ -696,7 +696,10 @@ repositories server.json names, beside any runner they have already.
    job's container: 4 and 4), `sizes` (a repository's own, where its jobs
    build in their container: `{"owner/reviews": {"cpus": 6,
    "memoryGigabytes": 16}}`; `"virtualization": true` gives its jobs'
-   containers nested virtualization, `/dev/kvm` for an emulator), `pollSeconds` (5), `unclaimedMinutes` (10),
+   containers nested virtualization, `/dev/kvm` for an emulator; a job's
+   own, over its repository's, keyed `"owner/repo:job"` by the job's name,
+   or its name before a matrix's ` (…)`: `{"owner/visor:changes": {"cpus":
+   2, "memoryGigabytes": 2}}`, so a light job holds little of the budget), `pollSeconds` (5), `unclaimedMinutes` (10),
    `vmRoomGB` (the memory kept free beside a starting runner for a VM its
    job may lease, while another macOS VM may be leased: a macOS VM's by
    default; 0 where jobs lease slots and containers rather than whole VMs)
