@@ -387,6 +387,13 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
         if path == "/repos/owner/gh_mcp/actions/runs", query.contains("status=in_progress") {
             return FakeGitHub.json(#"{"total_count": 1, "workflow_runs": [{"id": 11, "status": "in_progress"}]}"#)
         }
+        if path == "/repos/owner/gh_mcp/actions/runs", !query.contains("status=") {
+            // The newest, unfiltered: a queued run the status filter left out (12), and a finished one.
+            return FakeGitHub.json(#"{"total_count": 3, "workflow_runs": [{"id": 12, "status": "queued"}, {"id": 10, "status": "queued"}, {"id": 9, "status": "completed"}]}"#)
+        }
+        if path == "/repos/owner/gh_mcp/actions/runs/12/jobs" {
+            return FakeGitHub.json(#"{"jobs": [\#(job(6, run: 12))]}"#)
+        }
         if path == "/repos/owner/gh_mcp/actions/runs/10/jobs" {
             return FakeGitHub.json(#"{"jobs": [\#(job(1)), \#(job(2, labels: ["self-hosted", "gh_mcp-ci"])), \#(job(3, labels: ["ubuntu-latest"]))]}"#,
                                    headers: ["etag": "\"jobs\""])
@@ -401,10 +408,12 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     let host = FakeRunnerHost()
     let service = CIService(plan: plan(max: 0), github: makeREST(github), host: host)
     try await service.poll(repository)
-    #expect(await service.list().map(\.id).sorted() == [1, 5])
+    // Run 12's job too, which only the unfiltered list had; run 9, finished, isn't asked about.
+    #expect(await service.list().map(\.id).sorted() == [1, 5, 6])
+    #expect(!github.requests.contains { $0.url.path == "/repos/owner/gh_mcp/actions/runs/9/jobs" })
     try await service.poll(repository)
     // Seen once, asked for with the last answer's ETag, its kept body used.
-    #expect(await service.list().map(\.id).sorted() == [1, 5])
+    #expect(await service.list().map(\.id).sorted() == [1, 5, 6])
     let runs = github.requests.filter { $0.url.path == "/repos/owner/gh_mcp/actions/runs" && ($0.url.query ?? "").contains("queued") }
     #expect(runs.count == 2)
     #expect(runs.first?.headers["If-None-Match"] == nil)

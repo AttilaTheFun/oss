@@ -146,6 +146,7 @@ actor CIService {
     /// are looked at too; an unchanged list costs nothing.
     func poll(_ repository: CIPlan.Repository) async throws {
         let runs = try await github.runs(repository.name, status: "queued") + github.runs(repository.name, status: "in_progress")
+            + github.recentRuns(repository.name).filter { ["queued", "in_progress", "waiting", "pending", "requested"].contains($0.status ?? "") }
         var ids: [Int] = []
         for run in runs where !ids.contains(run.id) { ids.append(run.id) }
         var found: [GitHubREST.Job] = []
