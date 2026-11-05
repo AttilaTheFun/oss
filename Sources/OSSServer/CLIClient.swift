@@ -171,8 +171,7 @@ extension OSSClient {
             if isDirectory.boolValue {
                 let zip = NSTemporaryDirectory() + "oss-\(Random.hex(4))-\(name).zip"
                 defer { try? FileManager.default.removeItem(atPath: zip) }
-                let ditto = try await Shell.run("/usr/bin/ditto", ["-c", "-k", "--keepParent", argument, zip], timeout: 600)
-                guard ditto.ok else { throw OSSError(status: 0, message: "zipping \(argument): \(ditto.error)") }
+                try await FolderZip.make(argument, to: zip, timeout: 600)
                 try await upload(lease.id, name: "\(name).zip", data: FileManager.default.contents(atPath: zip) ?? Data())
             } else {
                 try await upload(lease.id, name: name, data: FileManager.default.contents(atPath: argument) ?? Data())
