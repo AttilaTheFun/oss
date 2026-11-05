@@ -245,7 +245,8 @@ enum SlotUser {
             set -euo pipefail
             user=\(user)
             \(noCrashDialogs)
-            add_user() { sudo sysadminctl -addUser "$user" -fullName "OS Server slot \(lease)" -password '\(password)' -home "/Users/$user" >/dev/null 2>&1 || true; }
+            said=""
+            add_user() { said=$(sudo sysadminctl -addUser "$user" -fullName "OS Server slot \(lease)" -password '\(password)' -home "/Users/$user" 2>&1 >/dev/null) || true; }
             known() { id "$user" >/dev/null 2>&1 && sudo -u "$user" true 2>/dev/null; }
             if ! id "$user" >/dev/null 2>&1; then add_user; fi
             # sysadminctl can return before the directory service knows the
@@ -254,7 +255,7 @@ enum SlotUser {
             until known; do
                 tries=$((tries + 1))
                 if [ "$tries" -eq 30 ]; then add_user; fi
-                if [ "$tries" -ge 60 ]; then echo "oss: slot \(lease): the directory service doesn't know $user after 30 s" >&2; exit 1; fi
+                if [ "$tries" -ge 60 ]; then echo "oss: slot \(lease): the directory service doesn't know $user after 30 s (sysadminctl: $(printf '%s' "$said" | tail -3))" >&2; exit 1; fi
                 sleep 0.5
             done
             sudo createhomedir -c -u "$user" >/dev/null
