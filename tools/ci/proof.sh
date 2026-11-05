@@ -267,7 +267,7 @@ done
 echo "::endgroup::"
 
 echo "::group::OS Monitor on an iPhone simulator"
-rm -rf "$work/ipa" && mkdir "$work/ipa" && ditto -x -k "$work/out/OS-Monitor.ipa" "$work/ipa"
+rm -rf "$work/ipa" && mkdir "$work/ipa" && unzip -q "$work/out/OS-Monitor.ipa" -d "$work/ipa"
 if lease_other ios; then
     ios="$(. "$work/lease-ios"; printf '%s' "$OSS_ID")"
     "$OSS" machine simctl "$ios" install "$work/ipa/Payload/OS Monitor.app"
