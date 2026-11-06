@@ -50,6 +50,8 @@ struct CIContainers: CIRunnerHost {
         let lease = try await self.lease(holder: runnerHolder, label: "\(job.repository) · \(job.workflow ?? "a workflow") #\(job.runID) · \(job.name)",
                                     link: job.url ?? job.runURL, labels: labels, cpus: size?.cpus,
                                     memoryGigabytes: size?.memoryGigabytes, virtualization: size?.virtualization == true)
+        log("ci: \(job.repository) job \(job.id) (\(job.labels.filter { $0.lowercased() != "self-hosted" }.joined(separator: ", "))): runner container "
+            + "\(lease.id), \(size?.cpus ?? plan.cpus) cpus, \(size?.memoryGigabytes ?? plan.memoryGigabytes) GB")
         do {
             try await put(runner, into: lease, "mkdir -p \"$HOME/actions-runner\" && tar -xz -C \"$HOME/actions-runner\"")
             if let client {
