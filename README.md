@@ -696,10 +696,15 @@ repositories server.json names, beside any runner they have already.
    job's container: 4 and 4), `sizes` (a repository's own, where its jobs
    build in their container: `{"owner/reviews": {"cpus": 6,
    "memoryGigabytes": 16}}`; `"virtualization": true` gives its jobs'
-   containers nested virtualization, `/dev/kvm` for an emulator; a job's
-   own, over its repository's, keyed `"owner/repo:job"` by the job's name,
-   or its name before a matrix's ` (…)`: `{"owner/visor:changes": {"cpus":
-   2, "memoryGigabytes": 2}}`, so a light job holds little of the budget), `pollSeconds` (5), `unclaimedMinutes` (10),
+   containers nested virtualization, `/dev/kvm` for an emulator; a label's
+   own, keyed `"#<label>"`, for a repository that serves several labels
+   (`"labels": {"owner/visor": ["visor-jit", "visor-jit-small"]}`, the
+   first its default): `{"#visor-jit-small": {"cpus": 2, "memoryGigabytes":
+   2}}`, and a light job asks for `[self-hosted, visor-jit-small]`. GitHub
+   gives a job only a runner of exactly its labels, so each label is a
+   pool of its own size; a size keyed `"owner/repo:job"` by a job's name
+   isn't to be relied on, as GitHub may give the job another runner of the
+   same labels), `pollSeconds` (5), `unclaimedMinutes` (10),
    `vmRoomGB` (the memory kept free beside a starting runner for a VM its
    job may lease, while another macOS VM may be leased: a macOS VM's by
    default; 0 where jobs lease slots and containers rather than whole VMs)
