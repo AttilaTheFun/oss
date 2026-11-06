@@ -134,7 +134,7 @@ private func appFolder(config: String?, key: String?, configMode: Int = 0o600, k
         """.utf8))
     let (plan, why) = CIPlan.make(settings: settings, app: CIAppConfig(appId: 1), cores: 32, memoryBytes: 256 << 30, containerCapacity: 4)
     #expect(why == nil)
-    #expect(plan?.repositories == [.init(name: "owner/gh_mcp", label: "gh_mcp-oss"), .init(name: "owner/other", label: "other-ci")])
+    #expect(plan?.repositories == [.init(name: "owner/gh_mcp", label: "gh_mcp-oss", labels: ["gh_mcp-oss"]), .init(name: "owner/other", label: "other-ci", labels: ["other-ci"])])
     // From the cores and memory, at most half the containers.
     #expect(plan?.maxConcurrent == 2)
     #expect(plan?.image == CIDefaults.image)
@@ -764,3 +764,27 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
                                  since: Date(timeIntervalSince1970: 0), reason: "memory")
     #expect(CIRoom.refusal(runner: 4 * gb, budget: budget(waiting: [vm, container]), headroom: 0, atCap: [.macos]) != nil)
 }
+
+@Test func aRepositoryServesSeveralLabelsEachSizedByItsOwn() throws {
+    let settings = try JSONDecoder().decode(CISettings.self, from: Data("""
+        {"repositories": ["owner/visor", "owner/gh_mcp"],
+         "labels": {"owner/visor": ["visor-jit", "visor-jit-small"], "owner/gh_mcp": "gh_mcp-oss"},
+         "sizes": {"owner/visor": {"cpus": 6, "memoryGigabytes": 12}, "#visor-jit-small": {"cpus": 2, "memoryGigabytes": 2},
+                   "owner/visor:changes": {"memoryGigabytes": 4}}}
+        """.utf8))
+    let plan = try #require(CIPlan.make(settings: settings, app: CIAppConfig(appId: 1), containerCapacity: 4).0)
+    let visor = try #require(plan.repositories.first { $0.name == "owner/visor" })
+    let ghMCP = try #require(plan.repositories.first { $0.name == "owner/gh_mcp" })
+    // One label as a string, several as a list; the first is the default.
+    #expect(ghMCP.allLabels == ["gh_mcp-oss"] && visor.label == "visor-jit")
+    #expect(visor.serves(["self-hosted", "visor-jit"]) && visor.serves(["self-hosted", "visor-jit-small"]))
+    #expect(!visor.serves(["self-hosted", "visor-jit", "visor-jit-small"]) && !visor.serves(["self-hosted", "gh_mcp-oss"]))
+    func job(_ name: String, _ label: String) -> CIJob {
+        CIJob(id: 1, repository: "owner/visor", name: name, runID: 9, labels: ["self-hosted", label], queued: Date())
+    }
+    // Its label's size first (GitHub gives the job only runners of exactly its labels), over a size by its name.
+    #expect(visor.size(of: job("changes", "visor-jit-small")).memoryGigabytes == 2)
+    #expect(visor.size(of: job("changes", "visor-jit-small")).cpus == 2)
+    #expect(visor.size(of: job("proof", "visor-jit")).memoryGigabytes == 12)
+}
+

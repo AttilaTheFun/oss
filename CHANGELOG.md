@@ -2,6 +2,12 @@
 
 ## 0.14.0 (unreleased)
 
+- **A repository serves several labels, each sized its own**
+  (`ci.labels."owner/repo"` a list; `ci.sizes."#<label>"`): a light job asks
+  for `[self-hosted, <repo>-jit-small]` and runs in its small pool. Sizes by
+  a job's name (`"owner/repo:job"`) didn't hold: GitHub gives a job any free
+  runner of its labels, and visor's proof ran in a 2 GB runner made for
+  `changes`.
 - **A CI job's own size** (`ci.sizes."owner/repo:job"`, by its name, or
   its name before a matrix's ` (…)`), over its repository's: a light job
   (one that decides what else runs) asks for 2 GB, not the 12 its
