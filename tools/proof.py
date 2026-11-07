@@ -241,7 +241,9 @@ def hold_clock(guest):
 
 
 def crop(source, destination, x, y, width, height):
-    sh(["sips", "-c", str(height), str(width), "--cropOffset", str(y), str(x), source, "--out", destination])
+    # Pillow, not sips: CI's runner is a Linux container.
+    with Image.open(source) as image:
+        image.crop((x, y, x + width, y + height)).save(destination)
 
 
 # A window's corners in the VM's screenshots (macOS 27, at 1x): the curve is

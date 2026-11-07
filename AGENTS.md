@@ -233,8 +233,8 @@ SSH, VNC and adb too. With no `client.json` it tries `127.0.0.1` only.
 
 ## CI (this repository's)
 
-`.github/workflows/ci.yml`, on the self-hosted runner labelled `oss-ci`
-(README.md, "This repository's CI"): `build-and-test` (swift build and
+`.github/workflows/ci.yml`, on OS Server's own single-use runners
+(`oss-jit`; README.md, "This repository's CI"): `build-and-test` (swift build and
 test, the App package, OS Monitor's Bazel build, in a macOS VM), `linux`
 (the command line in a container), `proof`, `beta` and `release` (OS
 Server.app and OS Monitor for the Mac, built in a macOS VM, published to
