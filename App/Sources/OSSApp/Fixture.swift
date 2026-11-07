@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import OSSClient
 import OSSServer
+import SwiftUI
 
 /// A server's state, made up and always the same, for the proof's screens:
 /// the app shows it instead of running a server when it is launched with
@@ -168,24 +169,6 @@ enum Fixture {
 
     /// Where the app's windows are, in the screenshot's pixels (top-left
     /// origin), for the proof to crop each screen to: ~/oss-fixture-windows.json.
-    @MainActor
-    /// Opens the menu bar item's menu, as a click on it would, once the
-    /// item has come up: the menu tracks until it's closed.
-    static func openMenu() {
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(3))
-            guard let item = NSApp.windows.first(where: { String(describing: type(of: $0)).contains("StatusBar") }),
-                  let button = item.contentView.flatMap(statusButton) else { return }
-            button.performClick(nil)
-        }
-    }
-
-    private static func statusButton(_ view: NSView) -> NSButton? {
-        if let button = view as? NSButton { return button }
-        for child in view.subviews { if let button = statusButton(child) { return button } }
-        return nil
-    }
-
     static func writeWindowFrames() {
         guard let screen = NSScreen.main else { return }
         let scale = screen.backingScaleFactor
@@ -195,26 +178,8 @@ enum Fixture {
                     "x": Int(frame.minX * scale), "y": Int((screen.frame.height - frame.maxY) * scale),
                     "width": Int(frame.width * scale), "height": Int(frame.height * scale)]
         }
-        var frames2 = frames
-        // The menu, open: its window is the window server's, not AppKit's
-        // (CGWindowList, this process's at the pop-up menu's level).
-        let own = ProcessInfo.processInfo.processIdentifier
-        let listed = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
-        func bounds(_ window: [String: Any]) -> CGRect? {
-            (window[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
-        }
-        let statusLevel = Int(CGWindowLevelForKey(.statusWindow))
-        if let menu = listed.first(where: { window in
-            (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == own
-                && ((window[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0) > statusLevel
-                && (bounds(window)?.width ?? 0) > 120
-        }), let frame = bounds(menu) {
-            // CGWindowList's points, from the top left, as the rest are.
-            frames2.append(["title": "OS Server menu", "x": Int(frame.minX * scale), "y": Int(frame.minY * scale),
-                            "width": Int(frame.width * scale), "height": Int(frame.height * scale)])
-        }
         let menuBar = Int(NSStatusBar.system.thickness * scale)
-        var out = ["scale": scale, "menuBarHeight": menuBar, "windows": frames2] as [String: Any]
+        var out = ["scale": scale, "menuBarHeight": menuBar, "windows": frames] as [String: Any]
         // The menu bar item: its button's window.
         if let item = NSApp.windows.first(where: { String(describing: type(of: $0)).contains("StatusBar") }) {
             let frame = item.frame
@@ -226,3 +191,22 @@ enum Fixture {
         }
     }
 }
+
+/// The menu bar item's menu as the proof pictures it: ServerMenu's items, as
+/// a menu lays them out.
+struct FixtureMenu: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ServerMenu()
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(width: 280, alignment: .leading)
+        // Opaque, the appearance's own window colour: a material would show
+        // the wallpaper behind it, which no picture should depend on.
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(nsColor: .separatorColor)))
+    }
+}
+
