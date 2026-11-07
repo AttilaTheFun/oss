@@ -15,6 +15,4 @@
 /tools/signing/ @AttilaTheFun
 
 # The agents' rules, anywhere in the tree, and the license.
-AGENTS.md @AttilaTheFun
-CLAUDE.md @AttilaTheFun
 LICENSE @AttilaTheFun
