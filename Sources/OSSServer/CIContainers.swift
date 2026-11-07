@@ -41,14 +41,17 @@ struct CIContainers: CIRunnerHost {
         var labels = ["oss.ci.repository": job.repository, "oss.ci.run": "\(job.runID)", "oss.ci.job": "\(job.id)"]
         labels[CINames.runnerLabel] = "\(job.repository)#\(job.id)"
         labels[CINames.holderLabel] = holder
-        // Its repository's size, where it has one (its jobs build in it).
+        // Its own size, else its repository's, where they have one (its jobs build in it).
         let repository = plan.repositories.first { $0.name.lowercased() == job.repository.lowercased() }
+        let size = repository?.size(of: job)
         // Room kept for the machines its job leases (CIRoom).
-        let memory = Int64(repository?.memoryGigabytes ?? plan.memoryGigabytes) << 30
+        let memory = Int64(size?.memoryGigabytes ?? plan.memoryGigabytes) << 30
         if let refusal = await machines.ciRunnerRefusal(memoryBytes: memory) { throw CIBusy(description: refusal) }
         let lease = try await self.lease(holder: runnerHolder, label: "\(job.repository) · \(job.workflow ?? "a workflow") #\(job.runID) · \(job.name)",
-                                    link: job.url ?? job.runURL, labels: labels, cpus: repository?.cpus,
-                                    memoryGigabytes: repository?.memoryGigabytes, virtualization: repository?.virtualization == true)
+                                    link: job.url ?? job.runURL, labels: labels, cpus: size?.cpus,
+                                    memoryGigabytes: size?.memoryGigabytes, virtualization: size?.virtualization == true)
+        log("ci: \(job.repository) job \(job.id) (\(job.labels.filter { $0.lowercased() != "self-hosted" }.joined(separator: ", "))): runner container "
+            + "\(lease.id), \(size?.cpus ?? plan.cpus) cpus, \(size?.memoryGigabytes ?? plan.memoryGigabytes) GB")
         do {
             try await put(runner, into: lease, "mkdir -p \"$HOME/actions-runner\" && tar -xz -C \"$HOME/actions-runner\"")
             if let client {

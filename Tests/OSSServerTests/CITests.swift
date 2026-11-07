@@ -134,7 +134,7 @@ private func appFolder(config: String?, key: String?, configMode: Int = 0o600, k
         """.utf8))
     let (plan, why) = CIPlan.make(settings: settings, app: CIAppConfig(appId: 1), cores: 32, memoryBytes: 256 << 30, containerCapacity: 4)
     #expect(why == nil)
-    #expect(plan?.repositories == [.init(name: "owner/gh_mcp", label: "gh_mcp-oss"), .init(name: "owner/other", label: "other-ci")])
+    #expect(plan?.repositories == [.init(name: "owner/gh_mcp", label: "gh_mcp-oss", labels: ["gh_mcp-oss"]), .init(name: "owner/other", label: "other-ci", labels: ["other-ci"])])
     // From the cores and memory, at most half the containers.
     #expect(plan?.maxConcurrent == 2)
     #expect(plan?.image == CIDefaults.image)
@@ -154,6 +154,16 @@ private func appFolder(config: String?, key: String?, configMode: Int = 0o600, k
     let sizedPlan = try #require(CIPlan.make(settings: sized, app: CIAppConfig(appId: 1), containerCapacity: 4).0)
     #expect(sizedPlan.repositories.first { $0.name == "owner/reviews" }.map { ($0.cpus, $0.memoryGigabytes) }! == (6, 16))
     #expect(sizedPlan.repositories.first { $0.name == "owner/gh_mcp" }.map { ($0.cpus, $0.memoryGigabytes) }! == (nil, nil))
+    // A job's own size over its repository's, by its name (a matrix's too); the rest its repository's.
+    let jobSized = try JSONDecoder().decode(CISettings.self, from: Data("""
+        {"repositories": ["owner/visor"], "sizes": {"owner/visor": {"cpus": 6, "memoryGigabytes": 12},
+         "owner/visor:changes": {"cpus": 2, "memoryGigabytes": 2}, "owner/visor:test": {"memoryGigabytes": 16}}}
+        """.utf8))
+    let visor = try #require(CIPlan.make(settings: jobSized, app: CIAppConfig(appId: 1), containerCapacity: 4).0?.repositories.first)
+    func job(_ name: String) -> CIJob { CIJob(id: 1, repository: "owner/visor", name: name, runID: 9, labels: [], queued: Date()) }
+    #expect(visor.size(of: job("changes")).cpus == 2 && visor.size(of: job("changes")).memoryGigabytes == 2)
+    #expect(visor.size(of: job("test (macOS)")).cpus == 6 && visor.size(of: job("test (macOS)")).memoryGigabytes == 16)
+    #expect(visor.size(of: job("linux")).cpus == 6 && visor.size(of: job("linux")).memoryGigabytes == 12)
     // Nested virtualization in a repository's jobs' containers, where its size asks.
     #expect(sizedPlan.repositories.first { $0.name == "owner/gh_mcp" }?.virtualization == true)
     #expect(sizedPlan.repositories.first { $0.name == "owner/reviews" }?.virtualization == false)
@@ -377,6 +387,13 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
         if path == "/repos/owner/gh_mcp/actions/runs", query.contains("status=in_progress") {
             return FakeGitHub.json(#"{"total_count": 1, "workflow_runs": [{"id": 11, "status": "in_progress"}]}"#)
         }
+        if path == "/repos/owner/gh_mcp/actions/runs", !query.contains("status=") {
+            // The newest, unfiltered: a queued run the status filter left out (12), and a finished one.
+            return FakeGitHub.json(#"{"total_count": 3, "workflow_runs": [{"id": 12, "status": "queued"}, {"id": 10, "status": "queued"}, {"id": 9, "status": "completed"}]}"#)
+        }
+        if path == "/repos/owner/gh_mcp/actions/runs/12/jobs" {
+            return FakeGitHub.json(#"{"jobs": [\#(job(6, run: 12))]}"#)
+        }
         if path == "/repos/owner/gh_mcp/actions/runs/10/jobs" {
             return FakeGitHub.json(#"{"jobs": [\#(job(1)), \#(job(2, labels: ["self-hosted", "gh_mcp-ci"])), \#(job(3, labels: ["ubuntu-latest"]))]}"#,
                                    headers: ["etag": "\"jobs\""])
@@ -391,10 +408,12 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     let host = FakeRunnerHost()
     let service = CIService(plan: plan(max: 0), github: makeREST(github), host: host)
     try await service.poll(repository)
-    #expect(await service.list().map(\.id).sorted() == [1, 5])
+    // Run 12's job too, which only the unfiltered list had; run 9, finished, isn't asked about.
+    #expect(await service.list().map(\.id).sorted() == [1, 5, 6])
+    #expect(!github.requests.contains { $0.url.path == "/repos/owner/gh_mcp/actions/runs/9/jobs" })
     try await service.poll(repository)
     // Seen once, asked for with the last answer's ETag, its kept body used.
-    #expect(await service.list().map(\.id).sorted() == [1, 5])
+    #expect(await service.list().map(\.id).sorted() == [1, 5, 6])
     let runs = github.requests.filter { $0.url.path == "/repos/owner/gh_mcp/actions/runs" && ($0.url.query ?? "").contains("queued") }
     #expect(runs.count == 2)
     #expect(runs.first?.headers["If-None-Match"] == nil)
@@ -443,7 +462,8 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     await service.offer(try decodedJobs([job(3, created: "2026-10-31T10:03:00Z"), job(1, created: "2026-10-31T10:01:00Z"),
                                          job(2, created: "2026-10-31T10:02:00Z")]), repository: "owner/gh_mcp")
     #expect(await eventually { host.runningLeases.count == 2 })
-    #expect(host.started == [1, 2])
+    // The two queued first, started together: in either order.
+    #expect(Set(host.started) == [1, 2])
     #expect(await service.list().first { $0.id == 3 }?.state == .queued)
     // Each runner's configuration is named for its lease, with the job's labels.
     let configs = github.requests.filter { $0.url.path.hasSuffix("generate-jitconfig") }
@@ -453,7 +473,7 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
     #expect(first["runner_group_id"] as? Int == 1)
     // One ends: the third takes its place.
     host.finish("lease1", lines: ["√ Connected to GitHub", "Listening for Jobs", "Running job: job 1", "Job job 1 completed with result: Succeeded"])
-    #expect(await eventually { host.started == [1, 2, 3] })
+    #expect(await eventually { host.started.count == 3 && host.started.last == 3 })
     #expect(await eventually { await service.list().first { $0.id == 1 }?.state == .completed })
     let done = try #require(await service.list().first { $0.id == 1 })
     #expect(done.result == "Succeeded")
@@ -744,3 +764,27 @@ private func decodedJobs(_ list: [String]) throws -> [GitHubREST.Job] {
                                  since: Date(timeIntervalSince1970: 0), reason: "memory")
     #expect(CIRoom.refusal(runner: 4 * gb, budget: budget(waiting: [vm, container]), headroom: 0, atCap: [.macos]) != nil)
 }
+
+@Test func aRepositoryServesSeveralLabelsEachSizedByItsOwn() throws {
+    let settings = try JSONDecoder().decode(CISettings.self, from: Data("""
+        {"repositories": ["owner/visor", "owner/gh_mcp"],
+         "labels": {"owner/visor": ["visor-jit", "visor-jit-small"], "owner/gh_mcp": "gh_mcp-oss"},
+         "sizes": {"owner/visor": {"cpus": 6, "memoryGigabytes": 12}, "#visor-jit-small": {"cpus": 2, "memoryGigabytes": 2},
+                   "owner/visor:changes": {"memoryGigabytes": 4}}}
+        """.utf8))
+    let plan = try #require(CIPlan.make(settings: settings, app: CIAppConfig(appId: 1), containerCapacity: 4).0)
+    let visor = try #require(plan.repositories.first { $0.name == "owner/visor" })
+    let ghMCP = try #require(plan.repositories.first { $0.name == "owner/gh_mcp" })
+    // One label as a string, several as a list; the first is the default.
+    #expect(ghMCP.allLabels == ["gh_mcp-oss"] && visor.label == "visor-jit")
+    #expect(visor.serves(["self-hosted", "visor-jit"]) && visor.serves(["self-hosted", "visor-jit-small"]))
+    #expect(!visor.serves(["self-hosted", "visor-jit", "visor-jit-small"]) && !visor.serves(["self-hosted", "gh_mcp-oss"]))
+    func job(_ name: String, _ label: String) -> CIJob {
+        CIJob(id: 1, repository: "owner/visor", name: name, runID: 9, labels: ["self-hosted", label], queued: Date())
+    }
+    // Its label's size first (GitHub gives the job only runners of exactly its labels), over a size by its name.
+    #expect(visor.size(of: job("changes", "visor-jit-small")).memoryGigabytes == 2)
+    #expect(visor.size(of: job("changes", "visor-jit-small")).cpus == 2)
+    #expect(visor.size(of: job("proof", "visor-jit")).memoryGigabytes == 12)
+}
+

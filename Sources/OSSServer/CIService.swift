@@ -90,7 +90,7 @@ actor CIService {
     /// repository is looked at every few seconds until `stop`.
     func start() async {
         await host.releaseLeftovers()
-        log("ci: running GitHub Actions jobs for " + plan.repositories.map { "\($0.name) (self-hosted, \($0.label))" }.joined(separator: ", ")
+        log("ci: running GitHub Actions jobs for " + plan.repositories.map { "\($0.name) (self-hosted, \($0.allLabels.joined(separator: " | ")))" }.joined(separator: ", ")
             + ", at most \(plan.maxConcurrent) at once, in \(plan.image)")
         for repository in plan.repositories {
             pollers.append(Task { await self.pollForever(repository) })
@@ -146,12 +146,13 @@ actor CIService {
     /// are looked at too; an unchanged list costs nothing.
     func poll(_ repository: CIPlan.Repository) async throws {
         let runs = try await github.runs(repository.name, status: "queued") + github.runs(repository.name, status: "in_progress")
+            + github.recentRuns(repository.name).filter { ["queued", "in_progress", "waiting", "pending", "requested"].contains($0.status ?? "") }
         var ids: [Int] = []
         for run in runs where !ids.contains(run.id) { ids.append(run.id) }
         var found: [GitHubREST.Job] = []
         for id in ids {
             found += try await github.jobs(repository.name, run: id)
-                .filter { $0.status == "queued" && CINames.matches($0.labels, label: repository.label) }
+                .filter { $0.status == "queued" && repository.serves($0.labels) }
         }
         await github.forgetRuns(repository.name, keeping: Set(ids))
         offer(found, repository: repository.name)

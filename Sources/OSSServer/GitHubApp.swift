@@ -252,6 +252,16 @@ actor GitHubREST {
                              as: Answer.self).workflow_runs
     }
 
+    /// The newest runs, whatever their status: GitHub's `status` filter
+    /// can leave out a run whose own status is queued (swift_sql's pull
+    /// request's, for ten hours on 2026-11-04), so the newest are looked at
+    /// unfiltered as well.
+    func recentRuns(_ repository: String, count: Int = 30) async throws -> [Run] {
+        struct Answer: Decodable { var workflow_runs: [Run] }
+        return try await get(repository, "/repos/\(repository)/actions/runs", query: ["per_page": "\(count)"],
+                             as: Answer.self).workflow_runs
+    }
+
     /// A run's jobs (its latest attempt's).
     func jobs(_ repository: String, run: Int) async throws -> [Job] {
         struct Answer: Decodable { var jobs: [Job] }

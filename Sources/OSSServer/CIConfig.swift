@@ -15,7 +15,10 @@ struct CISettings: Codable, Sendable, Equatable {
     var repositories: [String] = []
     /// The label a repository's jobs ask for (with `self-hosted`), by
     /// repository: `<name>-ci` where none is given.
-    var labels: [String: String] = [:]
+    /// The labels a repository's jobs ask for besides `self-hosted`: one,
+    /// or several (`["visor-jit", "visor-jit-small"]`), each its own pool of
+    /// runners, sized by `sizes."#<label>"` (the first is its default).
+    var labels: [String: [String]] = [:]
     /// The image each job's container runs: Visor's agent image (what CI's
     /// scripts build in) unless given.
     var image: String?
@@ -55,7 +58,7 @@ struct CISettings: Codable, Sendable, Equatable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         repositories = try c.decodeIfPresent([String].self, forKey: .repositories) ?? []
-        labels = try c.decodeIfPresent([String: String].self, forKey: .labels) ?? [:]
+        labels = try c.decodeIfPresent([String: LabelList].self, forKey: .labels)?.mapValues(\.names) ?? [:]
         image = try c.decodeIfPresent(String.self, forKey: .image)
         maxConcurrent = try c.decodeIfPresent(Int.self, forKey: .maxConcurrent)
         vmRoomGB = try c.decodeIfPresent(Double.self, forKey: .vmRoomGB)
@@ -68,9 +71,30 @@ struct CISettings: Codable, Sendable, Equatable {
         serverURL = try c.decodeIfPresent(String.self, forKey: .serverURL)
     }
 
-    /// The label `repository`'s jobs ask for.
+    /// The label `repository`'s jobs ask for (its first, where it has several).
     func label(_ repository: String) -> String {
-        labels[repository] ?? "\(repository.split(separator: "/").last.map(String.init) ?? repository)-ci"
+        allLabels(repository)[0]
+    }
+
+    /// Every label `repository`'s jobs may ask for.
+    func allLabels(_ repository: String) -> [String] {
+        let given = labels[repository] ?? labels.first { $0.key.lowercased() == repository.lowercased() }?.value ?? []
+        return given.isEmpty ? ["\(repository.split(separator: "/").last.map(String.init) ?? repository)-ci"] : given
+    }
+}
+
+/// A repository's labels in server.json: one ("visor-jit") or several.
+struct LabelList: Codable, Sendable {
+    var names: [String]
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let one = try? c.decode(String.self) { names = [one] } else { names = try c.decode([String].self) }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(names)
     }
 }
 
@@ -183,6 +207,37 @@ struct CIPlan: Sendable, Equatable {
         var virtualization = false
         /// Its jobs (by name) that write the Bazel cache, on main.
         var populate: [String] = []
+        /// Its jobs' own sizes, by name (`"owner/repo:job"` in `sizes`),
+        /// over the repository's: a light job (one that only decides what
+        /// to run) asks for little.
+        var jobs: [String: RunnerSize] = [:]
+        /// Every label its jobs may ask for (`label` first); none given: `label` alone.
+        var labels: [String] = []
+        /// Sizes by label (`"#<label>"` in `sizes`). Unlike a job's own size,
+        /// these hold: GitHub gives a job only to a runner of exactly its
+        /// labels, so a job asking for a label's pool runs at that size.
+        var labelSizes: [String: RunnerSize] = [:]
+
+        var allLabels: [String] { labels.isEmpty ? [label] : labels }
+
+        /// Whether `job` asks for one of its labels (and `self-hosted` alone besides).
+        func serves(_ job: [String]) -> Bool { allLabels.contains { CINames.matches(job, label: $0) } }
+
+        /// `job`'s container's CPUs, memory and nested virtualization: its
+        /// label's size where that has one, else its own (by its name, or its
+        /// name before a matrix's " (…)": unreliable, as GitHub may give the
+        /// job another runner of the same labels), else the repository's; nil
+        /// for the plan's.
+        func size(of job: CIJob) -> (cpus: Int?, memoryGigabytes: Int?, virtualization: Bool) {
+            let base = job.name.range(of: " (").map { String(job.name[..<$0.lowerBound]) } ?? job.name
+            let byLabel = job.labels.lazy.compactMap { label in
+                self.labelSizes.first { $0.key.lowercased() == label.lowercased() }?.value
+            }.first
+            let own = byLabel ?? jobs[job.name] ?? jobs[base]
+                ?? jobs.first { $0.key.lowercased() == job.name.lowercased() || $0.key.lowercased() == base.lowercased() }?.value
+            return (own?.cpus.map { max(1, $0) } ?? cpus, own?.memoryGigabytes.map { max(1, $0) } ?? memoryGigabytes,
+                    own?.virtualization ?? virtualization)
+        }
 
         /// Whether `job` is one that fills the cache: one of their names, on main.
         func populates(_ job: CIJob) -> Bool { populate.contains(job.name) && job.branch == "main" }
@@ -216,9 +271,18 @@ struct CIPlan: Sendable, Equatable {
         let repositories = allowed.filter { seen.insert($0.lowercased()).inserted }.map { name in
             let size = settings.sizes[name] ?? settings.sizes.first { $0.key.lowercased() == name.lowercased() }?.value
             let populate = settings.populate[name] ?? settings.populate.first { $0.key.lowercased() == name.lowercased() }?.value ?? []
-            return Repository(name: name, label: settings.label(name), cpus: size?.cpus.map { max(1, $0) },
+            var jobs: [String: RunnerSize] = [:]
+            for (key, size) in settings.sizes where key.lowercased().hasPrefix(name.lowercased() + ":") {
+                jobs[String(key.dropFirst(name.count + 1))] = size
+            }
+            let all = settings.allLabels(name)
+            var labelSizes: [String: RunnerSize] = [:]
+            for label in all {
+                if let size = settings.sizes.first(where: { $0.key.lowercased() == "#\(label)".lowercased() })?.value { labelSizes[label] = size }
+            }
+            return Repository(name: name, label: all[0], cpus: size?.cpus.map { max(1, $0) },
                               memoryGigabytes: size?.memoryGigabytes.map { max(1, $0) }, virtualization: size?.virtualization == true,
-                              populate: populate)
+                              populate: populate, jobs: jobs, labels: all, labelSizes: labelSizes)
         }
         let concurrent = settings.maxConcurrent ?? app.maxConcurrent
             ?? CIDefaults.concurrency(cores: cores, memoryBytes: memoryBytes, containerCapacity: containerCapacity)

@@ -559,18 +559,13 @@ func xctestCommand(_ arguments: Arguments, put: ((URL) async throws -> String)?,
             fail("with --url, --tests and --host name objects in storage: put \(given) first (oss storage put \(given) --url=<a storage.put grant>)")
         }
         guard isDirectory.boolValue else { return try await put(URL(fileURLWithPath: given)) }
-        #if os(macOS)
         // A .xctest or .app folder: zipped with its folder, as rules_apple's zips hold it.
         let folder = NSTemporaryDirectory() + "oss-xctest-\(Random.hex(4))"
         try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: folder) }
         let zip = "\(folder)/\(URL(fileURLWithPath: given).lastPathComponent).zip"
-        let ditto = try await Shell.run("/usr/bin/ditto", ["-c", "-k", "--keepParent", given, zip], timeout: 900)
-        guard ditto.ok else { throw OSSError(status: 0, message: "zipping \(given): \(ditto.error)") }
+        try await FolderZip.make(given, to: zip, timeout: 900)
         return try await put(URL(fileURLWithPath: zip))
-        #else
-        fail("\(given) is a folder: zip it with its folder first (rules_apple's <name>.zip holds <name>.xctest)")
-        #endif
     }
     var host: String?
     if let given = arguments.options["host"] { host = try await object(given) }

@@ -2,6 +2,16 @@
 
 ## 0.14.0 (unreleased)
 
+- **A repository serves several labels, each sized its own**
+  (`ci.labels."owner/repo"` a list; `ci.sizes."#<label>"`): a light job asks
+  for `[self-hosted, <repo>-jit-small]` and runs in its small pool. Sizes by
+  a job's name (`"owner/repo:job"`) didn't hold: GitHub gives a job any free
+  runner of its labels, and visor's proof ran in a 2 GB runner made for
+  `changes`.
+- **A CI job's own size** (`ci.sizes."owner/repo:job"`, by its name, or
+  its name before a matrix's ` (…)`), over its repository's: a light job
+  (one that decides what else runs) asks for 2 GB, not the 12 its
+  repository's builds need, and leaves the budget to them.
 - **Unused image templates go after two days** (server.json's
   `containerTemplateDays`), checked at the start and every hour, not after
   two weeks and only at the start: each CI image version left a 6 GB

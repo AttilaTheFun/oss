@@ -62,6 +62,10 @@ actor MachineManager {
     /// Leases whose machine is being started again from its disk.
     private var restarting: Set<String> = []
     private let utm = UTMQueue()
+    /// Slot users are made and deleted on the primary one at a time: two
+    /// `sysadminctl -addUser` at once can leave one user never made ("sudo:
+    /// unknown user", 2026-11-04/05: slots asked for within seconds).
+    private let slotUsers = UTMQueue()
     /// The server's Bazel cache, which every VM lease reads.
     private let bazelCache: (port: Int, readToken: String)?
     /// What runs containers, where this process can (OS Server's app).
@@ -776,10 +780,13 @@ actor MachineManager {
     private func createSlot(_ id: String) async throws {
         guard let lease = leases[id], let guest = primaryGuest(of: lease) else { throw APIError(error: "its primary macOS VM is gone") }
         let script = SlotUser.makeScript(lease: id, password: SlotSecrets.keychainPassword(id, key: config.managementKey))
-        let made = try await guest.run(script, timeout: 180)
+        let made = try await slotUsers.run { try await guest.run(script, timeout: 180) }
         guard made.ok else { throw APIError(error: "its user wasn't made on the primary: \(made.error.suffix(400))") }
         if !made.error.isEmpty { log("lease \(id): \(made.error.suffix(400))") }
-        guard leases[id]?.state == .creating else { _ = try? await guest.run(SlotUser.deleteScript(lease: id), timeout: 120); return }
+        guard leases[id]?.state == .creating else {
+            _ = try? await slotUsers.run { try await guest.run(SlotUser.deleteScript(lease: id), timeout: 120) }
+            return
+        }
         leases[id]?.guestAddress = guest.address
         leases[id]?.sshUser = SlotUser.name(id)
         leases[id]?.state = .ready
@@ -1276,7 +1283,7 @@ actor MachineManager {
             // user on its primary, with its files (gone already if the primary is).
             await xctests.forget(id)
             if let guest = primaryGuest(of: lease) {
-                let deleted = try? await guest.run(SlotUser.deleteScript(lease: id), timeout: 120)
+                let deleted = try? await slotUsers.run { try await guest.run(SlotUser.deleteScript(lease: id), timeout: 120) }
                 if deleted?.ok != true { log("lease \(id): deleting slot user \(SlotUser.name(id)) failed: \(deleted?.error.suffix(300) ?? "no answer")") }
             }
         }
@@ -1829,6 +1836,16 @@ public final class ServerHost: Sendable {
         // closed: SIGPIPE's default ended the server, every lease's ports with
         // it, after a lease's SSH connection closed.
         signal(SIGPIPE, SIG_IGN)
+        #if os(macOS)
+        // Never napped: macOS throttled the app, its window closed, to
+        // background priority (4, not 31) on 2026-11-04, and with its few
+        // cooperative threads barely scheduled the API stopped answering
+        // while leases and CI waited on it. An activity held for the
+        // process's life keeps it at its own priority and its timers on time.
+        ServerActivity.token = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled, .latencyCritical],
+            reason: "OS Server lends machines and runs CI")
+        #endif
         Paths.migrate()
         ManagementKey.settle()
         let config = ServerConfig.load()
@@ -2181,4 +2198,11 @@ enum Server {
     }
 }
 
+#endif
+
+#if os(macOS)
+/// The server's process activity (ServerHost.start), held until it exits.
+enum ServerActivity {
+    nonisolated(unsafe) static var token: NSObjectProtocol?
+}
 #endif
