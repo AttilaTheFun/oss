@@ -49,6 +49,20 @@ struct OSSApp: App {
         // of it is the one exception.
         .defaultLaunchBehavior(Fixture.isOn && !Fixture.showsPanel && !Fixture.showsSetUp && Fixture.guestScreen == nil ? .presented : .suppressed)
 
+        // The proof's picture of the menu bar item's menu (`-fixture -panel`):
+        // its items in a window of their own. The real menu can't be
+        // pictured: a Screen Sharing connection, which the proof's
+        // screenshots are, closes an open menu, and a process started over
+        // SSH may not record the screen (#118).
+        Window("OS Server menu", id: "fixture-menu") {
+            FixtureMenu()
+                .environment(AppModel.shared.monitor)
+                .environment(AppModel.shared.server)
+        }
+        .windowStyle(.plain)
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(Fixture.showsPanel ? .presented : .suppressed)
+
         // A macOS VM's screen, live (by the machine's name).
         WindowGroup("Screen", id: "screen", for: String.self) { $name in
             if let name {
@@ -123,7 +137,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let appearance = Fixture.appearance { NSApp.appearance = NSAppearance(named: appearance) }
             Fixture.apply(to: model.monitor, server: model.server)
             model.watcher = MonitorFixture.monitor(name: "Mac Studio")
-            if Fixture.showsPanel { Fixture.openMenu() }
             // Written again as the windows settle (the proof reads the last).
             Task {
                 for _ in 0..<4 {

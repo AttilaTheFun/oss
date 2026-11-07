@@ -1,10 +1,8 @@
 name: CI
-# OS Server's CI, on self-hosted runners leasing from OS Server (README.md,
-# "This repository's CI"): its own single-use ones (label oss-jit: a Linux
-# container of Visor's agent image for each job, made and deleted by OS
-# Server) for the jobs whose Mac work is in a leased VM, and the Mac's
-# runner (oss-ci, a user of its own) for those that need the Mac itself
-# (the proof's tools, a release):
+# OS Server's CI, on OS Server's own single-use runners (README.md, "This
+# repository's CI"; label oss-jit: a Linux container of Visor's agent image
+# for each job, made and deleted by OS Server), each job's Mac work in a
+# macOS VM or a slot of the primary it leases:
 # - build-and-test: swift build and swift test, the App package's build and
 #   OS Monitor's Bazel build, in a macOS VM (tools/ci/mac_vm_tests.sh);
 # - linux: the command line built for Linux in a container
@@ -80,7 +78,7 @@ jobs:
   proof:
     # Only by hand: never a pull request's or a push's.
     if: github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, oss-ci]
+    runs-on: [self-hosted, oss-jit]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
@@ -90,7 +88,8 @@ jobs:
         env:
           # The branch, for a pull request's head (its run's ref is GitHub's merge).
           PROOF_REF: ${{ github.event.pull_request && format('refs/heads/{0}', github.head_ref) || github.ref }}
-          PROOF_KIND: full
+          # Quick: no Linux or Windows guest VMs (32 GB) for the Screen window's pictures; CI's load kept to what the apps ship for: macOS and iOS.
+          PROOF_KIND: quick
         # exec: the runner's cancel reaches the script's trap, which releases its leases.
         run: exec tools/ci/proof.sh --kind "$PROOF_KIND" --proof "$RUNNER_TEMP/proof"
       # The proof whether every picture came or not: a broken screen is what it's for.
@@ -138,7 +137,7 @@ jobs:
 
   release:
     if: github.event_name == 'release'
-    runs-on: [self-hosted, oss-ci]
+    runs-on: [self-hosted, oss-jit]
     timeout-minutes: 90
     permissions:
       contents: read
